@@ -108,7 +108,10 @@ echo "PING"
 pmsleep 0.125
 options="-p $redisport"
 redis-cli $options ping
+_check_redis_server $redisport
 echo
+
+_check_redis_server_version $redisport
 
 # prepare logging location and config
 export PCP_ARCHIVE_DIR=$tmp.log/pmlogger

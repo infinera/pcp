@@ -382,7 +382,7 @@ find_entry(hdr_t *h, const char *name, int inst, int *sts)
 /*
  * optionally resize the hash table first (if resize == 1)
  *
- * then re-order each hash chain so that active entires are
+ * then re-order each hash chain so that active entries are
  * before inactive entries, and culled entries dropped
  *
  * applies to _both_ the inst and name hashes
@@ -759,7 +759,10 @@ load_cache(hdr_t *h)
 	    return PM_ERR_GENERIC;
 	pmsprintf(filename, sizeof(filename),
 		"%s%c" "config" "%c" "pmda", vdp, sep, sep);
-	mkdir2(filename, 0755);
+	if (mkdir2(filename, 0755) < 0) {
+	    /* failure here is not fatal ... dir may already exist */
+	    ;
+	}
     }
 
     pmsprintf(filename, sizeof(filename), "%s%cconfig%cpmda%c%s",
@@ -920,7 +923,10 @@ save_cache(hdr_t *h, int hstate)
 	    return PM_ERR_GENERIC;
 	pmsprintf(filename, sizeof(filename),
 		"%s%c" "config" "%c" "pmda", vdp, sep, sep);
-	mkdir2(filename, 0755);
+	if (mkdir2(filename, 0755) < 0) {
+	    /* failure here is not fatal ... dir may already exist */
+	    ;
+	}
     }
 
     pmsprintf(filename, sizeof(filename), "%s%cconfig%cpmda%c%s",

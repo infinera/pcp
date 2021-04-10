@@ -29,6 +29,8 @@
 #include <math.h>
 
 #include "atop.h"
+#include "photoproc.h"
+#include "photosyst.h"
 #include "hostmetrics.h"
 
 extern const char *hostmetrics[];
@@ -842,10 +844,13 @@ setup_globals(pmOptions *opts)
 		cleanstop(1);
 	}
 
+	setup_photosyst();
+	setup_photoproc();
+
 	if ((hertz = extract_integer(result, descs, HOST_HERTZ)) <= 0)
 		hertz = sysconf(_SC_CLK_TCK);
 	if ((pidmax = extract_integer(result, descs, HOST_PID_MAX)) <= 0)
-		pidmax = (1 << 15);
+		pidmax = getmaxpid();
 	if ((pagesize = extract_integer(result, descs, HOST_PAGESIZE)) <= 0)
 		pagesize = getpagesize();
 	if ((system_boottime = extract_count_t(result, descs, HOST_BTIME)) <= 0)
@@ -1185,7 +1190,12 @@ fetch_metrics(const char *purpose, int nmetrics, pmID *pmids, pmResult **result)
 	    return PM_ERR_EOL;
 	}
 
-	pmSetMode(fetchmode, &curtime, fetchstep);
+	if ((sts = pmSetMode(fetchmode, &curtime, fetchstep)) < 0)
+	{
+		fprintf(stderr, "%s: %s setmode: %s\n",
+			pmGetProgname(), purpose, pmErrStr(sts));
+		cleanstop(1);
+	}
 	if ((sts = pmFetch(nmetrics, pmids, result)) < 0)
 	{
 		if (sts == PM_ERR_EOL)
@@ -1217,11 +1227,11 @@ fetch_metrics(const char *purpose, int nmetrics, pmID *pmids, pmResult **result)
 }
 
 int
-get_instances(const char *purpose, int value, pmDesc *descs, int **ids, char ***insts)
+instances(const char *purpose, int all, int id, pmDesc *descs, int **ids, char ***insts)
 {
 	int	sts, i;
 
-	if (descs[value].pmid == PM_ID_NULL)
+	if (descs[id].pmid == PM_ID_NULL)
 	{
 		/* we have no descriptor for this metric, thus no instances */
 		*insts = NULL;
@@ -1229,8 +1239,9 @@ get_instances(const char *purpose, int value, pmDesc *descs, int **ids, char ***
 		return 0;
 	}
 
-	sts = !rawreadflag ? pmGetInDom(descs[value].indom, ids, insts) :
-			pmGetInDomArchive(descs[value].indom, ids, insts);
+	sts = (rawreadflag && all) ?
+			pmGetInDomArchive(descs[id].indom, ids, insts) :
+			pmGetInDom(descs[id].indom, ids, insts);
 	if (sts == PM_ERR_INDOM_LOG)
 	{
 		/* metrics but no indom - expected sometimes, "no values" */
@@ -1252,6 +1263,20 @@ get_instances(const char *purpose, int value, pmDesc *descs, int **ids, char ***
 			fprintf(stderr, "    [%d]  %s\n", (*ids)[i], (*insts)[i]);
 	}
 	return sts;
+}
+
+/* retrieve instances observed across all of time */
+int
+get_instances(const char *purpose, int mid, pmDesc *descs, int **ids, char ***insts)
+{
+    return instances(purpose, 1, mid, descs, ids, insts);
+}
+
+/* retrieve instances observed in the last sample */
+int
+fetch_instances(const char *purpose, int mid, pmDesc *descs, int **ids, char ***insts)
+{
+    return instances(purpose, 0, mid, descs, ids, insts);
 }
 
 static char *
@@ -1418,7 +1443,7 @@ static void
 rawconfig(FILE *fp, double interval)
 {
 	const char		**p;
-	unsigned int		delta, offset;
+	unsigned int		delta;
 
 	fprintf(fp, "log mandatory on once {\n");
 	for (p = hostmetrics; (*p)[0] != '.'; p++)
@@ -1431,9 +1456,8 @@ rawconfig(FILE *fp, double interval)
 	fprintf(fp, "log mandatory on every %u milliseconds {\n", delta);
 	for (p = systmetrics; (*p)[0] != '.'; p++)
 		fprintf(fp, "    %s\n", *p);
-	offset = hotprocflag ? 0 : 3;
 	for (p = procmetrics; (*p)[0] != '.'; p++)
-		fprintf(fp, "    %s\n", *p + offset);
+		fprintf(fp, "    %s\n", *p);
 	fputs("}\n", fp);
 }
 

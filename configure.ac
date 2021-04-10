@@ -2022,6 +2022,7 @@ pcp_selinux_security_class=false
 pcp_selinux_dir_class=false
 pcp_selinux_rawip_socket_class=false
 pcp_selinux_netlink_generic_socket_class=false
+pcp_selinux_netlink_tcpdiag_socket_class=false
 
 AS_IF([test "x$enable_selinux" != "xfalse"], [
 
@@ -2149,6 +2150,10 @@ AS_IF([test "x$enable_selinux" != "xfalse"], [
     | egrep '^[[ 	]][[ 	]]*(class |)security$' >/dev/null \
     && pcp_selinux_security_class=true
 
+    seinfo -x --class=lockdown $seinfo_common_flag 2>/dev/null \
+    | egrep '^[[ 	]][[ 	]]*(class |)lockdown$' >/dev/null \
+    && pcp_selinux_lockdown_class=true
+
     dnl pcp_selinux_dir already used for something else, so name to
     dnl set is pcp_selinux_dir_class
     seinfo -x --class=dir $seinfo_common_flag 2>/dev/null \
@@ -2162,6 +2167,10 @@ AS_IF([test "x$enable_selinux" != "xfalse"], [
     seinfo -x --class=netlink_generic_socket $seinfo_common_flag 2>/dev/null \
     | egrep '^[[ 	]][[ 	]]*(class |)netlink_generic_socket$' >/dev/null \
     && pcp_selinux_netlink_generic_socket_class=true
+
+    seinfo -x --class=netlink_tcpdiag_socket $seinfo_common_flag 2>/dev/null \
+    | egrep '^[[ 	]][[ 	]]*(class |)netlink_tcpdiag_socket$' >/dev/null \
+    && pcp_selinux_netlink_tcpdiag_socket_class=true
 
 ])
 
@@ -2203,6 +2212,7 @@ AC_SUBST(pcp_selinux_security_class)
 AC_SUBST(pcp_selinux_dir_class)
 AC_SUBST(pcp_selinux_rawip_socket_class)
 AC_SUBST(pcp_selinux_netlink_generic_socket_class)
+AC_SUBST(pcp_selinux_netlink_tcpdiag_socket_class)
 
 pcp_selinux_files_mmap_all_files=false
 if test "x$enable_selinux" != "xfalse"

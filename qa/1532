@@ -1,6 +1,7 @@
 #!/bin/sh
 # PCP QA Test No. 1532
-# Test Linux ZFS PMDA against a live ZFS pool
+# Test Linux ZFS PMDA against a live ZFS pool - part A (older stats files)
+# See also qa/1309 for part B
 #
 
 seq=`basename $0`
@@ -14,6 +15,11 @@ echo "QA output created by $seq"
 [ $PCP_PLATFORM = linux ] || _notrun "Linux ZFS PMDA is Linux-specific (uses procfs)"
 grep -q zfs /proc/filesystems || _notrun "ZFS filesystem unsupported by the running kernel"
 which zpool > /dev/null || _notrun "zpool not found, please check your OpenZFS installation"
+
+for file in arcstats dmu_tx xuio_stats zfetchstats zil
+do
+    [ -f /proc/spl/kstat/zfs/$file ] || _notrun "/proc/spl/kstat/zfs/$file is missing"
+done
 
 status=1
 $sudo rm -rf $tmp.* $seq.full
@@ -38,16 +44,8 @@ $sudo dd if=/dev/zero of=$root/disk.img bs=1024 count=65536 > /dev/null 2>&1
 $sudo zpool create $poolname $root/disk.img
 echo "== Checking metric count for ZFS ARC"
 pminfo $opts -f zfs.arc |  grep '^ \+value ' | wc -l 2>&1
-echo "== Checking metric count for ZFS ABD"
-pminfo $opts -f zfs.abd |  grep '^ \+value ' | wc -l 2>&1
-echo "== Checking metric count for ZFS DBUF"
-pminfo $opts -f zfs.dbuf |  grep '^ \+value ' | wc -l 2>&1
 echo "== Checking metric count for ZFS DMU TX"
 pminfo $opts -f zfs.dmu_tx |  grep '^ \+value ' | wc -l 2>&1
-echo "== Checking metric count for ZFS DNode"
-pminfo $opts -f zfs.dnode |  grep '^ \+value ' | wc -l 2>&1
-echo "== Checking metric count for ZFS VDev"
-pminfo $opts -f zfs.vdev |  grep '^ \+value ' | wc -l 2>&1
 echo "== Checking metric count for ZFS XUIO"
 pminfo $opts -f zfs.xuio |  grep '^ \+value ' | wc -l 2>&1
 echo "== Checking metric count for ZFS ZFetch"

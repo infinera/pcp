@@ -1279,6 +1279,9 @@ _check_purify()
     [ $? -eq 0 ] || _notrun "No purify binary found"
 }
 
+#
+# check we have pmseries, redis-cli and redis-server installed.
+# Note: use _check_redis_server to test if redis is running locally.
 _check_series()
 {
     which pmseries >/dev/null 2>&1 || \
@@ -1287,12 +1290,30 @@ _check_series()
 	_notrun "Redis command line utility not installed"
     which redis-server >/dev/null 2>&1 || \
 	_notrun "Redis server utility not installed"
-    redis-cli ping >/dev/null
-    [ $? -eq 0 ] || _notrun "Redis server not running locally"
-    eval `redis-cli info server |
+}
+
+# check redis-server version
+# ... assumes _check_series already done and redis-server is running
+#
+_check_redis_server_version()
+{
+    eval `redis-cli -p "$1" info server |
 	grep redis_version: |
 	sed -e 's/:/=/g' -e 's/\..*//g'`
-    [ $redis_version -ge 5 ] || _notrun "Redis $redis_version too old"
+    [ $redis_version -ge 5 ] || _notrun "Redis server @ port $1: version $redis_version too old"
+}
+
+#
+# Check redis server is installed and running locally and the version
+# is not too old. Optional port parameter defaults to 6379
+_check_redis_server()
+{
+    _check_series
+    redisport=6379
+    [ -n "$1" ] && redisport="$1"
+    redis-cli -p $redisport ping >/dev/null
+    [ $? -eq 0 ] || _notrun "Redis server not running locally"
+    _check_redis_server_version $redisport
 }
 
 _check_search()
@@ -2774,6 +2795,39 @@ _sighup_pmcd()
     # delay for $_signal_delay while pmcd actually does post-SIGHUP work
     #
     $PCP_BINADM_DIR/pmsleep $_signal_delay
+}
+
+# Discover the platform-specific DSO suffix, at set $(DSOSUFFIX)
+#
+_set_dsosuffix()
+{
+    cat <<End-of-File >$tmp._mk
+include $PCP_INC_DIR/builddefs
+default:
+	@echo \$(DSOSUFFIX)
+End-of-File
+    if $PCP_MAKE_PROG -f $tmp._mk >$tmp._out 2>$tmp._err
+    then
+	:
+    else
+	cat $tmp._err
+	echo "Error: $PCP_MAKE_PROG failed establishing DSO suffix"
+	status=1
+	exit
+    fi
+    if [ -s $tmp._err ]
+    then
+	cat $tmp._err
+	echo "Warning: unexpected stderr from $PCP_MAKE_PROG when establishing DSO suffix"
+    fi
+    DSOSUFFIX=`cat $tmp._out`
+    if [ -z "$DSOSUFFIX" ]
+    then
+	echo "Error: cannot establish the DSO suffix from $PCP_INC_DIR/builddefs"
+	status=1
+	exit
+    fi
+    rm -f $tmp._mk $tmp._out $tmp._err
 }
 
 # common webapi header filtering
