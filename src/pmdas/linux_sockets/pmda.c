@@ -1,7 +1,7 @@
 /*
  * Sockets PMDA
  *
- * Copyright (c) 2021 Red Hat.
+ * Copyright (c) 2021-2022 Red Hat.
  *
  * This program is free software; you can redistribute it and/or modify it
  * under the terms of the GNU General Public License as published by the
@@ -14,6 +14,7 @@
  * for more details.
  */
 
+#include <ctype.h>
 #include "pmapi.h"
 #include "pmda.h"
 
@@ -118,25 +119,25 @@ sockets_fetchCallBack(pmdaMetric *metric, unsigned int inst, pmAtomValue *atom)
 	 */
 	switch (metric->m_desc.type) {
 	case PM_TYPE_32:
-	    atom->l = *(__int32_t *)((char *)ss + (uint64_t)(metric->m_user));
+	    atom->l = *(__int32_t *)((char *)ss + (intptr_t)(metric->m_user));
 	    break;
 	case PM_TYPE_U32:
-	    atom->ul = *(__uint32_t *)((char *)ss + (uint64_t)(metric->m_user));
+	    atom->ul = *(__uint32_t *)((char *)ss + (intptr_t)(metric->m_user));
 	    break;
 	case PM_TYPE_64:
-	    atom->ll = *(__int64_t *)((char *)ss + (uint64_t)(metric->m_user));
+	    atom->ll = *(__int64_t *)((char *)ss + (intptr_t)(metric->m_user));
 	    break;
 	case PM_TYPE_U64:
-	    atom->ull = *(__uint64_t *)((char *)ss + (uint64_t)(metric->m_user));
+	    atom->ull = *(__uint64_t *)((char *)ss + (intptr_t)(metric->m_user));
 	    break;
 	case PM_TYPE_FLOAT:
-	    atom->f = *(float *)((char *)ss + (uint64_t)(metric->m_user));
+	    atom->f = *(float *)((char *)ss + (intptr_t)(metric->m_user));
 	    break;
 	case PM_TYPE_DOUBLE:
-	    atom->d = *(double *)((char *)ss + (uint64_t)(metric->m_user));
+	    atom->d = *(double *)((char *)ss + (intptr_t)(metric->m_user));
 	    break;
 	case PM_TYPE_STRING:
-	    atom->cp = (char *)ss + (uint64_t)(metric->m_user);
+	    atom->cp = (char *)ss + (intptr_t)(metric->m_user);
 	    break;
 	}
 	break;
@@ -145,6 +146,31 @@ sockets_fetchCallBack(pmdaMetric *metric, unsigned int inst, pmAtomValue *atom)
 	return PM_ERR_PMID;
     }
     return PMDA_FETCH_STATIC;
+}
+
+/*
+ * Restrict the allowed filter strings to only limited special
+ * characters (open and close brackets - everthing else can be
+ * done with alphanumerics) to limit any attack surface here.
+ * The ss filtering language is more complex than we ever want
+ * to be attempting to parse ourself, so we leave that side of
+ * things to the ss command itself.
+ */
+int
+sockets_check_filter(const char *string)
+{
+    const char *p;
+
+    for (p = string; *p; p++) {
+	if (isspace(*p))
+	    continue;
+	if (isalnum(*p))
+	    continue;
+	if (*p == '(' || *p == ')')
+	    continue;
+	return 0; /* disallow */
+    }
+    return 1;
 }
 
 static int
@@ -165,9 +191,14 @@ sockets_store(pmResult *result, pmdaExt *pmda)
 	    	case 0: /* network.persocket.filter */
 		    if ((sts = pmExtractValue(vsp->valfmt, &vsp->vlist[0],
 			PM_TYPE_STRING, &av, PM_TYPE_STRING)) >= 0) {
+			if (sockets_check_filter(av.cp)) {
+			    sts = PM_ERR_BADSTORE;
+			    free(av.cp);
+			    break;
+			}
 			if (ss_filter)
 			    free(ss_filter);
-			ss_filter = av.cp; /* TODO filter syntax check */
+			ss_filter = av.cp;
 		    }
 		    break;
 		default:
@@ -185,6 +216,36 @@ sockets_store(pmResult *result, pmdaExt *pmda)
     }
 
     return sts;
+}
+
+/*
+ * Load the initial filter from filter.conf. This may subsequently be
+ * overridden by pmstore network.persocket.filter ...
+ */
+static void
+load_filter_config(void)
+{
+    FILE *fp;
+    int sep = pmPathSeparator();
+    char *p;
+    char filterpath[MAXPATHLEN];
+    char buf[MAXPATHLEN];
+
+    pmsprintf(filterpath, sizeof(filterpath), "%s%c" "sockets" "%c" "filter.conf",
+		pmGetConfig("PCP_SYSCONF_DIR"), sep, sep);
+    if ((fp = fopen(filterpath, "r")) != NULL) {
+	while (fgets(buf, sizeof(buf), fp) != NULL) {
+	    if (buf[0] == '#' || buf[0] == '\n')
+		continue;
+	    if ((p = strrchr(buf, '\n')) != NULL)
+		*p = '\0';
+	    ss_filter = strndup(buf, sizeof(buf));
+	    break;
+	}
+	fclose(fp);
+    }
+    if (pmDebugOptions.appl0)
+    	pmNotifyErr(LOG_DEBUG, "loaded %s = \"%s\"\n", filterpath, ss_filter ? ss_filter : ""); 
 }
 
 /*
@@ -206,6 +267,9 @@ sockets_init(pmdaInterface *dp)
 
     if (dp->status != 0)
 	return;
+
+    /* load the initial filter */
+    load_filter_config();
 
     int	nindoms = sizeof(indomtable)/sizeof(indomtable[0]);
 

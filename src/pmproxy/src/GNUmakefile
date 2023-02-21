@@ -1,5 +1,5 @@
 #
-# Copyright (c) 2018-2020 Red Hat.
+# Copyright (c) 2018-2020,2022 Red Hat.
 #
 # This program is free software; you can redistribute it and/or modify it
 # under the terms of the GNU General Public License as published by the
@@ -21,10 +21,14 @@ CFILES = pmproxy.c
 XFILES = uv_callback.h uv_callback.c
 
 LCFLAGS = $(PIECFLAGS) \
-	  -I$(TOPDIR)/src/libpcp_web/src -I$(TOPDIR)/src/libpcp_mmv/src
+	-I$(TOPDIR)/src/libpcp_web/src \
+	-I$(TOPDIR)/src/libpcp_web/src/deps \
+	-I$(TOPDIR)/src/libpcp_mmv/src
 LLDFLAGS = $(PIELDFLAGS)
 LLDLIBS	= -lpcp_mmv $(PCP_WEBLIB)
-PCPLIB_LDFLAGS += -L$(TOPDIR)/src/libpcp_mmv/$(LIBPCP_ABIDIR)
+PCPLIB_LDFLAGS += \
+	-L$(TOPDIR)/src/libpcp_web/$(LIBPCP_ABIDIR) \
+	-L$(TOPDIR)/src/libpcp_mmv/$(LIBPCP_ABIDIR)
 
 ifeq "$(HAVE_LIBUV)" "true"
 LCFLAGS += $(LIBUVCFLAGS) -DHAVE_LIBUV=1
@@ -33,7 +37,6 @@ CFILES += openmetrics.c server.c http.c pcp.c uv_callback.c redis.c $(SERVLETS)
 HFILES += openmetrics.h server.h http.h pcp.h uv_callback.h
 ifeq "$(HAVE_OPENSSL)" "true"
 LCFLAGS += $(OPENSSLCFLAGS) -DHAVE_OPENSSL=1
-LDFLAGS += $(LIB_FOR_OPENSSL)
 CFILES += secure.c
 endif
 endif

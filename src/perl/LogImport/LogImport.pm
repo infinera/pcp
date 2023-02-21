@@ -10,10 +10,12 @@ our ($VERSION, @ISA, @EXPORT, @EXPORT_OK, %EXPORT_TAGS);
 
 @ISA = qw( Exporter DynaLoader );
 @EXPORT = qw(
-    pmiStart pmiUseContext pmiEnd pmiSetHostname pmiSetTimezone
+    pmiStart pmiUseContext pmiEnd pmiSetHostname pmiSetTimezone pmiSetVersion
     pmiAddMetric pmiAddInstance pmiPutValue pmiGetHandle pmiPutValueHandle
-    pmiWrite pmiPutText pmiPutLabel pmiPutMark pmiDump pmiErrStr pmiUnits pmiID pmiInDom
+    pmiWrite pmiPutText pmiPutLabel pmiPutMark pmiDump pmiErrStr pmiUnits
+    pmiID pmiInDom
     pmID_build pmid_build pmInDom_build
+    pmSetDebug
     pmiBatchPutValue pmiBatchPutValueHandle pmiBatchWrite pmiBatchEnd
     PM_ID_NULL PM_INDOM_NULL PM_IN_NULL
     PM_SPACE_BYTE PM_SPACE_KBYTE PM_SPACE_MBYTE PM_SPACE_GBYTE PM_SPACE_TBYTE
@@ -104,11 +106,19 @@ sub PMI_ERR_BADSEM      { -20010; }	# Illegal metric semantics
 sub PMI_ERR_NODATA      { -20011; }	# No data to output
 sub PMI_ERR_BADMETRICNAME { -20012; }	# Illegal metric name
 sub PMI_ERR_BADTIMESTAMP { -20013; }	# Illegal result timestamp
-sub PMI_ERR_BADTEXTTYPE	{ -20014; }	# Illegal text type */
-sub PMI_ERR_BADTEXTCLASS { -20015; }	# Illegal text type */
-sub PMI_ERR_BADTEXTID	{ -20016; }	# Illegal text type */
-sub PMI_ERR_EMPTYTEXTCONTENT { -20017; }# Empty text content */
-sub PMI_ERR_DUPTEXT     { -20018; }	# Duplicate text */
+sub PMI_ERR_BADTEXTTYPE	{ -20014; }	# Illegal text type
+sub PMI_ERR_BADTEXTCLASS { -20015; }	# Illegal text class
+sub PMI_ERR_BADTEXTID	{ -20016; }	# Illegal text identifier
+sub PMI_ERR_EMPTYTEXTCONTENT { -20017; }# Empty text content
+sub PMI_ERR_DUPTEXT     { -20018; }	# Duplicate text
+sub PMI_ERR_BADLABELTYPE    { -20019; } # Illegal label type
+sub PMI_ERR_BADLABELID      { -20020; } # Illegal label identifier
+sub PMI_ERR_BADLABELINSTANCE { -20021; }# Illegal label instance
+sub PMI_ERR_EMPTYLABELNAME  { -20022; } # Empty label name
+sub PMI_ERR_EMPTYLABELVALUE { -20023; } # Empty label value
+sub PMI_ERR_ADDLABELERROR   { -20024; } # Error adding label
+sub PMI_ERR_BADVERSION      { -20025; } # Illegal log version
+
 
 # Batch operations
 our %pmi_batch = ();
@@ -184,14 +194,16 @@ source and create a Performance Co-Pilot (PCP) archive suitable for use
 with the PCP tools.
 
 The routines in this module provide wrappers around the libpcp_import
-library.
+library and some of the routines from the libpcp library.
 
 =head1 SEE ALSO
 
 pmiAddInstance(3), pmiAddMetric(3), pmiEnd(3), pmiErrStr(3),
-pmiGetHandle(3), pmiPutResult(3), pmiPutValue(3), pmiPutValueHandle(3),
-pmiPutMark(3), pmiPutText(3), pmiPutLabel(3), pmiStart(3), pmiSetHostname(3), pmiSetTimezone(3),
-pmiUnits(3), pmiUseContext(3) and pmiWrite(3).
+pmiGetHandle(3), pmiID(3), pmID_build(3), pmid_build(3),
+pmiInDom(3), pmInDom_build(3), pmiPutResult(3), pmiPutValue(3),
+pmiPutValueHandle(3), pmiPutMark(3), pmiPutText(3), pmiPutLabel(3),
+pmiStart(3), pmiSetHostname(3), pmiSetTimezone(3), pmiSetVersion(3),
+pmiUnits(3), pmiUseContext(3), pmiWrite(3) and pmSetDebug(3).
 
 The PCP mailing list pcp@groups.io can be used for questions about
 this module.
@@ -203,7 +215,7 @@ Further details can be found at https://pcp.io
 Ken McDonell, E<lt>kenj@kenj.id.auE<gt>
 
 Copyright (C) 2010 by Ken McDonell.
-Copyright (C) 2018 Red Hat.
+Copyright (C) 2018,2022 Red Hat.
 
 This library is free software; you can redistribute it and/or modify
 it under the terms of the GNU General Public License, version 2 (see

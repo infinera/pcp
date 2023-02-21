@@ -62,7 +62,6 @@ S_pkg	OpenIndiana
 slackpkg	Slackware
 pacman	ArchLinux
 brew	Darwin
-urpmi	OpenMandriva
 End-of-File
     tag=`sed -n <$tmp.tags -e 's/	/ /g' -e 's/$/ /' -e "/ $distro /s/ .*//p"`
     if [ -z "$tag" ]
@@ -101,14 +100,24 @@ End-of-File
 	    done
 	done
 
+	# if at least one package from the manifest line is in
+	# the list and available, then we're done
+	#
+	rm -f $tmp.ok
 	for pkg in $pkgs
 	do
 	    [ "$pkg" = "N/A" ] && continue
 	    pkg_re=`echo "$pkg" | sed -e 's;/;\\\\/;g'`
-	    if awk <$tmp.list '
-BEGIN						{ sts=1 }
-$1 == "'"$pkg"'" || $1 ~ /^'"$pkg_re"'$/	{ sts=0; exit }
-END						{ exit sts }'
+	    if awk -F '|' <$tmp.list '
+BEGIN		{ sts=1 }
+		{ for (i = 1; i <= NF; i++) {
+		    if ($i == "'"$pkg"'" || $i ~ /^'"$pkg_re"'$/) {
+			sts=0
+			exit
+		    }
+		  }
+		}
+END		{ exit sts }'
 	    then
 		# included in list, is it available?
 		#
@@ -116,8 +125,20 @@ END						{ exit sts }'
 		if [ -z "$avail" ]
 		then
 		    echo "manifest:$lineno $pkg: in packing list, but not available?"
+		else
+		    touch $tmp.ok
+		    break
 		fi
-	    else
+	    fi
+	done
+	if [ ! -f $tmp.ok ]
+	then
+	    # no match from the list, so reprocess the packages in the
+	    # manifest line looking for available packages as candidates
+	    # to be added to the list
+	    #
+	    for pkg in $pkgs
+	    do
 		# not in list, unless it is to be skipped, or we have
 		# a required package for this manifest line, is it available?
 		#
@@ -126,9 +147,15 @@ END						{ exit sts }'
 		do
 		    skip_pkg_re=`echo "$skip_pkg" | sed -e 's;/;\\\\/;g'`
 		    if echo "$pkg" | awk '
-BEGIN							{ sts=1 }
-$1 == "'"$skip_pkg"'" || $1 ~ /^'"$skip_pkg_re"'$/	{ sts=0; exit }
-END							{ exit sts }'
+BEGIN		{ sts=1 }
+		{ for (i = 1; i <= NF; i++) {
+		    if ($i == "'"$skip_pkg"'" || $i ~ /^'"$skip_pkg_re"'$/) {
+			sts=0
+			exit
+		    }
+		  }
+		}
+END		{ exit sts }'
 		    then
 			$very_verbose && echo >&2 "$pkg ($skip_pkg): skipped"
 			touch $tmp.skipme
@@ -151,15 +178,15 @@ END							{ exit sts }'
 			fi
 		    fi
 		fi
-	    fi
-	done
+	    done
+	fi
     done
 
     # are the required ones all there?
     #
     for pkg in `cat $tmp.require`
     do
-	if egrep "(^$pkg )|(^$pkg$)" <$tmp.list >/dev/null
+	if grep -E "(^$pkg )|(^$pkg$)" <$tmp.list >/dev/null
 	then
 	    : OK
 	else
@@ -170,6 +197,7 @@ END							{ exit sts }'
     # and are all the packages in the packing list really available?
     #
     sed <$tmp.list -e '/cpan(/d' -e '/pip3(/d' \
+    | tr '|' '\012' \
     | while read pkg
     do
 	avail="`grep "^$pkg\$" <$tmp.allpkgs`"
@@ -374,11 +402,15 @@ then
 	    apt-cache dumpavail | sed -n -e '/^Package: /s///p' >$tmp.allpkgs
 	    ;;
 
-	RHEL|Fedora|CentOS|openSUSE|SUSE\ SLES)
+	RHEL|Fedora|CentOS|openSUSE|SUSE\ SLES|OpenMandriva)
 	    rpm -qa --qf '%{NAME}\n' >$tmp.installed
 	    if which zypper >/dev/null 2>&1
 	    then
-		: TODO
+		zypper packages 2>&1 \
+		| awk -F \| ' { print $3 }' \
+		| sed >$tmp.allpkgs \
+		    -e 's/  *//g' \
+		# end
 	    elif which dnf >/dev/null 2>&1
 	    then
 		( dnf list available; dnf list installed ) 2>&1 \
@@ -466,10 +498,6 @@ p
 	    :
 	    ;;
 
-	OpenMandriva)
-	    urpmi -qa --qf '%{NAME}\n' >$tmp.installed
-	    # TODO $tmp.allpkgs
-	    ;;
     esac
     if $missing && [ ! -f $tmp.installed ]
     then
@@ -499,10 +527,31 @@ sed <$tmp.list >$tmp.tmp \
 # end
 mv $tmp.tmp $tmp.list
 
+# do optional `cmd` expansion
+#
+if grep '`' $tmp.list >/dev/null
+then
+    rm -f $tmp.tmp
+    cat $tmp.list | while read pkg
+    do
+	case "$pkg"
+	in
+	    *'`'*'`'*)
+			eval echo $pkg >>$tmp.tmp
+			;;
+	    *)
+	    		echo "$pkg" >>$tmp.tmp
+			;;
+	esac
+    done
+    mv $tmp.tmp $tmp.list
+fi
+
 # strip comments, remaining tags, white space and empty lines
 #
 sed -n <$tmp.list >$tmp.tmp \
     -e 's/#.*//' \
+    -e 's/[ 	]*|[ 	]*/|/g' \
     -e 's/[ 	].*//' \
     -e 's/[ 	][ 	]*//g' \
     -e '/./p' \
@@ -568,9 +617,53 @@ then
 	# strip all packages in both $tmp.list and $tmp.installed and
 	# leave the result in $tmp.list
 	#
-	sort <$tmp.list >$tmp.1
-	sort <$tmp.installed >$tmp.2
-	comm -23 $tmp.1 $tmp.2 >$tmp.list
+	tr '|' '\012' <$tmp.list | sort | uniq >$tmp.1
+	sort <$tmp.installed | uniq >$tmp.2
+	if $very_verbose
+	then
+	    echo >&2 "Required:"
+	    cat $tmp.1 >&2
+	    echo >&2 "Installed:"
+	    cat $tmp.2 >&2
+	fi
+	comm -23 $tmp.1 $tmp.2 >$tmp.tmp
+	# now we may have alternates installed ...
+	#
+	rm -f $tmp.newlist
+	touch $tmp.newlist
+	cat $tmp.tmp \
+	| while read missing
+	do
+	    if grep "^$missing|" $tmp.list >$tmp.out
+	    then
+		# the primary package is missing ... if any of the
+		# alternates are present (not missing) then we're OK
+		#
+		rm -f $tmp.ok
+		cut -d '|' -f 2- <$tmp.out \
+		| tr '|' '\012' \
+		| sed -e '/^$/d' \
+		| while read alt
+		do
+		    if grep "^$alt$" $tmp.2 >/dev/null
+		    then
+			$verbose && echo >&2 "Info: missing: $missing OK because alternate $alt installed"
+			touch $tmp.ok
+			break
+		    fi
+		done
+		[ -f $tmp.ok ] || echo  "$missing" >>$tmp.newlist
+	    elif grep -E "\|$missing($|\|)" $tmp.list >$tmp.out
+	    then
+		# this is an alternate ... only report the primary
+		# (first on line) package if it is also missing
+		#
+		:
+	    else
+		echo  "$missing" >>$tmp.newlist
+	    fi
+	done
+	mv $tmp.newlist $tmp.list
     fi
 fi
 

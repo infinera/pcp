@@ -19,6 +19,9 @@
 # run in the foreground (not as a daemon)
 # -f
 
+# disable service advertising (comment out to enable)
+-A
+
 # maximum incoming PDU size (default 64KB)
 # -L 16384 
 
@@ -30,10 +33,6 @@
 #   2	trace PDUs
 # 256	unbuffered tracing
 # -T 3
-
-# setting of environment variables for pmcd and
-# the PCP rc scripts. See pmcd(1) and PMAPI(3).
-# PMCD_WAIT_TIMEOUT=120
 
 # PMNS controls
 # -n and -N are not recommended (the defaults work better in most cases)

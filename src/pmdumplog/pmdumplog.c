@@ -1,17 +1,19 @@
 /*
- * Copyright (c) 2014-2018 Red Hat.
+ * Copyright (c) 2014-2018,2021-2022 Red Hat.
  * Copyright (c) 1995-2002 Silicon Graphics, Inc.  All Rights Reserved.
- * 
+ *
  * This program is free software; you can redistribute it and/or modify it
  * under the terms of the GNU General Public License as published by the
  * Free Software Foundation; either version 2 of the License, or (at your
  * option) any later version.
- * 
+ *
  * This program is distributed in the hope that it will be useful, but
  * WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY
  * or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License
  * for more details.
  */
+
+#define PMAPI_VERSION 3
 
 #include "pmapi.h"
 #include "libpcp.h"
@@ -20,8 +22,8 @@
 #include <float.h>
 #include <sys/stat.h>
 #include <errno.h>
+#include "../libpcp/src/internal.h"
 
-static struct pmTimeval	pmtv;
 static char		timebuf[32];	/* for pmCtime result + .xxx */
 static int		numpmid;
 static pmID		*pmid;
@@ -29,7 +31,8 @@ static pmID		pmid_flags;
 static pmID		pmid_missed;
 static int		sflag;
 static int		xflag;		/* for -x (long timestamps) */
-static pmLogLabel	label;
+static __pmLogLabel	label;
+static int		version;	/* of input archive */
 
 static pmLongOptions longopts[] = {
     PMAPI_OPTIONS_HEADER("Options"),
@@ -38,6 +41,7 @@ static pmLongOptions longopts[] = {
     { "descs", 0, 'd', 0, "dump metric descriptions" },
     { "labelsets", 0, 'e', 0, "dump all metric label metadata" },
     { "helptext", 0, 'h', 0, "dump all metric help text" },
+    { "on-disk-insts", 0, 'I', 0, "dump on-disk instance domain descriptions" },
     { "insts", 0, 'i', 0, "dump instance domain descriptions" },
     { "", 0, 'L', 0, "more verbose form of archive label dump" },
     { "label", 0, 'l', 0, "dump the archive label" },
@@ -50,7 +54,7 @@ static pmLongOptions longopts[] = {
     PMOPT_FINISH,
     { "", 0, 't', 0, "dump the temporal index" },
     { "", 1, 'v', "FILE", "verbose hex dump of a physical file in raw format" },
-    { "", 0, 'x', 0, "include date in reported timestamps" },
+    { "", 0, 'x', 0, "include date, usec (-xx) and Epoch (-xxx) in reported timestamps" },
     PMOPT_TIMEZONE,
     PMOPT_HOSTZONE,
     PMOPT_VERSION,
@@ -60,33 +64,98 @@ static pmLongOptions longopts[] = {
 
 static int overrides(int, pmOptions *);
 static pmOptions opts = {
+    .version = PMAPI_VERSION_3,
     .flags = PM_OPTFLAG_DONE | PM_OPTFLAG_STDOUT_TZ | PM_OPTFLAG_BOUNDARIES,
-    .short_options = "aD:dehilLmMn:rS:sT:tv:xZ:z?",
+    .short_options = "aD:dehIilLmMn:rS:sT:tv:xZ:z?",
     .long_options = longopts,
     .short_usage = "[options] [archive [metricname ...]]",
     .override = overrides,
 };
 
-/*
- * return -1, 0 or 1 as the struct timeval's compare
- * a < b, a == b or a > b
- */
-static int
-tvcmp(struct timeval a, struct timeval b)
+static __pmContext	*ctxp;
+
+static void
+dump_timeval(struct timeval *stamp)
 {
-    if (a.tv_sec < b.tv_sec)
-	return -1;
-    if (a.tv_sec > b.tv_sec)
-	return 1;
-    if (a.tv_usec < b.tv_usec)
-	return -1;
-    if (a.tv_usec > b.tv_usec)
-	return 1;
-    return 0;
+    time_t	time = stamp->tv_sec;
+    int		usec = (int)stamp->tv_usec;
+    char	*yr = NULL;
+    char       	*ddmm;
+    struct tm	tm;
+
+    if (xflag) {
+	ddmm = pmCtime(&time, timebuf);
+	ddmm[10] = '\0';
+	yr = &ddmm[20];
+	printf("%s ", ddmm);
+    }
+    pmLocaltime(&time, &tm);
+    printf("%02d:%02d:%02d.%06d", tm.tm_hour, tm.tm_min, tm.tm_sec, usec);
+    if (xflag && yr)
+	printf(" %4.4s", yr);
+    if (xflag >= 2) {
+	struct timeval	start;
+	start.tv_sec = label.start.sec;
+	start.tv_usec = label.start.nsec / 1000;
+	printf(" (%.6f)", pmtimevalSub(stamp, &start));
+    }
+}
+
+/*
+ * HH:MM:SS.{NSEC|USEC}
+ */
+static void
+myPrintTimestamp(FILE *f, const __pmTimestamp *tsp)
+{
+    if (version == PM_LOG_VERS03)
+	__pmPrintTimestamp(f, tsp);
+    else {
+	/*
+	 * Like __pmPrintTimestamp, just with usec precision
+	 */
+	struct tm	tmp;
+	time_t		now;
+	now = (time_t)tsp->sec;
+	pmLocaltime(&now, &tmp);
+	fprintf(f, "%02d:%02d:%02d.%06d", tmp.tm_hour, tmp.tm_min, tmp.tm_sec, tsp->nsec / 1000);
+    }
+}
+
+/*
+ * ctime + HH:MM:SS.{NSEC|USEC}
+ */
+static void
+dump_pmTimestamp(const __pmTimestamp *tsp)
+{
+    time_t	time = tsp->sec;
+    char	*yr = NULL;
+    char       	*ddmm;
+    struct tm	tm;
+
+    if (xflag) {
+	ddmm = pmCtime(&time, timebuf);
+	ddmm[10] = '\0';
+	yr = &ddmm[20];
+	printf("%s ", ddmm);
+    }
+    pmLocaltime(&time, &tm);
+    myPrintTimestamp(stdout, tsp);
+    if (xflag && yr)
+	printf(" %4.4s", yr);
+    if (xflag >= 2) {
+	if (version == PM_LOG_VERS03)
+	    printf(" (%.9f)", __pmTimestampSub(tsp, &label.start));
+	else
+	    printf(" (%.6f)", __pmTimestampSub(tsp, &label.start));
+    }
+    if (xflag >= 3) {
+	/* seconds since the Epoch */
+	printf(" %" FMT_UINT64, (uint64_t)tsp->sec);
+    }
 }
 
 static int
-do_size(pmResult *rp)
+do_size(__pmResult *rp)
 {
     int		nbyte = 0;
     int		i;
@@ -100,15 +169,18 @@ do_size(pmResult *rp)
      * start with sizes of the header len, timestamp, numpmid, and
      * trailer len
      */
-    nbyte = sizeof(int) + sizeof(pmTimeval) + sizeof(int);
-    						/* len + timestamp + len */
-    nbyte += sizeof(int);
+    if (version == PM_LOG_VERS03)
+	nbyte = sizeof(__int32_t) + 3 * sizeof(__int32_t) + sizeof(__int32_t);
+    else
+	nbyte = sizeof(__int32_t) + 2 * sizeof(__int32_t) + sizeof(__int32_t);
+    							/* len + timestamp + len */
+    nbyte += sizeof(__int32_t);
     							/* numpmid */
     for (i = 0; i < rp->numpmid; i++) {
 	pmValueSet	*vsp = rp->vset[i];
-	nbyte += sizeof(pmID) + sizeof(int);		/* + pmid[i], numval */
+	nbyte += sizeof(pmID) + sizeof(__int32_t);	/* + pmid[i], numval */
 	if (vsp->numval > 0) {
-	    nbyte += sizeof(int);			/* + valfmt */
+	    nbyte += sizeof(__int32_t);			/* + valfmt */
 	    for (j = 0; j < vsp->numval; j++) {
 		nbyte += sizeof(__pmValue_PDU);		/* + pmValue[j] */
 		if (vsp->valfmt != PM_VAL_INSITU)
@@ -169,17 +241,17 @@ dump_nrecords(int nrecords, int nmissed)
 }
 
 static int
-dump_nparams(int numpmid)
+dump_nparams(int npmids)
 {
-    if (numpmid == 0) {
+    if (npmids == 0) {
 	printf(" ---\n");
 	printf("	          No parameters\n");
 	return -1;
     }
-    if (numpmid < 0) {
+    if (npmids < 0) {
 	printf(" ---\n");
 	printf("	          Error: illegal number of parameters (%d)\n",
-		numpmid);
+		npmids);
 	return -1;
     }
     return 0;
@@ -309,9 +381,7 @@ dump_event(int numnames, char **names, pmValueSet *vsp, int index, int indom, in
 
 	for (r = 0; r < nrecords; r++) {
 	    printf("        --- event record [%d] timestamp ", r);
-	    pmtv.tv_sec = res[r]->timestamp.tv_sec;
-	    pmtv.tv_usec = res[r]->timestamp.tv_usec;
-	    __pmPrintTimeval(stdout, &pmtv);
+	    dump_timeval(&res[r]->timestamp);
 	    if (dump_nparams(res[r]->numpmid) < 0)
 		continue;
 	    flags = 0;
@@ -355,7 +425,7 @@ dump_metric(int numnames, char **names, pmValueSet *vsp, int index, int indom, i
 }
 
 static void
-dump_result(pmResult *resp)
+dump_result(__pmResult *resp)
 {
     int		i;
     int		j;
@@ -369,28 +439,7 @@ dump_result(pmResult *resp)
 	printf("[%d bytes]\n", nbyte);
     }
 
-    if (xflag) {
-	char	       *ddmm;
-	char	       *yr;
-	time_t		time;
-
-	time = resp->timestamp.tv_sec;
-	ddmm = pmCtime(&time, timebuf);
-	ddmm[10] = '\0';
-	yr = &ddmm[20];
-	printf("%s ", ddmm);
-	pmtv.tv_sec = resp->timestamp.tv_sec;
-	pmtv.tv_usec = resp->timestamp.tv_usec;
-	__pmPrintTimeval(stdout, &pmtv);
-	printf(" %4.4s", yr);
-	if (xflag >= 2)
-	    printf(" (%.6f)", pmtimevalSub(&resp->timestamp, &label.ll_start));
-    }
-    else {
-	pmtv.tv_sec = resp->timestamp.tv_sec;
-	pmtv.tv_usec = resp->timestamp.tv_usec;
-	__pmPrintTimeval(stdout, &pmtv);
-    }
+    dump_pmTimestamp(&resp->timestamp);
 
     if (resp->numpmid == 0) {
 	printf("  <mark>\n");
@@ -442,7 +491,7 @@ next:
 }
 
 static void
-dumpDesc(__pmContext *ctxp)
+dumpDesc(void)
 {
     int			i;
     int			sts;
@@ -451,8 +500,8 @@ dumpDesc(__pmContext *ctxp)
     pmDesc		*dp;
 
     printf("\nDescriptions for Metrics in the Log ...\n");
-    for (i = 0; i < ctxp->c_archctl->ac_log->l_hashpmid.hsize; i++) {
-	for (hp = ctxp->c_archctl->ac_log->l_hashpmid.hash[i]; hp != NULL; hp = hp->next) {
+    for (i = 0; i < ctxp->c_archctl->ac_log->hashpmid.hsize; i++) {
+	for (hp = ctxp->c_archctl->ac_log->hashpmid.hash[i]; hp != NULL; hp = hp->next) {
 	    dp = (pmDesc *)hp->data;
 	    names = NULL; /* silence coverity */
 	    sts = pmNameAll(dp->pmid, &names);
@@ -470,16 +519,107 @@ dumpDesc(__pmContext *ctxp)
 }
 
 static void
-dumpInDom(__pmContext *ctxp)
+dumpDiskInDom(void)
+{
+    size_t	n;
+    size_t	rlen;
+    __int32_t	check;
+    __pmLogHdr	hdr;
+    __pmLogCtl	*lcp = ctxp->c_archctl->ac_log;
+    __pmFILE	*f = lcp->mdfp;
+
+    printf("\nInstance Domains on-disk ...\n");
+
+    __pmFseek(f, (long)__pmLogLabelSize(lcp), SEEK_SET);
+    for ( ; ; ) {
+	n = __pmFread(&hdr, 1, sizeof(__pmLogHdr), f);
+	hdr.len = ntohl(hdr.len);
+	hdr.type = ntohl(hdr.type);
+	if (n != sizeof(__pmLogHdr)) {
+            if (__pmFeof(f)) {
+		/* end-of-file, all done. */
+                return;
+            }
+	    if (__pmFerror(f)) {
+		fprintf(stderr, "dumpDiskInDom: hdr __pmFread(%zd) -> %s\n", sizeof(__pmLogHdr), pmErrStr(-oserror())); 
+		return;
+	    }
+	    fprintf(stderr, "dumpDiskInDom: Botch: hdr __pmFread(%zd) -> %zd\n", sizeof(__pmLogHdr), n);
+	    return;
+	}
+	if (hdr.len <= 0) {
+	    fprintf(stderr, "dumpDiskInDom: Botch: hdr.len < 0 (%d)\n", hdr.len);
+	    return;
+	}
+	rlen = (size_t)hdr.len - sizeof(__pmLogHdr) - sizeof(__int32_t);
+	if (hdr.type == TYPE_INDOM || hdr.type == TYPE_INDOM_DELTA || hdr.type == TYPE_INDOM_V2) {
+	    __pmLogInDom	lid;
+	    __int32_t		*buf;
+	    int			sts;;
+	    int			i;
+
+	    if ((sts = __pmLogLoadInDom(ctxp->c_archctl, rlen, hdr.type, &lid, &buf)) < 0) {
+		fprintf(stderr, "dumpDiskInDom: __pmLogLoadInDom failed: %s\n", pmErrStr(sts));
+		exit(1);
+	    }
+	    dump_pmTimestamp(&lid.stamp);
+	    printf(" InDom: %s", pmInDomStr(lid.indom));
+	    if (hdr.type == TYPE_INDOM_DELTA)
+		printf(" delta");
+	    printf(" %d instances\n", lid.numinst);
+	    if (lid.numinst > 0) {
+	        for (i = 0; i < lid.numinst; i++) {
+		    if (hdr.type == TYPE_INDOM_DELTA) {
+			if (lid.namelist[i] == NULL)
+			    printf("   del %d\n", lid.instlist[i]);
+			else
+			    printf("   add %d or \"%s\"\n", lid.instlist[i], lid.namelist[i]);
+		    }
+		    else if (lid.namelist[i] != NULL)
+			printf("   %d or \"%s\"\n", lid.instlist[i], lid.namelist[i]);
+		    else {
+			fprintf(stderr, "dumpDiskInDom: Botch: indom record type %d and namelist[%d] (inst %d) is NULL\n", hdr.type, i, lid.instlist[i]);
+			exit(1);
+		    }
+		}
+		fflush(stdout);
+	    }
+	    free(buf);
+	    __pmFreeLogInDom(&lid);
+	}
+	else {
+	    /*
+	     * skip this record, not TYPE_INDOM nor TYPE_INDOM_DELTA nor
+	     * TYPE_INDOM_V2
+	     */
+	    __pmFseek(f, (off_t)rlen, SEEK_CUR);
+	}
+	/* trailer check */
+	n = __pmFread(&check, 1, sizeof(check), f);
+	if (n != sizeof(check)) {
+	    fprintf(stderr, "dumpDiskInDom: Botch: trailer __pmFread(%zd) -> %zd\n", sizeof(__pmLogHdr), n);
+	    return;
+	}
+	check = ntohl(check);
+	if (hdr.len != check) {
+	    fprintf(stderr, "dumpDiskInDom: Botch: trailer len (%d) != hdr len (%d)\n", check, hdr.len);
+	    return;
+	}
+    }
+}
+
+static void
+dumpInDom(void)
 {
     int		i;
     int		j;
     __pmHashNode	*hp;
     __pmLogInDom	*idp;
     __pmLogInDom	*ldp;
+
     printf("\nInstance Domains in the Log ...\n");
-    for (i = 0; i < ctxp->c_archctl->ac_log->l_hashindom.hsize; i++) {
-	for (hp = ctxp->c_archctl->ac_log->l_hashindom.hash[i]; hp != NULL; hp = hp->next) {
+    for (i = 0; i < ctxp->c_archctl->ac_log->hashindom.hsize; i++) {
+	for (hp = ctxp->c_archctl->ac_log->hashindom.hash[i]; hp != NULL; hp = hp->next) {
 	    printf("InDom: %s\n", pmInDomStr((pmInDom)hp->key));
 	    /*
 	     * in reverse chronological order, so iteration is a bit funny
@@ -488,12 +628,15 @@ dumpInDom(__pmContext *ctxp)
 	    for ( ; ; ) {
 		for (idp = (__pmLogInDom *)hp->data; idp->next != ldp; idp =idp->next)
 			;
-		__pmPrintTimeval(stdout, &idp->stamp);
+		if (idp->isdelta)
+		    __pmLogUndeltaInDom((pmInDom)hp->key, idp);
+		dump_pmTimestamp(&idp->stamp);
 		printf(" %d instances\n", idp->numinst);
 		for (j = 0; j < idp->numinst; j++) {
 		    printf("   %d or \"%s\"\n",
 			idp->instlist[j], idp->namelist[j]);
 		}
+		fflush(stdout);
 		if (idp == (__pmLogInDom *)hp->data)
 		    break;
 		ldp = idp;
@@ -503,13 +646,13 @@ dumpInDom(__pmContext *ctxp)
 }
 
 static void
-dumpHelpText(__pmContext *ctxp)
+dumpHelpText(void)
 {
     int			tix, cix, hix;
     unsigned int	type;
     unsigned int	class;
     unsigned int	ident;
-    __pmHashCtl		*l_hashtext;
+    __pmHashCtl		*hashtext;
     const __pmHashCtl	*l_hashtype;
     const __pmHashNode	*hp, *tp;
     const __pmHashNode	*this_item[2], *prev_item[2];
@@ -526,7 +669,7 @@ dumpHelpText(__pmContext *ctxp)
      *   identifier, then by
      *   class (PM_TEXT_ONELINE, PM_TEXT_HELP).
      */
-    l_hashtext = &ctxp->c_archctl->ac_log->l_hashtext;
+    hashtext = &ctxp->c_archctl->ac_log->hashtext;
     for (tix = 0; tix < 2; ++tix) {
 	type = textTypes[tix];
 
@@ -541,7 +684,7 @@ dumpHelpText(__pmContext *ctxp)
 		this_item[cix] = NULL;
 
 		class = textClasses[cix];
-		hp = __pmHashSearch(type | class, l_hashtext);
+		hp = __pmHashSearch(type | class, hashtext);
 		if (hp == NULL)
 		    continue;
 
@@ -592,19 +735,19 @@ dumpHelpText(__pmContext *ctxp)
 }
 
 static void
-dumpLabelSets(__pmContext *ctxp)
+dumpLabelSets(void)
 {
     int				lix;
     int				tix;
     unsigned int		type;
     unsigned int		ident;
-    __pmHashCtl			*l_hashlabels;
+    __pmHashCtl			*hashlabels;
     const __pmHashCtl		*l_hashtype;
     const __pmHashNode		*hp, *tp;
     const __pmHashNode		*this_item, *prev_item;
     const __pmLogLabelSet	*p;
     double			tdiff, min_diff;
-    pmTimeval			this_stamp, prev_stamp;
+    __pmTimestamp		this_stamp, prev_stamp;
     /* Print the label types in this order. */
     unsigned int labelTypes[] = {
 	PM_LABEL_CONTEXT,
@@ -624,19 +767,19 @@ dumpLabelSets(__pmContext *ctxp)
      *   type, then by
      *   identifier
      */
-    l_hashlabels = &ctxp->c_archctl->ac_log->l_hashlabels;
-    prev_stamp.tv_sec = 0;
-    prev_stamp.tv_usec = 0;
+    hashlabels = &ctxp->c_archctl->ac_log->hashlabels;
+    prev_stamp.sec = 0;
+    prev_stamp.nsec = 0;
     for (;;) {
 	/* find the next earliest time stamp. */
 	min_diff = DBL_MAX;
-	for (lix = 0; lix < l_hashlabels->hsize; ++lix) {
-	    for (hp = l_hashlabels->hash[lix]; hp != NULL; hp = hp->next) {
+	for (lix = 0; lix < hashlabels->hsize; ++lix) {
+	    for (hp = hashlabels->hash[lix]; hp != NULL; hp = hp->next) {
 		l_hashtype = (__pmHashCtl *)hp->data;
 		for (tix = 0; tix < l_hashtype->hsize; tix++) {
 		    for (tp = l_hashtype->hash[tix]; tp != NULL; tp = tp->next) {
 			for (p = (__pmLogLabelSet *)tp->data; p != NULL; p = p->next) {
-			    tdiff = __pmTimevalSub(&p->stamp, &prev_stamp);
+			    tdiff = __pmTimestampSub(&p->stamp, &prev_stamp);
 			    /*
 			     * The chains are sorted in reverse chronological
 			     * order so, if this time stamp is less than or
@@ -662,12 +805,12 @@ dumpLabelSets(__pmContext *ctxp)
 	 * Now print all the label sets at this time stamp.
 	 * Sort by type and then identifier.
 	 */
-	__pmPrintTimeval(stdout, &this_stamp);
+	dump_pmTimestamp(&this_stamp);
 	putchar('\n');
 	for (lix = 0; lix < sizeof(labelTypes) / sizeof(*labelTypes); ++lix) {
 	    /* Are there labels of this type? */
 	    type = labelTypes[lix];
-	    hp = __pmHashSearch(type, l_hashlabels);
+	    hp = __pmHashSearch(type, hashlabels);
 	    if (hp == NULL)
 		continue;
 
@@ -716,7 +859,7 @@ dumpLabelSets(__pmContext *ctxp)
 		 */
 		; 
 		for (p = (__pmLogLabelSet *)this_item->data; p != NULL; p = p->next){
-		    if (__pmTimevalSub(&p->stamp, &this_stamp) != 0.0)
+		    if (__pmTimestampSub(&p->stamp, &this_stamp) != 0.0)
 			continue;
 		    ident = (unsigned int)this_item->key;
 		    pmPrintLabelSets(stdout, ident, type, p->labelsets, p->nsets);
@@ -730,47 +873,53 @@ dumpLabelSets(__pmContext *ctxp)
 }
 
 static void
-dumpTI(__pmContext *ctxp)
+dumpTI(void)
 {
-    int		i;
-    char	path[MAXPATHLEN];
-    off_t	meta_size = -1;		/* initialize to pander to gcc */
-    off_t	log_size = -1;		/* initialize to pander to gcc */
-    struct stat	sbuf;
-    __pmLogTI	*tip;
-    __pmLogTI	*lastp;
-    __pmLogCtl  *lcp;
-    
-    lcp = ctxp->c_archctl->ac_log;
+    __pmLogCtl	*lcp = ctxp->c_archctl->ac_log;
 
     printf("\nTemporal Index\n");
+    if (xflag)
+	printf("\t\t");
+    if (xflag >= 2)
+	printf("\t\t");
+    if (version == PM_LOG_VERS03)
+	putchar('\t');
     printf("\t\tLog Vol    end(meta)     end(log)\n");
-    lastp = NULL;
-    for (i = 0; i < ctxp->c_archctl->ac_log->l_numti; i++) {
-	tip = &ctxp->c_archctl->ac_log->l_ti[i];
-	__pmPrintTimeval(stdout, &tip->ti_stamp);
-	printf("\t  %5d  %11d  %11d\n", tip->ti_vol, tip->ti_meta, tip->ti_log);
+    char		path[MAXPATHLEN];
+    off_t		meta_size = -1;
+    off_t		log_size = -1;
+    struct stat		sbuf;
+    __pmLogTI		*tip;
+    __pmLogTI		*lastp = NULL;
+    int			i;
+
+    for (i = 0; i < lcp->numti; i++) {
+	tip = &lcp->ti[i];
+	dump_pmTimestamp(&tip->stamp);
+	printf("\t  %5d  %11lld  %11lld\n", tip->vol,
+		(long long)tip->off_meta, (long long)tip->off_data);
 	if (i == 0) {
-	    pmsprintf(path, sizeof(path), "%s.meta", lcp->l_name);
+	    pmsprintf(path, sizeof(path), "%s.meta", lcp->name);
 	    if (__pmStat(path, &sbuf) == 0)
 		meta_size = sbuf.st_size;
 	    else
 		meta_size = -1;
 	}
-	if (lastp == NULL || tip->ti_vol != lastp->ti_vol) { 
-	    pmsprintf(path, sizeof(path), "%s.%d", lcp->l_name, tip->ti_vol);
+	if (lastp == NULL || tip->vol != lastp->vol) { 
+	    pmsprintf(path, sizeof(path), "%s.%d", lcp->name, tip->vol);
 	    if (__pmStat(path, &sbuf) == 0)
 		log_size = sbuf.st_size;
 	    else {
 		log_size = -1;
-		printf("\t\tWarning: file missing for log volume %d\n", tip->ti_vol);
+		printf("\t\tWarning: file missing for log volume %d\n",
+				tip->vol);
 	    }
 	}
 	/*
 	 * Integrity Errors
 	 *
-	 * this(tv_sec) < 0
-	 * this(tv_usec) < 0 || this(tv_usec) > 999999
+	 * this(sec) < 0
+	 * this(nsec) < 0 || this(nsec) > 999999999
 	 * this(timestamp) < last(timestamp)
 	 * this(vol) < last(vol)
 	 * this(vol) == last(vol) && this(meta) <= last(meta)
@@ -783,28 +932,31 @@ dumpTI(__pmContext *ctxp)
 	 *
 	 * this(vol) != last(vol) && !file_exists(<base>.this(vol))
 	 */
-	if (tip->ti_stamp.tv_sec < 0 ||
-	    tip->ti_stamp.tv_usec < 0 || tip->ti_stamp.tv_usec > 999999)
-	    printf("\t\tError: illegal timestamp value (%d sec, %d usec)\n",
-		tip->ti_stamp.tv_sec, tip->ti_stamp.tv_usec);
-	if (meta_size != -1 && tip->ti_meta > meta_size)
-	    printf("\t\tError: offset to meta file past end of file (%ld)\n",
-		(long)meta_size);
-	if (log_size != -1 && tip->ti_log > log_size)
-	    printf("\t\tError: offset to log file past end of file (%ld)\n",
-		(long)log_size);
+	if (tip->stamp.sec < 0 ||
+	    tip->stamp.nsec < 0 || tip->stamp.nsec > 999999999)
+	    printf("\t\tError: illegal timestamp value (%" FMT_INT64 " sec, %d nsec)\n",
+		tip->stamp.sec, tip->stamp.nsec);
+	if (meta_size != -1 && tip->off_meta > meta_size)
+	    printf("\t\tError: offset to meta file past end of file (%lld)\n",
+		(long long)meta_size);
+	if (log_size != -1 && tip->off_data > log_size)
+	    printf("\t\tError: offset to log file past end of file (%lld)\n",
+		(long long)log_size);
 	if (i > 0) {
-	    if (tip->ti_stamp.tv_sec < lastp->ti_stamp.tv_sec ||
-	        (tip->ti_stamp.tv_sec == lastp->ti_stamp.tv_sec &&
-	         tip->ti_stamp.tv_usec < lastp->ti_stamp.tv_usec))
-		printf("\t\tError: timestamp went backwards in time %d.%06d -> %d.%06d\n",
-			(int)lastp->ti_stamp.tv_sec, (int)lastp->ti_stamp.tv_usec,
-			(int)tip->ti_stamp.tv_sec, (int)tip->ti_stamp.tv_usec);
-	    if (tip->ti_vol < lastp->ti_vol)
+	    if (tip->stamp.sec < lastp->stamp.sec ||
+	        (tip->stamp.sec == lastp->stamp.sec &&
+	         tip->stamp.nsec < lastp->stamp.nsec)) {
+		printf("\t\tError: timestamp went backwards in time ");
+		myPrintTimestamp(stdout, &lastp->stamp);
+		printf(" -> ");
+		myPrintTimestamp(stdout, &tip->stamp);
+		putchar('\n');
+	    }
+	    if (tip->vol < lastp->vol)
 		printf("\t\tError: volume number decreased\n");
-	    if (tip->ti_vol == lastp->ti_vol && tip->ti_meta < lastp->ti_meta)
+	    if (tip->vol == lastp->vol && tip->off_meta < lastp->off_meta)
 		printf("\t\tError: offset to meta file decreased\n");
-	    if (tip->ti_vol == lastp->ti_vol && tip->ti_log < lastp->ti_log)
+	    if (tip->vol == lastp->vol && tip->off_data < lastp->off_data)
 		printf("\t\tError: offset to log file decreased\n");
 	}
 	lastp = tip;
@@ -814,57 +966,76 @@ dumpTI(__pmContext *ctxp)
 static void
 dumpLabel(int verbose)
 {
-    char	*ddmm;
-    char	*yr;
-    pmTimeval	stamp;
-    time_t	time;
+    char		*ddmm;
+    char		*yr;
+    __pmTimestamp	end;
+    time_t		time;
 
-    printf("Log Label (Log Format Version %d)\n", label.ll_magic & 0xff);
-    printf("Performance metrics from host %s\n", label.ll_hostname);
+    printf("Log Label (Log Format Version %d)\n", version);
+    printf("Performance metrics from host %s\n", label.hostname);
 
-    time = label.ll_start.tv_sec;
+    time = label.start.sec;
     ddmm = pmCtime(&time, timebuf);
     ddmm[10] = '\0';
     yr = &ddmm[20];
     printf("    commencing %s ", ddmm);
-    stamp.tv_sec = label.ll_start.tv_sec;
-    stamp.tv_usec = label.ll_start.tv_usec;
-    __pmPrintTimeval(stdout, &stamp);
-    printf(" %4.4s\n", yr);
+    myPrintTimestamp(stdout, &label.start);
+    printf(" %4.4s", yr);
+    if (xflag >= 3)
+	printf(" %" FMT_UINT64, (uint64_t)label.start.sec);
+    putchar('\n');
 
-    if (opts.finish.tv_sec == INT_MAX) {
-	/* pmGetArchiveEnd() failed! */
+    if (__pmGetArchiveEnd(ctxp->c_archctl, &end) < 0) {
+	/* __pmGetArchiveEnd() failed! */
 	printf("    ending     UNKNOWN\n");
     }
     else {
-	time = opts.finish.tv_sec;
+	time = end.sec;
 	ddmm = pmCtime(&time, timebuf);
 	ddmm[10] = '\0';
 	yr = &ddmm[20];
 	printf("    ending     %s ", ddmm);
-	stamp.tv_sec = opts.finish.tv_sec;
-	stamp.tv_usec = opts.finish.tv_usec;
-	__pmPrintTimeval(stdout, &stamp);
-	printf(" %4.4s\n", yr);
+	myPrintTimestamp(stdout, &end);
+	printf(" %4.4s", yr);
+	if (xflag >= 3)
+	    printf(" %" FMT_UINT64, (uint64_t)end.sec);
+	putchar('\n');
     }
 
     if (verbose) {
-	printf("Archive timezone: %s\n", label.ll_tz);
-	printf("PID for pmlogger: %" FMT_PID "\n", label.ll_pid);
+	if (label.timezone != NULL && label.timezone[0] != '\0')
+	    printf("Archive timezone: %s\n", label.timezone);
+	if (label.zoneinfo != NULL && label.zoneinfo[0] != '\0')
+	    printf("Archive zoneinfo: %s\n", label.zoneinfo);
+	if (label.features != 0) {
+	    __uint32_t	mask = ~(PM_LOG_FEATURES);
+	    printf("Archive features: 0x%x", label.features);
+	    if (label.features & mask) {
+		char	*bits = __pmLogFeaturesStr(label.features & mask);
+		if (bits != NULL) {
+		    printf(" [unknown: %s]", bits);
+		    free(bits);
+		}
+		else
+		    printf(" [unknown: 0x%x]", label.features & mask);
+	    }
+	    putchar('\n');
+	}
+	printf("PID for pmlogger: %" FMT_PID "\n", label.pid);
     }
 }
 
 static void
 rawdump(FILE *f)
 {
-    long	old;
+    off_t	old;
     int		len;
     int		check;
     int		i;
     int		sts;
 
     if ((old = ftell(f)) < 0) {
-	fprintf(stderr, "rawdump: Botch: ftell(%p) -> %ld (%s)\n", f, old, pmErrStr(-errno));
+	fprintf(stderr, "rawdump: Botch: ftell(%p) -> %lld (%s)\n", f, (long long)old, pmErrStr(-errno));
 	return;
     }
 
@@ -873,7 +1044,7 @@ rawdump(FILE *f)
 
     while ((sts = fread(&len, 1, sizeof(len), f)) == sizeof(len)) {
 	len = ntohl(len);
-	printf("Dump ... record len: %d @ offset: %" FMT_UINT64, len, (__uint64_t)(ftell(f) - sizeof(len)));
+	printf("Dump ... record len: %d @ offset: %lld", len, (long long)(ftell(f) - sizeof(len)));
 	len -= 2 * sizeof(len);
 	for (i = 0; i < len; i++) {
 	    check = fgetc(f);
@@ -901,7 +1072,7 @@ rawdump(FILE *f)
     if (sts < 0)
 	printf("fread fails: %s\n", osstrerror());
     if (fseek(f, old, SEEK_SET) < 0)
-	fprintf(stderr, "Warning: fseek(..., %ld, ...) failed: %s\n", old, pmErrStr(-oserror()));
+	fprintf(stderr, "Warning: fseek(..., %lld, ...) failed: %s\n", (long long)old, pmErrStr(-oserror()));
 }
 
 static void
@@ -922,8 +1093,9 @@ dometric(const char *name)
 }
 
 static int
-overrides(int opt, pmOptions *opts)
+overrides(int opt, pmOptions *options)
 {
+    (void)options;
     if (opt == 'a' || opt == 'h' || opt == 'L' || opt == 's' || opt == 't')
 	return 1;
     return 0;
@@ -960,6 +1132,7 @@ main(int argc, char *argv[])
     int			dflag = 0;
     int			eflag = 0;
     int			hflag = 0;
+    int			Iflag = 0;
     int			iflag = 0;
     int			Lflag = 0;
     int			lflag = 0;
@@ -968,11 +1141,10 @@ main(int argc, char *argv[])
     int			tflag = 0;
     int			vflag = 0;
     int			mode = PM_MODE_FORW;
-    __pmContext		*ctxp;
-    pmResult		*raw_result;
-    pmResult		*skel_result = NULL;
-    pmResult		*result;
-    struct timeval	done;
+    __pmResult		*raw_result;
+    __pmResult		*skel_result = NULL;
+    __pmResult		*result;
+    __pmTimestamp	done;
 
     while ((c = pmGetOptions(argc, argv, &opts)) != EOF) {
 	switch (c) {
@@ -991,6 +1163,10 @@ main(int argc, char *argv[])
 
 	case 'h':	/* dump all help texts */
 	    hflag = 1;
+	    break;
+
+	case 'I':	/* dump on-disk instance domains */
+	    Iflag = 1;
 	    break;
 
 	case 'i':	/* dump instance domains */
@@ -1032,7 +1208,8 @@ main(int argc, char *argv[])
 	    break;
 
 	case 'x':	/* report Ddd Mmm DD <timestamp> YYYY */
-			/* -xx reports numeric timeval also */
+			/* -xx reports time offset from start of archive also */
+			/* -xxx reports Epoch time also */
 	    xflag++;
 	    break;
 	}
@@ -1058,7 +1235,7 @@ main(int argc, char *argv[])
 	exit(0);
     }
 
-    if (dflag + eflag + hflag + iflag + lflag + mflag + tflag == 0)
+    if (dflag + eflag + hflag + Iflag + iflag + lflag + mflag + tflag == 0)
 	mflag = 1;	/* default */
 
     /* delay option end processing until now that we have the archive name */
@@ -1075,10 +1252,17 @@ main(int argc, char *argv[])
     }
 
     if ((sts = ctxid = pmNewContext(PM_CONTEXT_ARCHIVE, opts.archives[0])) < 0) {
-	fprintf(stderr, "%s: Cannot open archive \"%s\": %s\n",
-		pmGetProgname(), opts.archives[0], pmErrStr(sts));
-	exit(1);
+	if (sts == PM_ERR_FEATURE) {
+	    fprintf(stderr, "%s: Warning: unsupported feature bits, other errors may follow ...\n", pmGetProgname());
+	    sts = ctxid = pmNewContext(PM_CONTEXT_ARCHIVE | PM_CTXFLAG_NO_FEATURE_CHECK, opts.archives[0]);
+	}
+	if (sts < 0) {
+	    fprintf(stderr, "%s: Cannot open archive \"%s\": %s\n",
+		    pmGetProgname(), opts.archives[0], pmErrStr(sts));
+	    exit(1);
+	}
     }
+
     /* complete TZ and time window option (origin) setup */
     if (pmGetContextOptions(ctxid, &opts)) {
 	pmflush();
@@ -1113,24 +1297,6 @@ main(int argc, char *argv[])
 	}
     }
 
-    if ((sts = pmGetArchiveLabel(&label)) < 0) {
-	fprintf(stderr, "%s: Cannot get archive label record: %s\n",
-		pmGetProgname(), pmErrStr(sts));
-	exit(1);
-    }
-
-    if (numpmid > 0) {
-	/*
-	 * setup dummy pmResult
-	 */
-	skel_result = (pmResult *)malloc(sizeof(pmResult)+(numpmid-1)*sizeof(pmValueSet *));
-	if (skel_result == NULL) {
-	    fprintf(stderr, "%s: malloc(skel_result): %s\n", pmGetProgname(), osstrerror());
-	    exit(1);
-
-	}
-    }
-
     if ((ctxp = __pmHandleToPtr(ctxid)) == NULL) {
 	fprintf(stderr, "%s: botch: __pmHandleToPtr(%d) returns NULL!\n",
 		pmGetProgname(), ctxid);
@@ -1145,12 +1311,32 @@ main(int argc, char *argv[])
      */
     PM_UNLOCK(ctxp->c_lock);
 
+    memset((void *)&label, 0, sizeof(label));
+    if ((sts = __pmLogLoadLabel(ctxp->c_archctl->ac_mfp, &label)) < 0) {
+	fprintf(stderr, "%s: Cannot get archive label record: %s\n",
+		pmGetProgname(), pmErrStr(sts));
+	exit(1);
+    }
+    version = label.magic & 0xff;
+
+    if (numpmid > 0) {
+	/*
+	 * setup dummy __pmResult
+	 */
+	skel_result = __pmAllocResult(numpmid);
+	if (skel_result == NULL) {
+	    fprintf(stderr, "%s: malloc(skel_result): %s\n", pmGetProgname(), osstrerror());
+	    exit(1);
+	}
+    }
+
     if (mode == PM_MODE_FORW)
-	sts = pmSetMode(mode, &opts.start, 0);
-    else
-	sts = pmSetMode(mode, &opts.finish, 0);
+	sts = pmSetModeHighRes(mode, &opts.start, NULL);
+    else {
+	sts = pmSetModeHighRes(mode, &opts.finish, NULL);
+    }
     if (sts < 0) {
-	fprintf(stderr, "%s: pmSetMode: %s\n", pmGetProgname(), pmErrStr(sts));
+	fprintf(stderr, "%s: pmSetModeHighRes: %s\n", pmGetProgname(), pmErrStr(sts));
 	exit(1);
     }
 
@@ -1158,41 +1344,46 @@ main(int argc, char *argv[])
 	dumpLabel(Lflag);
 
     if (dflag)
-	dumpDesc(ctxp);
+	dumpDesc();
 
     if (eflag)
-	dumpLabelSets(ctxp);
+	dumpLabelSets();
 
     if (hflag)
-	dumpHelpText(ctxp);
+	dumpHelpText();
+
+    if (Iflag)
+	dumpDiskInDom();
 
     if (iflag)
-	dumpInDom(ctxp);
+	dumpInDom();
 
     if (tflag)
-	dumpTI(ctxp);
+	dumpTI();
 
     if (mflag) {
 	if (mode == PM_MODE_FORW) {
 	    if (opts.start_optarg != NULL || opts.finish_optarg != NULL) {
 		/* -S or -T */
-		done = opts.finish;
+		done.sec = opts.finish.tv_sec;
+		done.nsec = opts.finish.tv_nsec;
 	    }
 	    else {
-		/* read the whole archive */
-		done.tv_sec = INT_MAX;
-		done.tv_usec = 0;
+		/* read the whole archive forward */
+		done.sec = INT_MAX;
+		done.nsec = 0;
 	    }
 	}
 	else {
 	    if (opts.start_optarg != NULL || opts.finish_optarg != NULL) {
 		/* -S or -T */
-		done = opts.start;
+		done.sec = opts.start.tv_sec;
+		done.nsec = opts.start.tv_nsec;
 	    }
 	    else {
 		/* read the whole archive backwards */
-		done.tv_sec = 0;
-		done.tv_usec = 0;
+		done.sec = 0;
+		done.nsec = 0;
 	    }
 	}
 	sts = 0;
@@ -1213,6 +1404,7 @@ main(int argc, char *argv[])
 		 */
 		int	picked = 0;
 		int	j;
+
 		skel_result->timestamp = raw_result->timestamp;
 		for (j = 0; j < numpmid; j++)
 		    skel_result->vset[j] = NULL;
@@ -1227,15 +1419,13 @@ main(int argc, char *argv[])
 		}
 		if (picked == 0) {
 		    /* no metrics of interest, skip this record */
-		    pmFreeResult(raw_result);
+		    __pmFreeResult(raw_result);
 		    continue;
 		}
 		skel_result->numpmid = picked;
 		if (picked != numpmid) {
 		    /* did not find 'em all ... shuffle time */
-		    int		j;
-		    i = 0;
-		    for (j = 0; j < numpmid; j++) {
+		    for (i = j = 0; j < numpmid; j++) {
 			if (skel_result->vset[j] != NULL)
 			    skel_result->vset[i++] = skel_result->vset[j];
 		    }
@@ -1244,22 +1434,24 @@ main(int argc, char *argv[])
 	    }
 	    else {
 		/* not interesting */
-		pmFreeResult(raw_result);
+		__pmFreeResult(raw_result);
 		continue;
 	    }
 	    if (first && mode == PM_MODE_BACK) {
 		first = 0;
 		printf("\nLog finished at %24.24s - dump in reverse order\n",
-			pmCtime((const time_t *)&result->timestamp.tv_sec, timebuf));
+			pmCtime((const time_t *)&result->timestamp.sec, timebuf));
 	    }
-	    if ((mode == PM_MODE_FORW && tvcmp(result->timestamp, done) > 0) ||
-		(mode == PM_MODE_BACK && tvcmp(result->timestamp, done) < 0)) {
+	    if ((mode == PM_MODE_FORW &&
+		 __pmTimestampCmp(&result->timestamp, &done) > 0) ||
+		(mode == PM_MODE_BACK &&
+		 __pmTimestampCmp(&result->timestamp, &done) < 0)) {
 		sts = PM_ERR_EOL;
 		break;
 	    }
 	    putchar('\n');
 	    dump_result(result);
-	    pmFreeResult(raw_result);
+	    __pmFreeResult(raw_result);
 	}
 	if (sts != PM_ERR_EOL) {
 	    fprintf(stderr, "%s: pmFetch: %s\n", pmGetProgname(), pmErrStr(sts));

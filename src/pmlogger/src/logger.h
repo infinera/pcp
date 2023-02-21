@@ -1,12 +1,12 @@
 /*
- * Copyright (c) 2014-2016,2018 Red Hat.
+ * Copyright (c) 2014-2016,2018,2022 Red Hat.
  * Copyright (c) 1995-2001 Silicon Graphics, Inc.  All Rights Reserved.
- * 
+ *
  * This program is free software; you can redistribute it and/or modify it
  * under the terms of the GNU General Public License as published by the
  * Free Software Foundation; either version 2 of the License, or (at your
  * option) any later version.
- * 
+ *
  * This program is distributed in the hope that it will be useful, but
  * WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY
  * or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License
@@ -15,9 +15,17 @@
 #ifndef _LOGGER_H
 #define _LOGGER_H
 
-#include "pmapi.h"
-#include "libpcp.h"
+#include <pcp/pmapi.h>
+#include <pcp/libpcp.h>
+#include <pcp/archive.h>
 #include <assert.h>
+
+/*
+ * Pass 0 and name cache helpers
+ */
+extern FILE *pass0(FILE *);
+extern int cache_lookup(char *, pmID *, pmDesc *);
+extern void cache_free(void);
 
 /*
  * a task is a bundle of fetches to be done together - it
@@ -25,7 +33,8 @@
  * file curly-brace-enclosed block, but no longer does.
  */
 typedef struct task_s {
-    struct task_s	*t_next;
+    struct task_s	*t_next;	/* linked list of all tasks */
+    struct task_s	*t_alarmed;	/* linked list of alarmed tasks */
     struct timeval	t_delta;
     int			t_state;	/* logging state */
     int			t_numpmid;
@@ -109,9 +118,9 @@ typedef struct {
 #define VOL_SW_MAX     5
 
 /* initial time of day from remote PMCD */
-extern struct timeval	epoch;
+extern __pmTimestamp	epoch;
 
-/* offset to start of last written pmResult */
+/* offset to start of last written result */
 extern int	last_log_offset;
 
 /* yylex() gets input from here ... */
@@ -120,7 +129,7 @@ extern FILE		*yyin;
 extern char		*configfile;
 extern int		lineno;
 
-extern int myFetch(int, pmID *, __pmPDU **);
+extern int myFetch(int, pmID *, __pmResult **);
 extern void yyerror(char *);
 extern void yywarn(char *);
 extern void yylinemarker(char *);
@@ -138,14 +147,14 @@ extern int chk_all(task_t *, pmID);
 extern int newvolume(int);
 extern void validate_metrics(void);
 extern void check_dynamic_metrics();
-extern int do_control_req(pmResult *, int, int, int, int);
+extern int do_control_req(__pmResult *, int, int, int, int);
 
 extern void disconnect(int);
 extern int reconnect(void);
+extern void prep_fqdn(void);
 extern int do_prologue(void);
 extern int do_epilogue(void);
 extern void run_done(int,char *);
-extern __pmPDU *rewrite_pdu(__pmPDU *, int);
 extern int putmark(void);
 extern void dumpit(void);
 
@@ -165,13 +174,16 @@ extern struct timeval	delta;			/* default logging interval */
 extern int		ctlport;		/* pmlogger control port number */
 extern char		*note;			/* note for port map file */
 
+/* signal handlers */
+extern void init_signals(void);
+
 /* pmlc support */
 extern void init_ports(void);
 extern int control_req(int ctlfd);
 extern int client_req(void);
 extern __pmHashCtl	hist_hash;
 extern unsigned int	denyops;	/* for access control (ops not allowed) */
-extern struct timeval	last_stamp;
+extern __pmTimestamp	last_stamp;
 extern int		clientfd;
 #define CFD_INET	0
 #define CFD_IPV6	1
@@ -186,6 +198,7 @@ extern int		log_switch_flag; /* archive switch: set on SIGUSR2 */
 extern int		pmlogger_reexec;
 extern int		vol_samples_counter;
 extern int		archive_version; 
+extern int		pmlc_ipc_version;
 extern int		parse_done;
 extern __int64_t	exit_bytes;
 extern __int64_t	vol_bytes;
@@ -201,5 +214,12 @@ extern void cleanup(void);
 extern int	qa_case;
 #define QA_OFF		100
 #define QA_SLEEPY	101
+
+/* To expose selected function symbols for mybacktrace() */
+#ifdef BACKTRACE_SYMBOLS
+#define STATIC_FUNC
+#else
+#define STATIC_FUNC static
+#endif
 
 #endif /* _LOGGER_H */

@@ -1,7 +1,7 @@
 /*
  * Label metadata support for pmlogrewrite
  *
- * Copyright (c) 2018 Red Hat.
+ * Copyright (c) 2018,2021 Red Hat.
  * 
  * This program is free software; you can redistribute it and/or modify it
  * under the terms of the GNU General Public License as published by the
@@ -19,6 +19,7 @@
 #include "pmapi.h"
 #include "libpcp.h"
 #include "logger.h"
+#include "../libpcp/src/internal.h"
 
 /*
  * Find or create a new labelspec_t
@@ -139,15 +140,17 @@ _ntohpmLabel(pmLabel * const label)
 }
 
 /*
- * Reverse the logic of __pmLogPutLabel()
+ * Reverse the logic of __pmLogPutLabels()
  *
  * Mostly stolen from __pmLogLoadMeta. There may be a chance for some
  * code factoring here.
  */
  static void
-_pmUnpackLabelSet(__pmPDU *pdubuf, unsigned int *type, unsigned int *ident,
-		  int *nsets, pmLabelSet **labelsets, pmTimeval *stamp)
+_pmUnpackLabelSet(__int32_t *recbuf, unsigned int *ltype, unsigned int *ident,
+		  int *nsets, pmLabelSet **labelsets, __pmTimestamp *tsp)
 {
+    __pmLogHdr	*hdr;
+    int		type;
     char	*tbuf;
     int		i, j, k;
     int		inst;
@@ -155,17 +158,25 @@ _pmUnpackLabelSet(__pmPDU *pdubuf, unsigned int *type, unsigned int *ident,
     int		nlabels;
 
     /* Walk through the record extracting the data. */
-    tbuf = (char *)pdubuf;
-    k = 0;
-    k += sizeof(__pmLogHdr);
+    hdr = (__pmLogHdr *)recbuf;
+    type = htonl(hdr->type);
+    tbuf = (char *)recbuf;
+    k = sizeof(__pmLogHdr);
+    if (type == TYPE_LABEL) {
+	__pmLoadTimestamp(&recbuf[2], tsp);
+	k += 3 * sizeof(__int32_t);
+    }
+    else if (type == TYPE_LABEL_V2) {
+	__pmLoadTimeval(&recbuf[2], tsp);
+	k += 2 * sizeof(__int32_t);
+    }
+    else {
+	fprintf(stderr, "_pmUnpackLabelSet: Botch: type=%d\n", type);
+	exit(1);
+    }
 
-    *stamp = *((pmTimeval *)&tbuf[k]);
-    stamp->tv_sec = ntohl(stamp->tv_sec);
-    stamp->tv_usec = ntohl(stamp->tv_usec);
-    k += sizeof(*stamp);
-
-    *type = ntohl(*((unsigned int*)&tbuf[k]));
-    k += sizeof(*type);
+    *ltype = ntohl(*((unsigned int*)&tbuf[k]));
+    k += sizeof(*ltype);
 
     *ident = ntohl(*((unsigned int*)&tbuf[k]));
     k += sizeof(*ident);
@@ -674,23 +685,23 @@ do_labelset(void)
     unsigned int	ident = 0;
     int			nsets = 0;
     int			flags = 0;
+    char		idbuf[64];
     pmLabelSet		*labellist;
     pmLabelSet		*lsp;
-    pmTimeval		stamp;
+    __pmTimestamp	stamp;
     labelspec_t		*lp;
     int			full_record;
     int			ls_ix;
     int			label_ix;
     int			sts;
-    char		buf[64];
 
-    out_offset = __pmFtell(outarch.logctl.l_mdfp);
+    out_offset = __pmFtell(outarch.logctl.mdfp);
 
     _pmUnpackLabelSet(inarch.metarec, &type, &ident, &nsets, &labellist, &stamp);
 
     /*
      * Global time stamp adjustment (if any) has already been done in the
-     * PDU buffer, so this is reflected in the unpacked value of stamp.
+     * record buffer, so this is reflected in the unpacked value of stamp.
      */
     for (lp = label_root; lp != NULL; lp = lp->l_next) {
 	/* Check the label type and id for a match. */
@@ -798,10 +809,10 @@ do_labelset(void)
 		    if (pmDebugOptions.appl1) {
 			fprintf(stderr, "Rewrite: label set %s",
 				__pmLabelIdentString(lp->old_id, lp->old_type,
-						     buf, sizeof(buf)));
+						     idbuf, sizeof(idbuf)));
 			fprintf(stderr, " to %s",
 				__pmLabelIdentString(lp->new_id, lp->new_type,
-						     buf, sizeof(buf)));
+						     idbuf, sizeof(idbuf)));
 		    }
 		}
 
@@ -831,25 +842,28 @@ do_labelset(void)
 
 		/*
 		 * Write the extracted labelset here.
-		 * libpcp, via __pmLogPutLabel(), assumes control of the
+		 * libpcp, via __pmLogPutLabels(), assumes control of the
 		 * storage pointed to by lsp.
 		 */
-		if ((sts = __pmLogPutLabel(&outarch.archctl, type,
+		if ((sts = __pmLogPutLabels(&outarch.archctl, type,
 					   lp->new_id, 1, lsp,
 					   &stamp)) < 0) {
-		    fprintf(stderr, "%s: Error: __pmLogPutLabel: %s: %s\n",
+		    fprintf(stderr, "%s: Error: __pmLogPutLabels: %s: %s\n",
 			    pmGetProgname(),
 			    __pmLabelIdentString(lp->new_id, type,
-						 buf, sizeof(buf)),
+						 idbuf, sizeof(idbuf)),
 			    pmErrStr(sts));
 		    abandon();
 		    /*NOTREACHED*/
 		}
 			    
 		if (pmDebugOptions.appl0) {
-		    fprintf(stderr, "Metadata: write LabelSet %s @ offset=%ld\n",
+		    fprintf(stderr, "Metadata: write ");
+		    if (outarch.version == PM_LOG_VERS02)
+			fprintf(stderr, "V2 ");
+		    fprintf(stderr, "LabelSet %s @ offset=%ld\n",
 			    __pmLabelIdentString(lp->new_id, type,
-						 buf, sizeof(buf)),
+						 idbuf, sizeof(idbuf)),
 			    out_offset);
 		}
 
@@ -924,16 +938,16 @@ do_labelset(void)
 
 		    /*
 		     * Write the new label.
-		     * libpcp, via __pmLogPutLabel(), assumes control of the
+		     * libpcp, via __pmLogPutLabels(), assumes control of the
 		     * storage pointed to by new_labelset.
 		     */
-		    if ((sts = __pmLogPutLabel(&outarch.archctl, lp->new_type,
+		    if ((sts = __pmLogPutLabels(&outarch.archctl, lp->new_type,
 					       lp->new_id, 1, new_labelset,
 					       &stamp)) < 0) {
-			fprintf(stderr, "%s: Error: __pmLogPutLabel: %s: %s\n",
+			fprintf(stderr, "%s: Error: __pmLogPutLabels: %s: %s\n",
 				pmGetProgname(),
 				__pmLabelIdentString(lp->new_id, type,
-						     buf, sizeof(buf)),
+						     idbuf, sizeof(idbuf)),
 				pmErrStr(sts));
 			abandon();
 			/*NOTREACHED*/
@@ -956,24 +970,28 @@ do_labelset(void)
 
     /*
      * Write what remains of the label record, if anything.
-     * libpcp, via __pmLogPutLabel(), assumes control of the storage pointed
+     * libpcp, via __pmLogPutLabels(), assumes control of the storage pointed
      * to by labellist.
      * If nsets has been reduced to zero, then labellist is already NULL.
      */
     if (labellist != NULL) {
 	assert(nsets > 0);
-	if ((sts = __pmLogPutLabel(&outarch.archctl, type, ident, nsets, labellist, &stamp)) < 0) {
-	    fprintf(stderr, "%s: Error: __pmLogPutLabel: %s: %s\n",
+	if ((sts = __pmLogPutLabels(&outarch.archctl, type, ident, nsets, labellist, &stamp)) < 0) {
+	    fprintf(stderr, "%s: Error: __pmLogPutLabels: %s: %s\n",
 		    pmGetProgname(),
-		    __pmLabelIdentString(ident, type, buf, sizeof(buf)),
+		    __pmLabelIdentString(ident, type, idbuf, sizeof(idbuf)),
 		    pmErrStr(sts));
 	    abandon();
 	    /*NOTREACHED*/
 	}
 
 	if (pmDebugOptions.appl0) {
-	    fprintf(stderr, "Metadata: write LabelSet %s @ offset=%ld\n",
-		    __pmLabelIdentString(ident, type, buf, sizeof(buf)), out_offset);
+	    fprintf(stderr, "Metadata: write ");
+	    if (outarch.version == PM_LOG_VERS02)
+		fprintf(stderr, "V2 ");
+	    fprintf(stderr, "LabelSet %s @ offset=%ld\n",
+		    __pmLabelIdentString(ident, type, idbuf, sizeof(idbuf)),
+		    out_offset);
 	}
     }
 }

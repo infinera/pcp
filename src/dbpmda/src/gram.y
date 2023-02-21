@@ -30,7 +30,6 @@ static union {
 } indom;
 
 
-static int	sts;
 static int	inst;
 static char	*str;
 #define MYWARNSTRSZ 80
@@ -106,6 +105,7 @@ fix_dynamic_pmid(const char *name, pmID *pmidp)
 	PATHNAME
 	MACRO
 	STRING
+	NEGNAME
 
 %term	COMMA EQUAL
 	OPEN CLOSE DESC GETDESC GETINAME FETCH INSTANCE PROFILE HELP 
@@ -230,7 +230,7 @@ stmt	: OPEN EOL				{
 		stmt_type = HELP; YYACCEPT;
 	    }
 	| PROFILE indom ALL EOL			{
-		sts = pmAddProfile($2, 0, NULL);
+		int sts = pmAddProfile($2, 0, NULL);
 		if (sts < 0) {
 		    yyerror(pmErrStr(sts));
 		    YYERROR;
@@ -240,7 +240,7 @@ stmt	: OPEN EOL				{
 		YYACCEPT;
 	    }
 	| PROFILE indom NONE EOL		{
-		sts = pmDelProfile($2, 0, NULL);
+		int sts = pmDelProfile($2, 0, NULL);
 		if (sts < 0) {
 		    yyerror(pmErrStr(sts));
 		    YYERROR;
@@ -250,6 +250,7 @@ stmt	: OPEN EOL				{
 		YYACCEPT;
 	    }
 	| PROFILE indom ADD NUMBER EOL		{
+		int sts;
 		inst = $4;
 		sts = pmAddProfile($2, 1, &inst);
 		if (sts < 0) {
@@ -261,6 +262,7 @@ stmt	: OPEN EOL				{
 		YYACCEPT;
 	    }
 	| PROFILE indom DEL NUMBER EOL		{
+		int sts;
 		inst = $4;
 		sts = pmDelProfile($2, 1, &inst);
 		if (sts < 0) {
@@ -465,7 +467,7 @@ stmt	: OPEN EOL				{
 		stmt_type = HELP; YYACCEPT;
 	    }
 	| DBG ALL EOL				{
-		sts = pmSetDebug("all");
+		int sts = pmSetDebug("all");
 		if (sts < 0) {
 		    pmsprintf(warnStr, MYWARNSTRSZ, "pmSetDebug(\"all\") failed\n");
 		    yywarn(warnStr);
@@ -474,7 +476,7 @@ stmt	: OPEN EOL				{
 		stmt_type = DBG; YYACCEPT;
 	    }
 	| DBG NONE EOL				{
-		sts = pmClearDebug("all");
+		int sts = pmClearDebug("all");
 		if (sts < 0) {
 		    pmsprintf(warnStr, MYWARNSTRSZ, "pmClearDebug(\"all\") failed\n");
 		    yywarn(warnStr);
@@ -555,7 +557,7 @@ optdomain : NUMBER				{ $$ = $1; }
 	;
 
 attribute : NUMBER				{
-		sts = __pmAttrKeyStr_r($1, warnStr, sizeof(warnStr));
+		int sts = __pmAttrKeyStr_r($1, warnStr, sizeof(warnStr));
 		if (sts <= 0) {
 		    pmsprintf(warnStr, MYWARNSTRSZ, "Attribute (%d) is not recognised", $1);
 		    yyerror(warnStr);
@@ -564,7 +566,7 @@ attribute : NUMBER				{
 		$$ = $1;
 	    }
 	| STRING				{ 
-		sts = __pmLookupAttrKey($1, strlen($1)+1);
+		int sts = __pmLookupAttrKey($1, strlen($1)+1);
 		if (sts <= 0) {
 		    pmsprintf(warnStr, MYWARNSTRSZ, "Attribute (%s) is not recognised", $1);
 		    yyerror(warnStr);
@@ -589,6 +591,7 @@ servport : NUMBER				{ $$ = $1; }
 	;
 
 metric	: NUMBER				{ 
+		int sts;
 		pmid.whole = $1;
 		sts = pmNameID(pmid.whole, &str);
 		if (sts < 0) {
@@ -601,6 +604,7 @@ metric	: NUMBER				{
 		$$ = (int)pmid.whole; 
 	    }
         | NUMBER2D				{
+		int sts;
 		pmid.whole = 0;
 		pmid.part.cluster = $1.num1;
 		pmid.part.item = $1.num2;
@@ -615,6 +619,7 @@ metric	: NUMBER				{
 		$$ = (int)pmid.whole;
 	    }
 	| NUMBER3D 				{
+		int sts;
 		pmid.whole = 0;
 		pmid.part.domain = $1.num1;
 		pmid.part.cluster = $1.num2;
@@ -630,7 +635,7 @@ metric	: NUMBER				{
 		$$ = (int)pmid.whole;
 	    }
 	| NAME					{
-		sts = pmLookupName(1, (const char **)&$1, &pmid.whole);
+		int sts = pmLookupName(1, (const char **)&$1, &pmid.whole);
 		if (sts < 0) {
 		    yyerror(pmErrStr(sts));
 		    YYERROR;
@@ -695,6 +700,7 @@ inst	: STRING				{ $$ = $1; }
 	;
 
 debug   : NUMBER 			{
+			int	sts;
 			char	nbuf[12];
 			pmsprintf(nbuf, sizeof(nbuf), "%d", $1);
 			sts = pmSetDebug(nbuf);
@@ -706,7 +712,11 @@ debug   : NUMBER 			{
 			$$ = 0;
 		    }
 	| flag					{
-			sts = pmSetDebug($1);
+			int 	sts;
+			if ($1[0] == '-')
+			    sts = pmClearDebug(&$1[1]);
+			else
+			    sts = pmSetDebug($1);
 			if (sts < 0) {
 			    pmsprintf(warnStr, MYWARNSTRSZ, "Bad debug flag (%s)", $1);
 			    yyerror(warnStr);
@@ -715,6 +725,7 @@ debug   : NUMBER 			{
 			$$ = 0;
 		    }
 	| debug NUMBER				{
+			int 	sts;
 			char	nbuf[12];
 			pmsprintf(nbuf, sizeof(nbuf), "%d", $2);
 			sts = pmSetDebug(nbuf);
@@ -726,6 +737,7 @@ debug   : NUMBER 			{
 			$$ = 0;
 		    }
 	| debug COMMA NUMBER				{
+			int 	sts;
 			char	nbuf[12];
 			pmsprintf(nbuf, sizeof(nbuf), "%d", $3);
 			sts = pmSetDebug(nbuf);
@@ -737,7 +749,11 @@ debug   : NUMBER 			{
 			$$ = 0;
 		    }
 	| debug flag					{
-			sts = pmSetDebug($2);
+			int 	sts;
+			if ($2[0] == '-')
+			    sts = pmClearDebug(&$2[1]);
+			else
+			    sts = pmSetDebug($2);
 			if (sts < 0) {
 			    pmsprintf(warnStr, MYWARNSTRSZ, "Bad debug flag (%s)", $2);
 			    yyerror(warnStr);
@@ -746,7 +762,11 @@ debug   : NUMBER 			{
 			$$ = 0;
 		    }
 	| debug COMMA flag					{
-			sts = pmSetDebug($3);
+			int 	sts;
+			if ($3[0] == '-')
+			    sts = pmClearDebug(&$3[1]);
+			else
+			    sts = pmSetDebug($3);
 			if (sts < 0) {
 			    pmsprintf(warnStr, MYWARNSTRSZ, "Bad debug flag (%s)", $3);
 			    yyerror(warnStr);
@@ -762,6 +782,7 @@ debug   : NUMBER 			{
  * lexer for type NAME
  */
 flag	: NAME		{ $$ = $1; }
+	| NEGNAME	{ $$ = $1; }
 	| FETCH		{ $$ = strdup("fetch"); gc_add($$); }
 	| PROFILE	{ $$ = strdup("profile"); gc_add($$); }
 	| CTXT		{ $$ = strdup("context"); gc_add($$); }

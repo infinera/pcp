@@ -68,16 +68,23 @@ hacluster_sbd_device_fetch(int item, struct sbd *sbd, pmAtomValue *atom)
 	return PMDA_FETCH_NOVALUES;
 }
 
+int 
+hacluster_sbd_device_all_fetch(int item, pmAtomValue *atom)
+{
+	atom->ul = 1; /* Assign default exists value 1 */
+	return PMDA_FETCH_STATIC;
+}
+
 int
 hacluster_refresh_sbd_device(const char *sbd_dev, struct sbd *sbd)
 {
 	char buffer[4096];
 	FILE *pf;
 
-	pmsprintf(buffer, sizeof(buffer), "%s -d %s dump", sbd_command, sbd_dev);
+	pmsprintf(buffer, sizeof(buffer), "%s -d %s dump 2>&1", sbd_command, sbd_dev);
 
 	if ((pf = popen(buffer, "r")) == NULL)
-		return -oserror();
+		return oserror();
 
 	strncpy(sbd->path, sbd_dev, sizeof(sbd->path));
 	sbd->path[sizeof(sbd->path)-1] = '\0';

@@ -14,9 +14,6 @@ echo "QA output created by $seq"
 . ./common.filter
 . ./common.check
 
-[ -f $PCP_PMDAS_DIR/shping/pmdashping ] || _notrun "shping pmda not installed"
-[ -f $PCP_PMDAS_DIR/cisco/pmdacisco ] || _notrun "cisco pmda not installed"
-[ -f $PCP_PMDAS_DIR/dm/pmdadm ] || _notrun "dm pmda not installed"
 which pmieconf >/dev/null 2>&1 || _notrun "No pmieconf binary installed"
 
 status=1	# failure is the default!
@@ -25,12 +22,37 @@ trap "rm -f $tmp.*; exit \$status" 0 1 2 3 15
 
 # Some metrics unavailable by default, so skip the associated rules
 #
-cat >$tmp.cmd <<EOF
-modify all enabled yes
-modify shping enabled no
-modify cisco enabled no
-modify dmthin enabled no
-EOF
+echo "modify all enabled yes" >$tmp.cmd
+for group in shping cisco dmthin mssql openvswitch
+do
+    # most have group == dir, but some do not
+    #
+    case $group
+    in
+	dmthin)
+	    dir=dm
+	    ;;
+	*)
+	    dir=$group
+	    ;;
+    esac
+    [ -d $PCP_ETC_DIR/pcp/pmieconf/$dir ] && echo "modify $group enabled no" >>$tmp.cmd
+done
+
+# Some rules need special cusomization
+#
+disks=`pmprobe -I disk.dev.total | sed -e 's/" "/ /g' -e 's/^[^ ]* [0-9][0-9]* //'`
+if [ -z "$disks" ]
+then
+    # Arrgh ...
+    #
+    echo "Empty list of disks from ..."
+    pmprobe -I disk.dev.total
+    exit
+fi
+echo "modify per_disk.bandwidth disks $disks" >>$tmp.cmd
+echo "modify per_disk.iops disks $disks" >>$tmp.cmd
+
 
 # real QA test starts here
 echo "running pmieconf with default rules..."

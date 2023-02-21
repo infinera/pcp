@@ -364,6 +364,7 @@ cgroup.pressure {
     cpu
     memory
     io
+    irq
 }
 
 cgroup.pressure.cpu {
@@ -415,6 +416,17 @@ cgroup.pressure.io.full {
     total		PROC:65:7
 }
 
+cgroup.pressure.irq {
+    full
+}
+
+cgroup.pressure.irq.full {
+    avg10sec		PROC:76:0
+    avg1min		PROC:76:1
+    avg5min		PROC:76:2
+    total		PROC:76:3
+}
+
 cgroup.io {
     stat
 }
@@ -439,6 +451,7 @@ proc {
     fd			PROC:*:*
     namespaces		PROC:*:*
     smaps		PROC:*:*
+    autogroup		PROC:*:*
     control
 }
 
@@ -452,6 +465,7 @@ hotproc {
     fd			PROC:*:*
     namespaces		PROC:*:*
     smaps		PROC:*:*
+    autogroup		PROC:*:*
     control
     total
     predicate

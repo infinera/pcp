@@ -52,8 +52,14 @@ _run_man_k()
 _run_man_k "ls" >$tmp.out
 if [ -s $tmp.out ]
 then
-    : may be OK
+    if grep 'system has been minimized by removing packages' $tmp.out >/dev/null
+    then
+	rm -f $tmp.*
+	_notrun "man pages have been \"minimized\" away! container in CI?"
+    fi
+    # may be OK
 else
+    rm -f $tmp.*
     _notrun "man -k ls won't even work ... apropos/whatis index needs rebuilding?"
 fi
 
@@ -79,7 +85,7 @@ fi
 
 # real QA test starts here
 cat <<'End-of-File' | sed -e '/^#/d' -e '/^[ 	]*$/d' | while read sect key altname pat
-# section	keyword	altname	egrep for text in man page
+# section	keyword	altname	grep -E for text in man page
 # for keyword, avoid case aliasing (different man's have different rules)
 # and use (one of) the .SH NAME names
 #
@@ -92,9 +98,9 @@ cat <<'End-of-File' | sed -e '/^#/d' -e '/^[ 	]*$/d' | while read sect key altna
 # simple section 1 entry
 1	pminfo		-	.-T, *--helptext
 # composite section 1 entry
-1	pmconfirm	-	button-name
-1	pmmessage	pmconfirm	button-name
-1	pmquery		pmconfirm	button-name
+1	pmdatxmon	-	tx_type
+1	txrecord	pmdatxmon	tx_type
+1	genload		pmdatxmon	tx_type
 # aliased (xM) section 1 entry
 1	KERNEL_PMDAS	-	usually running as shared libraries
 # special case section 1 and 3 entry
@@ -102,7 +108,7 @@ cat <<'End-of-File' | sed -e '/^#/d' -e '/^[ 	]*$/d' | while read sect key altna
 3	PCPIntro	-	Co-Pilot
 
 # simple section 3 entry
-3	pmNewContext	-	PM_CTXFLAG_SECURE
+3	pmNewContext	-	PM_CONTEXT_ARCHIVE
 # composite and aliased (xM) section 3 entry
 3	pmRecord	-	pmRecordHost
 3	pmRecordSetup	pmRecord	pmRecordHost
@@ -111,7 +117,11 @@ cat <<'End-of-File' | sed -e '/^#/d' -e '/^[ 	]*$/d' | while read sect key altna
 # weirdos
 5	pcp.env		-	\.pcp/pcp.conf
 # from src/pmdas/json (Python), not man/man?
-1	pmdajson	-	generating  *JavaScript
+# was generating, but hyphenation is in effect so troff was
+# producing
+#                      .... gen-
+#   erating JavaScript
+1	pmdajson	-	rating  *JavaScript
 End-of-File
 do
     # *BSD man(1) really uses apropos(1) for man -k which uses a full
@@ -137,11 +147,11 @@ do
     if [ -s $tmp.out ]
     then
 	tr '[A-Z]' '[a-z'] <$tmp.out >$tmp.tmp
-	if egrep "^$lc_key *\($sect" $tmp.tmp >/dev/null
+	if grep -E "^$lc_key *\($sect" $tmp.tmp >/dev/null
 	then
 	    # matching simple entry found from man -k
 	    :
-	elif [ X"$altname" != X- ] && egrep "^$lc_altname *\($sect" $tmp.tmp >/dev/null
+	elif [ X"$altname" != X- ] && grep -E "^$lc_altname *\($sect" $tmp.tmp >/dev/null
 	then
 	    # matching altname entry found from man -k ... needed for
 	    # *BSD where man -k is really apropos and *BSD apropos does
@@ -196,7 +206,7 @@ do
     echo "--- ($sect) ---" | tee -a $seq.full
     TERM=dumb LANG=POSIX LC_MESSAGES=POSIX man $sect $key 2>&1 \
     | sed -e 's/_//g' -e 's/.//g' -e 's/[ 	][ 	]*/ /g' >$tmp.out
-    if egrep "$pat" $tmp.out >/dev/null
+    if grep -E "$pat" $tmp.out >/dev/null
     then
 	echo OK
     else

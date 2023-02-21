@@ -1,11 +1,12 @@
 /*
+ * Copyright (c) 2021-2022 Red Hat.
  * Copyright (c) 2018 Ken McDonell.  All Rights Reserved.
- * 
+ *
  * This program is free software; you can redistribute it and/or modify it
  * under the terms of the GNU General Public License as published by the
  * Free Software Foundation; either version 2 of the License, or (at your
  * option) any later version.
- * 
+ *
  * This program is distributed in the hope that it will be useful, but
  * WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY
  * or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License
@@ -72,7 +73,7 @@ filter(
     if (vflag > 2)
 	fprintf(stderr, "d_name=\"%s\"? ", dp->d_name);
 
-    if (dp->d_name[len] != '.') {
+    if (strlen(dp->d_name) < len+1 || dp->d_name[len] != '.') {
 	if (vflag > 2)
 	    fprintf(stderr, "no (not expected extension after basename)\n");
 	return 0;
@@ -117,54 +118,51 @@ static void
 do_work(char *fname)
 {
     __pmFILE		*f;
-    __pmLogLabel	label;
     int			sts;
-    int			len;
+    int			version;
     long		extsize;
     long		intsize;
+    __pmLogLabel	label;
     struct stat		sbuf;
-
-    if ((f = __pmFopen(fname, "r")) == NULL) {
-	fprintf(stderr, "%s: cannot open file: %s\n", fname, osstrerror());
-	return;
-    }
-    if ((sts = __pmFread(&len, 1, sizeof(len), f)) != sizeof(len)) {
-	fprintf(stderr, "%s: label header read botch: read returns %d not %d as expected\n", fname, sts, (int)sizeof(int));
-	exit(1);
-    }
-    if ((sts = __pmFread(&label, 1, sizeof(label), f)) != sizeof(label)) {
-	fprintf(stderr, "%s: label read botch: read returns %d not %d as expected\n", fname, sts, (int)sizeof(label));
-	exit(1);
-    }
-    if ((sts = __pmFread(&len, 1, sizeof(len), f)) != sizeof(len)) {
-	fprintf(stderr, "%s: label trailer read botch: read returns %d not %d as expected\n", fname, sts, (int)sizeof(int));
-	exit(1);
-    }
+    
     if ((sts = stat(fname, &sbuf)) != 0) {
 	fprintf(stderr, "%s: cannot stat file: %s\n", fname, osstrerror());
 	exit(1);
     }
     extsize = sbuf.st_size;
+
+    if ((f = __pmFopen(fname, "r")) == NULL) {
+	fprintf(stderr, "%s: cannot open file: %s\n", fname, osstrerror());
+	return;
+    }
+
     if ((sts = __pmFstat(f, &sbuf)) != 0) {
 	fprintf(stderr, "%s: cannot __pmFstat file: %s\n", fname, osstrerror());
 	exit(1);
     }
     intsize = sbuf.st_size;
+
+    memset((void *)&label, 0, sizeof(label));
+    if ((sts = __pmLogLoadLabel(f, &label)) < 0) {
+	fprintf(stderr, "%s: cannot load label record: %s\n", fname, pmErrStr(sts));
+        return;
+    }
+    version = label.magic & 0xff;
+
     printf("%s:", fname);
     if (intsize != extsize) {
 	printf(" [compression reduces size below by about %.0f%%]", 100*(float)(intsize - extsize) / intsize);
     }
     putchar('\n');
 
-    label.ill_vol = ntohl(label.ill_vol);
-
-    if (label.ill_vol == PM_LOG_VOL_TI)
-	do_index(f);
-    else if (label.ill_vol == PM_LOG_VOL_META)
+    if (label.vol == PM_LOG_VOL_TI)
+	do_index(f, version);
+    else if (label.vol == PM_LOG_VOL_META)
 	do_meta(f);
     else
-	do_data(f, fname);
+	do_data(f, version, fname);
 
+    __pmLogFreeLabel(&label);
     __pmFclose(f);
 }
 

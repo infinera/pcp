@@ -294,14 +294,12 @@ dump(FILE *fp, hdr_t *h, int do_hash)
     }
 
     if (h->ctl_inst != NULL) {
-	int	i;
 	fprintf(fp, "inst hash\n");
 	for (i = 0; i < h->hsize; i++) {
 	    dump_hash_list(fp, h, 0, i);
 	}
     }
     if (h->ctl_name != NULL) {
-	int	i;
 	fprintf(fp, "name hash\n");
 	for (i = 0; i < h->hsize; i++) {
 	    dump_hash_list(fp, h, 1, i);
@@ -329,6 +327,9 @@ static entry_t *
 find_inst(hdr_t *h, int inst)
 {
     entry_t	*e;
+
+    if ((e = h->last) != NULL && e->inst < inst)
+	return NULL;
 
     for (e = h->first; e != NULL; e = e->next) {
 	if (e->inst == inst && e->state != PMDA_CACHE_EMPTY)
@@ -623,7 +624,11 @@ insert_cache(hdr_t *h, const char *name, int inst, int *sts)
 	    *sts = PM_ERR_INST;
 	    return e;
 	}
-	for (e = h->first; e != NULL; e = e->next) {
+	/* if this entry is beyond the (sorted) list end, avoid linear scan */
+	if ((e = h->last) == NULL || e->inst > inst)
+	    e = h->first;
+	/* linear search over linked list, starting at either first or last */
+	for (; e != NULL; e = e->next) {
 	    if (e->inst < inst)
 		last_e = e;
 	    else if (e->inst > inst)
@@ -713,7 +718,11 @@ retry:
 	h->last = e;
     h->nentry++;
 
-    if (h->hsize > 0 && h->hsize < 1024 && h->nentry > 4 * h->hsize)
+    /*
+     * try to keep hash table sized so there are on average no
+     * more than 4 entries per hash chain
+     */
+    if (h->hsize > 0 && h->nentry > 4 * h->hsize)
 	redo_hash(h, 1);
 
     /* link into the inst hash list, if any */
@@ -943,7 +952,7 @@ save_cache(hdr_t *h, int hstate)
 	    continue;
 	if (e->stamp == 0)
 	    e->stamp = now;
-	fprintf(fp, "%d %d", e->inst, (int)e->stamp);
+	fprintf(fp, "%d %lld", e->inst, (long long)e->stamp);
 	if (e->keylen > 0) {
 	    char	*p = (char *)e->key;
 	    int		i;

@@ -53,7 +53,7 @@ __ntohpmUnits(pmUnits units)
 }
 #endif
 
-#ifndef __htonpmUnits
+#ifndef __htonpmLabel
 void
 __htonpmLabel(pmLabel * const label)
 {
@@ -76,6 +76,13 @@ __ntohpmLabel(pmLabel * const label)
     label->valuelen = ntohs(label->valuelen);
 }
 #endif
+
+static void
+__htonpmTimespec(pmTimespec * const tsp)
+{
+    __htonll((char *)&tsp->tv_sec);
+    __htonll((char *)&tsp->tv_nsec);
+}
 
 #ifndef __htonpmValueBlock
 static void
@@ -117,8 +124,7 @@ htonEventArray(pmValueBlock * const vb, int highres)
 		nparams = hrerp->er_nparams;
 	    hrerp->er_nparams = htonl(nparams);
 	    hrerp->er_flags = htonl(hrerp->er_flags);
-	    __htonll((char *)&hrerp->er_timestamp.tv_sec);
-	    __htonll((char *)&hrerp->er_timestamp.tv_nsec);
+	    __htonpmTimespec(&hrerp->er_timestamp);
 	}
 	else {
 	    pmEventRecord *erp = (pmEventRecord *)base;
@@ -353,7 +359,6 @@ __ntohpmCred(__pmCred cred)
 }
 #endif
 
-
 #ifndef __htonf
 void
 __htonf(char *p)
@@ -369,7 +374,9 @@ __htonf(char *p)
 }
 #endif
 
-#ifndef __htonll
+#ifdef __htonll
+#undef __htonll
+#endif
 void
 __htonll(char *p)
 {
@@ -382,4 +389,3 @@ __htonll(char *p)
 	p[7-i] = c;
     }
 }
-#endif

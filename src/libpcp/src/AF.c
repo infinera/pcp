@@ -124,7 +124,8 @@ static void AFsetitimer(struct timeval *interval)
 }
 
 #else /* POSIX */
-static void AFsetitimer(struct timeval *interval)
+static void
+AFsetitimer(struct timeval *interval)
 {
     struct itimerval val;
 
@@ -133,49 +134,31 @@ static void AFsetitimer(struct timeval *interval)
     setitimer(ITIMER_REAL, &val, NULL);
 }
 
-#if !defined(HAVE_SIGHOLD)
-static int
-sighold(int sig)
+static void
+AFhold(void)
 {
     sigset_t s;
 
     sigemptyset(&s);
-    sigaddset(&s, sig);
+    sigaddset(&s, SIGALRM);
     sigprocmask(SIG_BLOCK, &s, NULL);
-
-    return 0;
 }
-#else
-/*
- * for Linux the prototype is hidden, even though the function is in
- * libc
- */
-extern int sighold(int);
-#endif
 
-#if !defined(HAVE_SIGRELSE)
-static int
-sigrelse(int sig)
+static void
+AFrelse(void)
 {
     sigset_t s;
 
     sigemptyset(&s);
-    sigaddset(&s, sig);
+    sigaddset(&s, SIGALRM);
     sigprocmask(SIG_UNBLOCK, &s, NULL);
-    return 0;
 }
-#else
-/*
- * for Linux the prototype is hidden, even though the function is in
- * libc
- */
-extern int sigrelse(int);
-#endif
 
-static void AFhold(void)  { sighold(SIGALRM); }
-static void AFrelse(void) { sigrelse(SIGALRM); }
-static void AFrearm(void) { signal(SIGALRM, onalarm); }
-
+static void
+AFrearm(void)
+{
+    signal(SIGALRM, onalarm);
+}
 #endif	/* POSIX */
 
 
@@ -449,7 +432,7 @@ __pmAFregister(const struct timeval *delta, void *data, void (*func)(int, void *
 }
 
 int
-__pmAFunregister(int afid)
+__pmAFunregister(int id)
 {
     qelt		*qp;
     qelt		*priorp;
@@ -463,7 +446,7 @@ __pmAFunregister(int afid)
 
     if (!block)
 	AFhold();
-    for (qp = root, priorp = NULL; qp != NULL && qp->q_afid != afid; qp = qp->q_next)
+    for (qp = root, priorp = NULL; qp != NULL && qp->q_afid != id; qp = qp->q_next)
 	    priorp = qp;
 
     if (qp == NULL) {

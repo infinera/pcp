@@ -1,19 +1,19 @@
 /*
  * pmlogreduce - statistical reduction of a PCP archive log
  *
- * Copyright (c) 2014,2017 Red Hat.
+ * Copyright (c) 2014,2017,2021-2022 Red Hat.
  * Copyright (c) 2004 Silicon Graphics, Inc.  All Rights Reserved.
- * 
+ *
  * This program is free software; you can redistribute it and/or modify it
  * under the terms of the GNU General Public License as published by the
  * Free Software Foundation; either version 2 of the License, or (at your
  * option) any later version.
- * 
+ *
  * This program is distributed in the hope that it will be useful, but
  * WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY
  * or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License
  * for more details.
- * 
+ *
  * TODO (global list)
  * 	- check for counter overflow in doscan()
  * 	- optimization (maybe) for discrete and instantaneous metrics
@@ -46,7 +46,7 @@
 /*
  * globals defined in pmlogreduce.h
  */
-pmTimeval	current;		/* most recent timestamp overall */
+__pmTimestamp	current;		/* most recent timestamp overall */
 char		*iname;			/* name of input archive */
 pmLogLabel	ilabel;			/* input archive label */
 int		numpmid;		/* all metrics from the input archive */
@@ -56,7 +56,7 @@ metric_t	*metriclist;
 __pmArchCtl	archctl;		/* output archive control */
 __pmLogCtl	logctl;			/* output log control */
 /* command line args */
-double		targ = 600.0;		/* -t arg - interval b/n output samples */
+struct timespec	targ = { 600, 0};	/* -t arg - interval b/n output samples */
 int		sarg = -1;		/* -s arg - finish after X samples */
 char		*Sarg;			/* -S arg - window start */
 char		*Targ;			/* -T arg - window end */
@@ -151,8 +151,10 @@ parseargs(int argc, char *argv[])
 		free(msg);
 		opts.errors++;
 	    }
-	    else
-		targ = pmtimevalToReal(&interval);
+	    else {
+		targ.tv_sec = interval.tv_sec;
+		targ.tv_nsec = interval.tv_usec * 1000;
+	    }
 	    break;
 
 	case 'v':	/* number of samples per volume */
@@ -202,12 +204,20 @@ int
 main(int argc, char **argv)
 {
     int		sts;
+    int		lsts;
+    int		vers;
+    int		needti;
     char	*msg;
-    pmResult	*irp;		/* input pmResult */
-    pmResult	*orp;		/* output pmResult */
+    __pmResult	*irp;		/* input pmResult */
+    __pmResult	*orp;		/* output pmResult */
     __pmPDU	*pb;		/* pdu buffer */
     struct timeval	unused;
+    struct timespec	start;
+    __uint64_t		max_offset;
     unsigned long	peek_offset;
+    off_t		flushsize = 100000;
+    off_t		old_log_offset;
+    off_t		old_meta_offset;
 
     /* no derived or anon metrics, please */
     __pmSetInternalState(PM_STATE_PMCS);
@@ -271,10 +281,8 @@ main(int argc, char **argv)
 	printf("Note: timezone set to \"TZ=%s\"\n\n", tz);
     }
     else {
-	char	*tz;
-        tz = __pmTimezone();
 	/* use TZ from local host */
-	if ((sts = pmNewZone(tz)) < 0) {
+	if ((sts = pmNewZone(__pmTimezone())) < 0) {
 	    fprintf(stderr, "%s: Cannot set local host's timezone: %s\n",
 		    pmGetProgname(), pmErrStr(sts));
 	    exit(1);
@@ -301,16 +309,18 @@ main(int argc, char **argv)
 	fprintf(stderr, "End time: %s", buf);
     }
 
-    if ((sts = pmSetMode(PM_MODE_INTERP | PM_XTB_SET(PM_TIME_SEC),
-                         &winstart_tval, (int)targ)) < 0) {
-	fprintf(stderr, "%s: pmSetMode(PM_MODE_INTERP ...) failed: %s\n",
+    start.tv_sec = winstart_tval.tv_sec;
+    start.tv_nsec = winstart_tval.tv_usec * 1000;
+    if ((sts = pmSetModeHighRes(PM_MODE_INTERP, &start, &targ)) < 0) {
+	fprintf(stderr, "%s: pmSetModeHighRes(PM_MODE_INTERP ...) failed: %s\n",
 		pmGetProgname(), pmErrStr(sts));
 	exit(1);
     }
 
     /* create output log - must be done before writing label */
     archctl.ac_log = &logctl;
-    if ((sts = __pmLogCreate("", oname, PM_LOG_VERS02, &archctl)) < 0) {
+    vers = ilabel.ll_magic & 0xff;
+    if ((sts = __pmLogCreate("", oname, vers, &archctl)) < 0) {
 	fprintf(stderr, "%s: Error: __pmLogCreate: %s\n",
 		pmGetProgname(), pmErrStr(sts));
 	exit(1);
@@ -323,15 +333,15 @@ main(int argc, char **argv)
      *		- write labels
      */
     newlabel();
-    current.tv_sec = logctl.l_label.ill_start.tv_sec = winstart_tval.tv_sec;
-    current.tv_usec = logctl.l_label.ill_start.tv_usec = winstart_tval.tv_usec;
+    current.sec = logctl.label.start.sec = winstart_tval.tv_sec;
+    current.nsec = logctl.label.start.nsec = winstart_tval.tv_usec * 1000;
     /* write label record */
     writelabel();
     /*
-     * Supress any automatic label creation in libpcp at the first
+     * Suppress any automatic label creation in libpcp at the first
      * pmResult write.
      */
-    logctl.l_state = PM_LOG_STATE_INIT;
+    logctl.state = PM_LOG_STATE_INIT;
 
     /*
      * Traverse the PMNS to get all the metrics and their metadata
@@ -342,12 +352,7 @@ main(int argc, char **argv)
 	goto cleanup;
     }
 
-    /*
-     * All the initial metadata has been generated, add timestamp
-     */
-    __pmFflush(logctl.l_mdfp);
-    __pmLogPutIndex(&archctl, &current);
-
+    max_offset = (vers == PM_LOG_VERS02) ? 0x7fffffff : LONGLONG_MAX;
     written = 0;
 
     /*
@@ -362,23 +367,35 @@ main(int argc, char **argv)
 		    pmGetProgname(), iname, pmErrStr(sts));
 	    goto cleanup;
 	}
-	if ((sts = pmFetch(numpmid, pmidlist, &irp)) < 0) {
+	if ((sts = __pmFetch(NULL, numpmid, pmidlist, &irp)) < 0) {
 	    if (sts == PM_ERR_EOL)
 		break;
 	    fprintf(stderr,
 		"%s: Error: pmFetch failed: %s\n", pmGetProgname(), pmErrStr(sts));
 	    exit(1);
 	}
-	if (irp->timestamp.tv_sec > winend_tval.tv_sec ||
-	    (irp->timestamp.tv_sec == winend_tval.tv_sec &&
-	     irp->timestamp.tv_usec > winend_tval.tv_usec)) {
+	if (irp->timestamp.sec > winend_tval.tv_sec ||
+	    (irp->timestamp.sec == winend_tval.tv_sec &&
+	     irp->timestamp.nsec > winend_tval.tv_usec * 1000)) {
 	    /* past end time as per -T */
 	    break;
 	}
 	if (pmDebugOptions.appl2) {
 	    fprintf(stderr, "input record ...\n");
-	    __pmDumpResult(stderr, irp);
+	    __pmPrintResult(stderr, irp);
 	}
+
+	old_meta_offset = __pmFtell(logctl.mdfp);;
+
+	/*
+	 * force temporal index for first pmResult, then use metadata
+	 * and indom and volume changes to drive need for temporal index
+	 * entries
+	 */
+	if (written == 0)
+	    needti = 1;
+	else
+	    needti = 0;
 
 	/*
 	 * traverse the interval, looking at every archive record ...
@@ -402,17 +419,17 @@ main(int argc, char **argv)
 		fprintf(stderr, "output record ... none!\n");
 	    else {
 		fprintf(stderr, "output record ...\n");
-		__pmDumpResult(stderr, orp);
+		__pmPrintResult(stderr, orp);
 	    }
 	}
 	if (orp == NULL)
 	    goto next;
 
 	/*
-	 * convert log record to a PDU, and enforce V2 encoding semantics,
+	 * convert log record to a PDU, enforce encoding semantics,
 	 * then write it out
 	 */
-	sts = __pmEncodeResult(PDU_OVERRIDE2, orp, &pb);
+	sts = __pmEncodeResult(archctl.ac_log,orp, &pb);
 	if (sts < 0) {
 	    fprintf(stderr, "%s: Error: __pmEncodeResult: %s\n",
 		    pmGetProgname(), pmErrStr(sts));
@@ -422,32 +439,36 @@ main(int argc, char **argv)
 	/* switch volumes if required */
 	if (varg > 0) {
 	    if (written > 0 && (written % varg) == 0) {
-		pmTimeval	next_stamp;
-		next_stamp.tv_sec = irp->timestamp.tv_sec;
-		next_stamp.tv_usec = irp->timestamp.tv_usec;
-		newvolume(oname, &next_stamp);
+		newvolume(oname, &irp->timestamp);
+		needti = 1;
+		flushsize = 100000;
 	    }
 	}
 	/*
 	 * Even without a -v option, we may need to switch volumes
-	 * if the data file exceeds 2^31-1 bytes
+	 * if the data file exceeds 2^31-1 bytes (for v2 archives)
+	 * or 2^63-1 bytes (for v3 archives and beyond).
 	 */
 	peek_offset = __pmFtell(archctl.ac_mfp);
 	peek_offset += ((__pmPDUHdr *)pb)->len - sizeof(__pmPDUHdr) + 2*sizeof(int);
-	if (peek_offset > 0x7fffffff) {
-	    pmTimeval	next_stamp;
-	    next_stamp.tv_sec = irp->timestamp.tv_sec;
-	    next_stamp.tv_usec = irp->timestamp.tv_usec;
-	    newvolume(oname, &next_stamp);
+	if (peek_offset > max_offset) {
+	    newvolume(oname, &irp->timestamp);
+	    needti = 1;
+	    flushsize = 100000;
 	}
 
-	current.tv_sec = orp->timestamp.tv_sec;
-	current.tv_usec = orp->timestamp.tv_usec;
+	current = orp->timestamp;
 
-	doindom(orp);
+	if ((lsts = doindom(orp)) < 0)
+	    goto cleanup;
+	if (lsts != 0)
+	    needti = 1;
 
 	/* write out log record */
-	sts = __pmLogPutResult2(&archctl, pb);
+	old_log_offset = __pmFtell(archctl.ac_mfp);;
+	sts = (vers == PM_LOG_VERS02) ?
+		__pmLogPutResult2(&archctl, pb) :
+		__pmLogPutResult3(&archctl, pb);
 	__pmUnpinPDUBuf(pb);
 	if (sts < 0) {
 	    fprintf(stderr, "%s: Error: __pmLogPutResult2: log data: %s\n",
@@ -456,15 +477,41 @@ main(int argc, char **argv)
 	}
 	written++;
 
+	if (__pmFtell(archctl.ac_mfp) > flushsize)
+	    needti = 1;
+
+	if (needti) {
+	    /*
+	     * data volume size triggers new temporal index entry
+	     * ... seek pointers need to be _before_ last pmResult
+	     * and associated metadata (if any)
+	     */
+	    off_t	new_log_offset;
+	    off_t	new_meta_offset;
+	    __pmFflush(archctl.ac_mfp);
+	    new_log_offset = __pmFtell(archctl.ac_mfp);;
+	    __pmFseek(archctl.ac_mfp, old_log_offset, SEEK_SET);
+	    __pmFflush(logctl.mdfp);
+	    new_meta_offset = __pmFtell(logctl.mdfp);;
+	    __pmFseek(logctl.mdfp, old_meta_offset, SEEK_SET);
+	    __pmLogPutIndex(&archctl, &current);
+	    /* and restore 'em */
+	    __pmFseek(archctl.ac_mfp, new_log_offset, SEEK_SET);
+	    __pmFseek(logctl.mdfp, new_meta_offset, SEEK_SET);
+	}
+
+	if (__pmFtell(archctl.ac_mfp) > flushsize)
+	    flushsize = __pmFtell(archctl.ac_mfp) + 100000;
+
 	rewrite_free();
 
 next:
-	pmFreeResult(irp);
+	__pmFreeResult(irp);
     }
 
     /* write the last time stamp */
     __pmFflush(archctl.ac_mfp);
-    __pmFflush(logctl.l_mdfp);
+    __pmFflush(logctl.mdfp);
     __pmLogPutIndex(&archctl, &current);
 
     exit(exit_status);

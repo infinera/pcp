@@ -18,6 +18,28 @@ status=1       # failure is the default!
 signal=$PCP_BINADM_DIR/pmsignal
 $sudo rm -rf $tmp.* $seq.full
 
+# Some combinations of distro and kernel are known to be "bad"
+# for some BPF modules
+#
+kernel=`uname -r`
+echo "$kernel" >>$seq.full
+case `admin/whatami`
+in
+    *Fedora\ 32\ *)
+	_notrun "bcc netproc module will not compile on Fedora 32"
+	;;
+    *Ubuntu\ 20.04\ *)
+	# works on 5.4 kernel, not on 5.8.0-1033-azure
+	#
+	case "$kernel"
+	in
+	    5.8.0-*-azure)
+		_notrun "bcc netproc module will not compile on Ubuntu kernel $kernel"
+		;;
+	esac
+	;;
+esac
+
 # The netproc BCC module uses the lookup_or_try_init() method that was
 # introduced in bcc v0.12.0 (released 11 Dec 2019), so determine the
 # bcc version and _notrun as appropriate.
@@ -49,18 +71,13 @@ esac
 _pid_filter()
 {
     sed \
-      -e "s/$1/SERVERPID/g" \
-      -e "s/$2/CLIENTPID/g" \
+      -e "s/0*$1/SERVERPID/g" \
+      -e "s/0*$2/CLIENTPID/g" \
       -e '/inst \[[0-9]/d' \
     #end
 }
 
-_prepare_pmda bcc
-trap "_pmdabcc_cleanup; exit \$status" 0 1 2 3 15
-_stop_auto_restart pmcd
-
-# real QA test starts here
-cat <<EOF | _pmdabcc_install
+cat <<EOF >$tmp.conf
 [pmda]
 modules = netproc
 prefix = bcc.
@@ -70,6 +87,15 @@ cluster = 40
 pmda_indom_cache = False
 remove_stopped_processes = False
 EOF
+
+_pmdabcc_try_compile $tmp.conf
+
+_prepare_pmda bcc
+trap "_pmdabcc_cleanup; exit \$status" 0 1 2 3 15
+_stop_auto_restart pmcd
+
+# real QA test starts here
+_pmdabcc_install <$tmp.conf
 _pmdabcc_wait_for_metric
 
 # Generate system activity for the BCC netproc module
@@ -91,14 +117,14 @@ wait ${server_pid}
 echo "server PID: ${server_pid}" >> "$seq.full"
 echo "client PID: ${client_pid}" >> "$seq.full"
 
-for metric in bcc.proc.io.net.perpid.tcp.send.calls \
-              bcc.proc.io.net.perpid.tcp.send.bytes \
-              bcc.proc.io.net.perpid.tcp.recv.calls \
-              bcc.proc.io.net.perpid.tcp.recv.bytes \
-              bcc.proc.io.net.perpid.udp.send.calls \
-              bcc.proc.io.net.perpid.udp.send.bytes \
-              bcc.proc.io.net.perpid.udp.recv.calls \
-              bcc.proc.io.net.perpid.udp.recv.bytes
+for metric in bcc.proc.net.tcp.send.calls \
+              bcc.proc.net.tcp.send.bytes \
+              bcc.proc.net.tcp.recv.calls \
+              bcc.proc.net.tcp.recv.bytes \
+              bcc.proc.net.udp.send.calls \
+              bcc.proc.net.udp.send.bytes \
+              bcc.proc.net.udp.recv.calls \
+              bcc.proc.net.udp.recv.bytes
 do
     echo && echo && echo "=== report metric values for $metric ==="
     pminfo -dfmtT $metric 2>&1 | tee -a $seq.full \

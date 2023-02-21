@@ -49,9 +49,9 @@ _check_file()
     #
     if [ -r "$1" ]
     then
-	grep -i QA "$1" >$tmp.out
+	grep -i QA "$1" >$tmp.out 2>>$here/$seq.full
     else
-	$sudo grep -i QA "$1" >$tmp.out
+	$sudo grep -i QA "$1" >$tmp.out 2>>$here/$seq.full
     fi
     # some of these are indeed expected and OK, so handle the exceptions
     # here ...
@@ -63,6 +63,7 @@ _check_file()
 		-e '/bogus entries for PCP QA, added by qa.src.fixhosts/d' \
 		-e '/pcpqa-.*\.sgi\.com/d' \
 		-e '/[a-z]*[0-9]*-qa\.gateway/d' \
+		-e '/cloudapp\.net/d' \
 	    # end
 	    mv $tmp.tmp $tmp.out
 	    ;;
@@ -84,10 +85,14 @@ _check_file()
 	    # most of these are PCP mmap'd files, in which case a match
 	    # for QA from the grep above is a fluke
 	    #
-	    case `file "$1"`
+	    case `file "$1" | sed -e 's/  */ /g'`
 	    in
 		*": PCP memory mapped values"*)
 		    rm -f $tmp.out
+		    ;;
+		*": data")	# file(1) does not grok the PCP types?
+		    rm -f $tmp.out
+		    ;;
 	    esac
 	    ;;
     esac
@@ -147,12 +152,13 @@ else
     echo "Count of pmcd's ... BAD ($n not 1)"
     echo "From _get_pids_by_name"
     sed -e 's/^/ /' <$tmp.pids
-    $PCP_PS_PROG $PCP_PS_ALL_FLAGS | egrep '[P]ID|[p]mcd |[p]mcd$' \
+    $PCP_PS_PROG $PCP_PS_ALL_FLAGS | grep -E '[P]ID|[p]mcd |[p]mcd$' \
     | sed -e 's/^/  /'
+    _systemctl_status pmcd
     status=1
 fi
 
-$PCP_PS_PROG $PCP_PS_ALL_FLAGS | egrep '[P]ID|[p]mlogger .*-P ' >$tmp.out
+$PCP_PS_PROG $PCP_PS_ALL_FLAGS | grep -E '[P]ID|[p]mlogger .*-P ' >$tmp.out
 n=`grep -v PID <$tmp.out | wc -l | sed -e 's/ //g'`
 if [ "$n" -eq 1 ]
 then
@@ -160,6 +166,7 @@ then
 else
     echo "Count of primary pmlogger's ... BAD ($n not 1)"
     cat $tmp.out | sed -e 's/^/  /'
+    _systemctl_status pmlogger
     status=1
 fi
 
@@ -191,14 +198,19 @@ else
     status=1
 fi
 
-pminfo -v -b 5000 | grep 'illegal metric identifier' \
-| grep -v 'sample.*\.bad\.unknown' >$tmp.out
+# sample PMDA has some test metrics that produce a warning
+# pmproxy PMDA has some dynamic metrics that may not have been
+# enumerated in the PMDA's PMNS if it has just restarted
+#
+pminfo -v -b 2000 | grep 'illegal metric identifier' \
+| grep -v 'sample.*\.bad\.unknown' \
+| grep -v 'pmproxy\.' >$tmp.out
 n=`wc -l <$tmp.out | sed -e 's/ //g'`
 if [ "$n" -eq 0 ]
 then
-    $check || echo "Bad PMIDs in PMDA (other than sample) ... OK"
+    $check || echo "Bad PMIDs in PMDA (other than sample or pmproxy) ... OK"
 else
-    echo "Bad PMIDs in PMDA (other than sample) ... BAD ($n not 0)"
+    echo "Bad PMIDs in PMDA (other than sample or pmproxy) ... BAD ($n not 0)"
     cat $tmp.out | sed -e 's/^/  /'
     status=1
 fi

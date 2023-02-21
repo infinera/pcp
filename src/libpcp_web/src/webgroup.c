@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2019-2021 Red Hat.
+ * Copyright (c) 2019-2022 Red Hat.
  *
  * This library is free software; you can redistribute it and/or modify it
  * under the terms of the GNU Lesser General Public License as published
@@ -43,22 +43,38 @@ static sds EMPTYSTRING, LOCALHOST, WORK_TIMER, POLL_TIMEOUT, BATCHSIZE;
 enum matches { MATCH_EXACT, MATCH_GLOB, MATCH_REGEX };
 enum profile { PROFILE_ADD, PROFILE_DEL };
 
+enum webgroup_metric {
+    WEBGROUP_GC_COUNT,
+    WEBGROUP_GC_DROPS,
+    NUM_WEBGROUP_METRIC
+};
+
 typedef struct webgroups {
     struct dict		*contexts;
-    mmv_registry_t	*metrics;
-    void		*metrics_handle;
     struct dict		*config;
+
+    mmv_registry_t	*registry;
+    pmAtomValue		*metrics[NUM_WEBGROUP_METRIC];
+    void		*map;
+
     uv_loop_t		*events;
-    unsigned int	active;
     uv_timer_t		timer;
+    uv_mutex_t		mutex;
+
+    unsigned int	active;
 } webgroups;
 
 static struct webgroups *
 webgroups_lookup(pmWebGroupModule *module)
 {
-    if (module->privdata == NULL)
+    struct webgroups *groups = module->privdata;
+
+    if (module->privdata == NULL) {
 	module->privdata = calloc(1, sizeof(struct webgroups));
-    return (struct webgroups *)module->privdata;
+	groups = (struct webgroups *)module->privdata;
+	uv_mutex_init(&groups->mutex);
+    }
+    return groups;
 }
 
 static int
@@ -94,8 +110,11 @@ webgroup_drop_context(struct context *context, struct webgroups *groups)
 	    context->garbage = 1;
 	    uv_timer_stop(&context->timer);
 	}
-	if (groups)
-	    dictUnlink(groups->contexts, &context->randomid);
+	if (groups) {
+	    uv_mutex_lock(&groups->mutex);
+	    dictDelete(groups->contexts, &context->randomid);
+	    uv_mutex_unlock(&groups->mutex);
+	}
 	uv_close((uv_handle_t *)&context->timer, webgroup_release_context);
     }
 }
@@ -127,7 +146,7 @@ webgroup_access(struct context *cp, sds hostspec, dict *params,
 {
     __pmHashNode	*node;
     __pmHashCtl		attrs;
-    pmHostSpec		*hosts = NULL;
+    __pmHostSpec	*hosts = NULL;
     char		*msg, buf[512];
     int			sts, bytes, numhosts = 0;
     sds			value;
@@ -207,13 +226,16 @@ webgroup_new_context(pmWebGroupSettings *sp, dict *params,
     cp->context = -1;
     cp->timeout = polltime;
 
+    uv_mutex_lock(&groups->mutex);
     if ((cp->randomid = random()) < 0 ||
 	dictFind(groups->contexts, &cp->randomid) != NULL) {
 	infofmt(*message, "random number failure on new web context");
 	pmwebapi_free_context(cp);
 	*status = -ESRCH;
+	uv_mutex_unlock(&groups->mutex);
 	return NULL;
     }
+    uv_mutex_unlock(&groups->mutex);
     cp->origin = sdscatfmt(sdsempty(), "%i", cp->randomid);
     cp->name.sds = sdsdup(hostspec ? hostspec : LOCALHOST);
     cp->realm = sdscatfmt(sdsempty(), "pmapi/%i", cp->randomid);
@@ -242,7 +264,9 @@ webgroup_new_context(pmWebGroupSettings *sp, dict *params,
 	pmwebapi_free_context(cp);
 	return NULL;
     }
+    uv_mutex_lock(&groups->mutex);
     dictAdd(groups->contexts, &cp->randomid, cp);
+    uv_mutex_unlock(&groups->mutex);
 
     /* leave until the end because uv_timer_init makes this visible in uv_run */
     handle = (uv_handle_t *)&cp->timer;
@@ -259,40 +283,59 @@ webgroup_new_context(pmWebGroupSettings *sp, dict *params,
 }
 
 static void
+webgroup_timers_stop(struct webgroups *groups)
+{
+    if (groups->active) {
+	uv_timer_stop(&groups->timer);
+	uv_close((uv_handle_t *)&groups->timer, NULL);
+	groups->active = 0;
+    }
+}
+
+static void
 webgroup_garbage_collect(struct webgroups *groups)
 {
-    dictIterator        *iterator = dictGetSafeIterator(groups->contexts);
+    dictIterator        *iterator;
     dictEntry           *entry;
     context_t		*cp;
+    unsigned int	count = 0, drops = 0;
 
     if (pmDebugOptions.http || pmDebugOptions.libweb)
 	fprintf(stderr, "%s: started\n", "webgroup_garbage_collect");
 
-    while ((entry = dictNext(iterator)) != NULL) {
-	cp = (context_t *)dictGetVal(entry);
-	if (cp->garbage && cp->privdata == groups) {
-	    if (pmDebugOptions.http || pmDebugOptions.libweb)
-		fprintf(stderr, "GC context %u (%p)\n", cp->randomid, cp);
-	    webgroup_drop_context(cp, groups);
+    /* do context GC if we get the lock (else don't block here) */
+    if (uv_mutex_trylock(&groups->mutex) == 0) {
+	iterator = dictGetSafeIterator(groups->contexts);
+	for (entry = dictNext(iterator); entry;) {
+	    cp = (context_t *)dictGetVal(entry);
+	    entry = dictNext(iterator);
+	    if (cp->garbage && cp->privdata == groups) {
+		if (pmDebugOptions.http || pmDebugOptions.libweb)
+		    fprintf(stderr, "GC context %u (%p)\n", cp->randomid, cp);
+		uv_mutex_unlock(&groups->mutex);
+		webgroup_drop_context(cp, groups);
+		uv_mutex_lock(&groups->mutex);
+		drops++;
+	    }
+	    count++;
 	}
-    }
-    dictReleaseIterator(iterator);
+	dictReleaseIterator(iterator);
 
-    /* TODO - trim maps, particularly instmap if proc metrics are not excluded */
-
-    if (groups->metrics_handle) {
-	mmv_stats_set(groups->metrics_handle, "contextmap.size",
-	    NULL, dictSize(contextmap));
-	mmv_stats_set(groups->metrics_handle, "namesmap.size",
-	    NULL, dictSize(namesmap));
-	mmv_stats_set(groups->metrics_handle, "labelsmap.size",
-	    NULL, dictSize(labelsmap));
-	mmv_stats_set(groups->metrics_handle, "instmap.size",
-	    NULL, dictSize(instmap));
+	/* if dropping the last remaining context, do cleanup */
+	if (groups->active && drops == count) {
+	    if (pmDebugOptions.http || pmDebugOptions.libweb)
+		fprintf(stderr, "%s: freezing\n", "webgroup_garbage_collect");
+	    webgroup_timers_stop(groups);
+	}
+	uv_mutex_unlock(&groups->mutex);
     }
+
+    mmv_set(groups->map, groups->metrics[WEBGROUP_GC_DROPS], &drops);
+    mmv_set(groups->map, groups->metrics[WEBGROUP_GC_COUNT], &count);
 
     if (pmDebugOptions.http || pmDebugOptions.libweb)
-	fprintf(stderr, "%s: finished\n", "webgroup_garbage_collect");
+	fprintf(stderr, "%s: finished [%u drops from %u entries]\n",
+			"webgroup_garbage_collect", drops, count);
 }
 
 static void
@@ -443,6 +486,7 @@ pmWebGroupDestroy(pmWebGroupSettings *settings, sds id, void *arg)
 	if (pmDebugOptions.libweb)
 	    fprintf(stderr, "%s: destroy context %p gp=%p\n", "pmWebGroupDestroy", cp, gp);
 
+	webgroup_deref_context(cp);
 	webgroup_drop_context(cp, gp);
     }
     sdsfree(msg);
@@ -629,15 +673,15 @@ webgroup_fetch(pmWebGroupSettings *settings, context_t *cp,
     pmWebResult		webresult;
     pmWebValueSet	webvalueset;
     pmWebValue		webvalue;
-    pmResult		*result;
+    pmHighResResult	*result;
     char		err[PM_MAXERRMSGLEN];
     sds			v = sdsempty(), series = NULL;
     sds			id = cp->origin;
     int			i, j, k, sts, inst, type, status = 0;
 
-    if ((sts = pmFetch(numpmid, pmidlist, &result)) >= 0) {
+    if ((sts = pmFetchHighRes(numpmid, pmidlist, &result)) >= 0) {
 	webresult.seconds = result->timestamp.tv_sec;
-	webresult.nanoseconds = result->timestamp.tv_usec * 1000;
+	webresult.nanoseconds = result->timestamp.tv_nsec;
 
 	settings->callbacks.on_fetch(id, &webresult, arg);
 
@@ -707,7 +751,7 @@ webgroup_fetch(pmWebGroupSettings *settings, context_t *cp,
 		}
 	    }
 	}
-	pmFreeResult(result);
+	pmFreeHighResResult(result);
     } else if (sts == PM_ERR_IPC) {
 	cp->setup = 0;
     }
@@ -1551,15 +1595,15 @@ pmWebGroupMetric(pmWebGroupSettings *settings, sds id, dict *params, void *arg)
     lookup.context = cp;
     lookup.arg = arg;
 
-    /* allocate uninit'd space for strings */
-    metric->series = sdsnewlen(SDS_NOINIT, 42); sdsclear(metric->series);
-    metric->name = sdsnewlen(SDS_NOINIT, 16); sdsclear(metric->name);
-    metric->sem = sdsnewlen(SDS_NOINIT, 20); sdsclear(metric->sem);
-    metric->type = sdsnewlen(SDS_NOINIT, 20); sdsclear(metric->type);
-    metric->units = sdsnewlen(SDS_NOINIT, 64); sdsclear(metric->units);
-    metric->labels = sdsnewlen(SDS_NOINIT, 128); sdsclear(metric->labels);
-    metric->oneline = sdsnewlen(SDS_NOINIT, 128); sdsclear(metric->oneline);
-    metric->helptext = sdsnewlen(SDS_NOINIT, 128); sdsclear(metric->helptext);
+    /* allocate zero'd space for strings */
+    metric->series = sdsnewlen(NULL, 42); sdsclear(metric->series);
+    metric->name = sdsnewlen(NULL, 16); sdsclear(metric->name);
+    metric->sem = sdsnewlen(NULL, 20); sdsclear(metric->sem);
+    metric->type = sdsnewlen(NULL, 20); sdsclear(metric->type);
+    metric->units = sdsnewlen(NULL, 64); sdsclear(metric->units);
+    metric->labels = sdsnewlen(NULL, 128); sdsclear(metric->labels);
+    metric->oneline = sdsnewlen(NULL, 128); sdsclear(metric->oneline);
+    metric->helptext = sdsnewlen(NULL, 128); sdsclear(metric->helptext);
 
     if (prefix == NULL || *prefix == '\0') {
 	sts = pmTraversePMNS_r("", webmetric_lookup, &lookup);
@@ -1634,6 +1678,8 @@ scrape_metric_labelsets(metric_t *metric, pmWebLabelSet *labels)
 	labels->sets[nsets++] = metric->labelset;
     labels->nsets = nsets;
     sdsclear(labels->buffer);
+    labels->instid = PM_IN_NULL;
+    labels->instname = NULL;
 }
 
 static void
@@ -1659,6 +1705,8 @@ scrape_instance_labelsets(metric_t *metric, indom_t *indom, instance_t *inst,
 	labels->sets[nsets++] = inst->labelset;
     labels->nsets = nsets;
     sdsclear(labels->buffer);
+    labels->instid = inst->inst;
+    labels->instname = inst->name.sds;
 }
 
 static int
@@ -1672,21 +1720,21 @@ webgroup_scrape(pmWebGroupSettings *settings, context_t *cp,
     struct value	*value;
     pmWebLabelSet	labels;
     pmWebScrape		scrape;
-    pmResult		*result;
+    pmHighResResult	*result;
     sds			sems, types, units;
     sds			v = sdsempty(), series = NULL;
     int			i, j, k, sts, type;
 
     /* pre-allocate buffers for metric metadata */
-    sems = sdsnewlen(SDS_NOINIT, 20); sdsclear(sems);
-    types = sdsnewlen(SDS_NOINIT, 20); sdsclear(types);
-    units = sdsnewlen(SDS_NOINIT, 64); sdsclear(units);
-    labels.buffer = sdsnewlen(SDS_NOINIT, PM_MAXLABELJSONLEN);
+    sems = sdsnewlen(NULL, 20); sdsclear(sems);
+    types = sdsnewlen(NULL, 20); sdsclear(types);
+    units = sdsnewlen(NULL, 64); sdsclear(units);
+    labels.buffer = sdsnewlen(NULL, PM_MAXLABELJSONLEN);
     sdsclear(labels.buffer);
 
-    if ((sts = pmFetch(numpmid, pmidlist, &result)) >= 0) {
+    if ((sts = pmFetchHighRes(numpmid, pmidlist, &result)) >= 0) {
 	scrape.seconds = result->timestamp.tv_sec;
-	scrape.nanoseconds = result->timestamp.tv_usec * 1000;
+	scrape.nanoseconds = result->timestamp.tv_nsec;
 
 	/* extract all values from the result for later stages */
 	for (i = 0; i < numpmid; i++)
@@ -1776,7 +1824,7 @@ webgroup_scrape(pmWebGroupSettings *settings, context_t *cp,
 		}
 	    }
 	}
-	pmFreeResult(result);
+	pmFreeHighResResult(result);
     } else {
 	char		err[PM_MAXERRMSGLEN];
 
@@ -1950,12 +1998,16 @@ struct instore {
     int			status;
 };
 
+#define STORE_INST_MAX	100000	/* cap number of storable instances */
+
 static int
 store_add_instid(struct instore *store, int id)
 {
     int		*insts, count = store->count++;
 
-    if ((insts = realloc(store->insts, store->count * sizeof(int))) == NULL) {
+    if ((store->count >= STORE_INST_MAX) ||
+	(insts = realloc(store->insts, store->count * sizeof(int))) == NULL) {
+	store->status = -E2BIG;
 	store->count = count;	/* reset */
 	return count;
     }
@@ -2023,7 +2075,7 @@ webgroup_store(struct context *context, struct metric *metric,
     struct indom	*indom;
     pmAtomValue		atom = {0};
     pmValueSet		*valueset = NULL;
-    pmResult		*result = NULL;
+    pmHighResResult	*result = NULL;
     size_t		bytes;
     long		cursor = 0;
     int			i, id, sts, count;
@@ -2045,7 +2097,7 @@ webgroup_store(struct context *context, struct metric *metric,
 	count = 1;
 
     bytes = sizeof(pmValueSet) + sizeof(pmValue) * (count - 1);
-    if ((result = (pmResult *)calloc(1, sizeof(pmResult))) == NULL ||
+    if ((result = (pmHighResResult *)calloc(1, sizeof(*result))) == NULL ||
 	(valueset = (pmValueSet *)calloc(1, bytes)) == NULL) {
 	if (atom.cp && metric->desc.type == PM_TYPE_STRING)
 	    free(atom.cp);
@@ -2096,9 +2148,9 @@ webgroup_store(struct context *context, struct metric *metric,
 	valueset->valfmt = sts;
 	valueset->numval = count;
 	valueset->pmid = metric->desc.pmid;
-	sts = pmStore(result);
+	sts = pmStoreHighRes(result);
     }
-    pmFreeResult(result);
+    pmFreeHighResResult(result);
     return sts;
 }
 
@@ -2181,7 +2233,7 @@ int
 pmWebGroupSetup(pmWebGroupModule *module)
 {
     struct webgroups	*groups = webgroups_lookup(module);
-    struct timeval	tv;
+    struct timespec	ts;
     unsigned int	pid;
 
     if (groups == NULL)
@@ -2216,9 +2268,9 @@ pmWebGroupSetup(pmWebGroupModule *module)
     AUTH_PASSWORD = sdsnew("auth.password");
 
     /* setup the random number generator for context IDs */
-    gettimeofday(&tv, NULL);
+    pmtimespecNow(&ts);
     pid = (unsigned int)getpid();
-    srandom(pid ^ (unsigned int)tv.tv_sec ^ (unsigned int)tv.tv_usec);
+    srandom(pid ^ (unsigned int)ts.tv_sec ^ (unsigned int)ts.tv_nsec);
 
     /* setup a dictionary mapping context number to data */
     groups->contexts = dictCreate(&intKeyDictCallBacks, NULL);
@@ -2229,10 +2281,10 @@ pmWebGroupSetup(pmWebGroupModule *module)
 int
 pmWebGroupSetEventLoop(pmWebGroupModule *module, void *events)
 {
-    struct webgroups	*webgroups = webgroups_lookup(module);
+    struct webgroups	*groups = webgroups_lookup(module);
 
-    if (webgroups) {
-	webgroups->events = (uv_loop_t *)events;
+    if (groups) {
+	groups->events = (uv_loop_t *)events;
 	return 0;
     }
     return -ENOMEM;
@@ -2241,7 +2293,7 @@ pmWebGroupSetEventLoop(pmWebGroupModule *module, void *events)
 int
 pmWebGroupSetConfiguration(pmWebGroupModule *module, dict *config)
 {
-    struct webgroups	*webgroups = webgroups_lookup(module);
+    struct webgroups	*groups = webgroups_lookup(module);
     char		*endnum;
     sds			value;
 
@@ -2269,8 +2321,8 @@ pmWebGroupSetConfiguration(pmWebGroupModule *module, dict *config)
 	    default_batchsize = DEFAULT_BATCHSIZE;
     }
 
-    if (webgroups) {
-	webgroups->config = config;
+    if (groups) {
+	groups->config = config;
 	return 0;
     }
     return -ENOMEM;
@@ -2279,45 +2331,39 @@ pmWebGroupSetConfiguration(pmWebGroupModule *module, dict *config)
 static void
 pmWebGroupSetupMetrics(pmWebGroupModule *module)
 {
-    struct webgroups	*webgroups = webgroups_lookup(module);
-    pmUnits            nounits = MMV_UNITS(0,0,0,0,0,0);
-    pmInDom            noindom = MMV_INDOM_NULL;
+    struct webgroups	*groups = webgroups_lookup(module);
+    pmAtomValue		**ap;
+    pmUnits		nounits = MMV_UNITS(0,0,0,0,0,0);
+    void		*map;
 
-    if (webgroups == NULL || webgroups->metrics == NULL)
+    if (groups == NULL || groups->registry == NULL)
 	return; /* no metric registry has been set up */
 
-    /*
-     * Reverse mapping dict metrics
-     */
-    mmv_stats_add_metric(webgroups->metrics, "contextmap.size", 1,
-	MMV_TYPE_U32, MMV_SEM_INSTANT, nounits, noindom,
-	"number of entries in the context map dictionary", NULL);
+    mmv_stats_add_metric(groups->registry, "gc.context.scans", 1,
+	MMV_TYPE_U32, MMV_SEM_INSTANT, nounits, MMV_INDOM_NULL,
+	"contexts scanned in last garbage collection",
+	"Contexts scanned during most recent webgroup garbage collection");
 
-    mmv_stats_add_metric(webgroups->metrics, "namesmap.size", 2,
-	MMV_TYPE_U32, MMV_SEM_INSTANT, nounits, noindom,
-	"number of entries in the metric names map dictionary", NULL);
+    mmv_stats_add_metric(groups->registry, "gc.context.drops", 2,
+	MMV_TYPE_U32, MMV_SEM_INSTANT, nounits, MMV_INDOM_NULL,
+	"contexts dropped in last garbage collection",
+	"Contexts dropped during most recent webgroup garbage collection");
 
-    mmv_stats_add_metric(webgroups->metrics, "labelsmap.size", 3,
-	MMV_TYPE_U32, MMV_SEM_INSTANT, nounits, noindom,
-	"number of entries in the labels map dictionary", NULL);
+    groups->map = map = mmv_stats_start(groups->registry);
 
-    mmv_stats_add_metric(webgroups->metrics, "instmap.size", 4,
-	MMV_TYPE_U32, MMV_SEM_INSTANT, nounits, noindom,
-	"number of entries in the instance name map dictionary", NULL);
-
-    /* TODO add call counter metrics for pmWebgroup* API functions */
-
-    webgroups->metrics_handle = mmv_stats_start(webgroups->metrics);
+    ap = groups->metrics;
+    ap[WEBGROUP_GC_DROPS] = mmv_lookup_value_desc(map, "gc.context.scans", NULL);
+    ap[WEBGROUP_GC_COUNT] = mmv_lookup_value_desc(map, "gc.context.drops", NULL);
 }
 
 
 int
 pmWebGroupSetMetricRegistry(pmWebGroupModule *module, mmv_registry_t *registry)
 {
-    struct webgroups	*webgroups = webgroups_lookup(module);
+    struct webgroups	*groups = webgroups_lookup(module);
 
-    if (webgroups) {
-	webgroups->metrics = registry;
+    if (groups) {
+	groups->registry = registry;
 	pmWebGroupSetupMetrics(module);
 	return 0;
     }
@@ -2333,17 +2379,15 @@ pmWebGroupClose(pmWebGroupModule *module)
 
     if (groups) {
 	/* walk the contexts, stop timers and free resources */
-	if (groups->active) {
-	    groups->active = 0;
-	    uv_timer_stop(&groups->timer);
-	}
 	iterator = dictGetIterator(groups->contexts);
 	while ((entry = dictNext(iterator)) != NULL)
 	    webgroup_drop_context((context_t *)dictGetVal(entry), NULL);
 	dictReleaseIterator(iterator);
 	dictRelease(groups->contexts);
+	webgroup_timers_stop(groups);
 	memset(groups, 0, sizeof(struct webgroups));
 	free(groups);
+	module->privdata = NULL;
     }
 
     sdsfree(PARAM_HOSTNAME);

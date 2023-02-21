@@ -445,6 +445,57 @@ decode_fetch(const char *name)
 }
 
 static void
+decode_highres_fetch(const char *name)
+{
+    pmID		*pmidlist;
+    int			sts, ctx, count;
+    struct fetch {
+	__pmPDUHdr	hdr;
+	int		ctxnum;
+	pmTimeval	when;
+	int		numpmid;
+	pmID		pmidlist[0];
+    } *fetch;
+
+    fetch = (struct fetch *)malloc(sizeof(*fetch));
+
+    fprintf(stderr, "[%s] checking all-zeroes structure\n", name);
+    memset(fetch, 0, sizeof(*fetch));
+    sts = __pmDecodeHighResFetch((__pmPDU *)fetch, &ctx, &count, &pmidlist);
+    fprintf(stderr, "  __pmDecodeHighResFetch: sts = %d (%s)\n", sts, pmErrStr(sts));
+    if (sts >= 0) { free(pmidlist); }
+
+    fprintf(stderr, "[%s] checking large numpmid field\n", name);
+    memset(fetch, 0, sizeof(*fetch));
+    fetch->hdr.len = sizeof(*fetch);
+    fetch->hdr.type = PDU_HIGHRES_FETCH;
+    fetch->numpmid = htonl(INT_MAX - 1);
+    sts = __pmDecodeHighResFetch((__pmPDU *)fetch, &ctx, &count, &pmidlist);
+    fprintf(stderr, "  __pmDecodeHighResFetch: sts = %d (%s)\n", sts, pmErrStr(sts));
+    if (sts >= 0) { free(pmidlist); }
+
+    fprintf(stderr, "[%s] checking negative numpmid field\n", name);
+    memset(fetch, 0, sizeof(*fetch));
+    fetch->hdr.len = sizeof(*fetch);
+    fetch->hdr.type = PDU_HIGHRES_FETCH;
+    fetch->numpmid = htonl(-2);
+    sts = __pmDecodeHighResFetch((__pmPDU *)fetch, &ctx, &count, &pmidlist);
+    fprintf(stderr, "  __pmDecodeHighResFetch: sts = %d (%s)\n", sts, pmErrStr(sts));
+    if (sts >= 0) { free(pmidlist); }
+
+    fprintf(stderr, "[%s] checking access beyond buffer\n", name);
+    memset(fetch, 0, sizeof(*fetch));
+    fetch->hdr.len = sizeof(*fetch);
+    fetch->hdr.type = PDU_HIGHRES_FETCH;
+    fetch->numpmid = htonl(2);
+    sts = __pmDecodeHighResFetch((__pmPDU *)fetch, &ctx, &count, &pmidlist);
+    fprintf(stderr, "  __pmDecodeHighResFetch: sts = %d (%s)\n", sts, pmErrStr(sts));
+    if (sts >= 0) { free(pmidlist); }
+
+    free(fetch);
+}
+
+static void
 decode_desc_req(const char *name)
 {
     pmID		pmid;
@@ -497,16 +548,70 @@ decode_desc(const char *name)
 }
 
 static void
+decode_descs(const char *name)
+{
+    pmDesc		pmdescs[32];
+    int			sts;
+    struct descs {
+	__pmPDUHdr	hdr;
+	int		numdescs;
+	pmDesc		descs[0];
+    } *descs, *xdescs;
+
+    descs = (struct descs *)malloc(sizeof(*descs));
+    xdescs = (struct descs *)malloc(sizeof(*descs)+16);
+
+    fprintf(stderr, "[%s] checking all-zeroes structure\n", name);
+    memset(descs, 0, sizeof(*descs));
+    sts = __pmDecodeDescs((__pmPDU *)descs, 2, pmdescs);
+    fprintf(stderr, "  __pmDecodeDescs: sts = %d (%s)\n", sts, pmErrStr(sts));
+
+    fprintf(stderr, "[%s] checking large numdescs field\n", name);
+    memset(descs, 0, sizeof(*descs));
+    descs->hdr.len = sizeof(*descs);
+    descs->hdr.type = PDU_DESCS;
+    descs->numdescs = htonl(INT_MAX - 1);
+    sts = __pmDecodeDescs((__pmPDU *)descs, 2, pmdescs);
+    fprintf(stderr, "  __pmDecodeDescs: sts = %d (%s)\n", sts, pmErrStr(sts));
+
+    fprintf(stderr, "[%s] checking negative numdescs field\n", name);
+    memset(descs, 0, sizeof(*descs));
+    descs->hdr.len = sizeof(*descs);
+    descs->hdr.type = PDU_DESCS;
+    descs->numdescs = htonl(-2);
+    sts = __pmDecodeDescs((__pmPDU *)descs, 2, pmdescs);
+    fprintf(stderr, "  __pmDecodeDescs: sts = %d (%s)\n", sts, pmErrStr(sts));
+
+    fprintf(stderr, "[%s] checking access beyond basic buffer\n", name);
+    memset(descs, 0, sizeof(*descs));
+    descs->hdr.len = sizeof(*descs);
+    descs->hdr.type = PDU_DESCS;
+    descs->numdescs = htonl(1);
+    sts = __pmDecodeDescs((__pmPDU *)descs, 1, pmdescs);
+    fprintf(stderr, "  __pmDecodeDescs: sts = %d (%s)\n", sts, pmErrStr(sts));
+
+    fprintf(stderr, "[%s] checking access beyond extended buffer\n", name);
+    memset(xdescs, 0, sizeof(*descs) + 16);
+    xdescs->hdr.len = sizeof(*descs) + 16;
+    xdescs->hdr.type = PDU_DESCS;
+    xdescs->numdescs = htonl(32);
+    sts = __pmDecodeDescs((__pmPDU *)xdescs, 32, pmdescs);
+    fprintf(stderr, "  __pmDecodeDescs: sts = %d (%s)\n", sts, pmErrStr(sts));
+
+    free(xdescs);
+    free(descs);
+}
+
+static void
 decode_instance_req(const char *name)
 {
-    pmTimeval		when;
     pmInDom		indom;
     int			inst, sts;
     char		*resname;
     struct instance_req {
 	__pmPDUHdr	hdr;
 	pmInDom		indom;
-	pmTimeval	when;
+	pmTimeval	unused;
 	int		inst;
 	int		namelen;
 	char		name[0];
@@ -517,7 +622,7 @@ decode_instance_req(const char *name)
 
     fprintf(stderr, "[%s] checking all-zeroes structure\n", name);
     memset(instance_req, 0, sizeof(*instance_req));
-    sts = __pmDecodeInstanceReq((__pmPDU *)instance_req, &when, &indom, &inst, &resname);
+    sts = __pmDecodeInstanceReq((__pmPDU *)instance_req, &indom, &inst, &resname);
     fprintf(stderr, "  __pmDecodeInstanceReq: sts = %d (%s)\n", sts, pmErrStr(sts));
     if (sts >= 0) { free(resname); }
 
@@ -526,7 +631,7 @@ decode_instance_req(const char *name)
     instance_req->hdr.len = sizeof(*instance_req);
     instance_req->hdr.type = PDU_INSTANCE_REQ;
     instance_req->namelen = htonl(INT_MAX - 1);
-    sts = __pmDecodeInstanceReq((__pmPDU *)instance_req, &when, &indom, &inst, &resname);
+    sts = __pmDecodeInstanceReq((__pmPDU *)instance_req, &indom, &inst, &resname);
     fprintf(stderr, "  __pmDecodeInstanceReq: sts = %d (%s)\n", sts, pmErrStr(sts));
     if (sts >= 0) { free(resname); }
 
@@ -535,7 +640,7 @@ decode_instance_req(const char *name)
     instance_req->hdr.len = sizeof(*instance_req);
     instance_req->hdr.type = PDU_INSTANCE_REQ;
     instance_req->namelen = htonl(-2);
-    sts = __pmDecodeInstanceReq((__pmPDU *)instance_req, &when, &indom, &inst, &resname);
+    sts = __pmDecodeInstanceReq((__pmPDU *)instance_req, &indom, &inst, &resname);
     fprintf(stderr, "  __pmDecodeInstanceReq: sts = %d (%s)\n", sts, pmErrStr(sts));
     if (sts >= 0) { free(resname); }
 
@@ -544,7 +649,7 @@ decode_instance_req(const char *name)
     instance_req->hdr.len = sizeof(*instance_req);
     instance_req->hdr.type = PDU_INSTANCE_REQ;
     instance_req->namelen = htonl(1);
-    sts = __pmDecodeInstanceReq((__pmPDU *)instance_req, &when, &indom, &inst, &resname);
+    sts = __pmDecodeInstanceReq((__pmPDU *)instance_req, &indom, &inst, &resname);
     fprintf(stderr, "  __pmDecodeInstanceReq: sts = %d (%s)\n", sts, pmErrStr(sts));
     if (sts >= 0) { free(resname); }
 
@@ -553,7 +658,7 @@ decode_instance_req(const char *name)
     xinstance_req->hdr.len = sizeof(*xinstance_req) + 16;
     xinstance_req->hdr.type = PDU_INSTANCE_REQ;
     xinstance_req->namelen = htonl(32);
-    sts = __pmDecodeInstanceReq((__pmPDU *)xinstance_req, &when, &indom, &inst, &resname);
+    sts = __pmDecodeInstanceReq((__pmPDU *)xinstance_req, &indom, &inst, &resname);
     fprintf(stderr, "  __pmDecodeInstanceReq: sts = %d (%s)\n", sts, pmErrStr(sts));
     if (sts >= 0) {free(resname); }
 
@@ -650,7 +755,7 @@ decode_instance(const char *name)
 }
 
 static void
-decode_pmns_ids(const char *name)
+decode_idlist(const char *name, int pdutype)
 {
     pmID		idarray[10];
     int			idsts, sts;
@@ -671,7 +776,7 @@ decode_pmns_ids(const char *name)
     fprintf(stderr, "[%s] checking large numids field\n", name);
     memset(idlist, 0, sizeof(*idlist));
     idlist->hdr.len = sizeof(*idlist);
-    idlist->hdr.type = PDU_PMNS_IDS;
+    idlist->hdr.type = pdutype;
     idlist->numids = htonl(INT_MAX - 1);
     sts = __pmDecodeIDList((__pmPDU *)idlist, 10, idarray, &idsts);
     fprintf(stderr, "  __pmDecodeIDList: sts = %d (%s)\n", sts, pmErrStr(sts));
@@ -679,7 +784,7 @@ decode_pmns_ids(const char *name)
     fprintf(stderr, "[%s] checking negative numids field\n", name);
     memset(idlist, 0, sizeof(*idlist));
     idlist->hdr.len = sizeof(*idlist);
-    idlist->hdr.type = PDU_PMNS_IDS;
+    idlist->hdr.type = pdutype;
     idlist->numids = htonl(-2);
     sts = __pmDecodeIDList((__pmPDU *)idlist, 10, idarray, &idsts);
     fprintf(stderr, "  __pmDecodeIDList: sts = %d (%s)\n", sts, pmErrStr(sts));
@@ -687,12 +792,24 @@ decode_pmns_ids(const char *name)
     fprintf(stderr, "[%s] checking access beyond buffer\n", name);
     memset(idlist, 0, sizeof(*idlist));
     idlist->hdr.len = sizeof(*idlist);
-    idlist->hdr.type = PDU_PMNS_IDS;
+    idlist->hdr.type = pdutype;
     idlist->numids = htonl(2);
     sts = __pmDecodeIDList((__pmPDU *)idlist, 10, idarray, &idsts);
     fprintf(stderr, "  __pmDecodeIDList: sts = %d (%s)\n", sts, pmErrStr(sts));
 
     free(idlist);
+}
+
+static void
+decode_desc_ids(const char *name)
+{
+    decode_idlist(name, PDU_DESC_IDS);
+}
+
+static void
+decode_pmns_ids(const char *name)
+{
+    decode_idlist(name, PDU_PMNS_IDS);
 }
 
 static void
@@ -921,7 +1038,7 @@ decode_pmns_traverse(const char *name)
 static void
 decode_log_control(const char *name)
 {
-    pmResult	*result;
+    __pmResult	*result;
     int		sts, ctl, state, delta;
     struct log_ctl {
 	__pmPDUHdr	hdr;
@@ -943,7 +1060,7 @@ decode_log_control(const char *name)
     memset(log_ctl, 0, sizeof(*log_ctl));
     sts = __pmDecodeLogControl((__pmPDU *)log_ctl, &result, &ctl, &state, &delta);
     fprintf(stderr, "  __pmDecodeLogControl: sts = %d (%s)\n", sts, pmErrStr(sts));
-    if (sts >= 0) pmFreeResult(result);
+    if (sts >= 0) __pmFreeResult(result);
 
     fprintf(stderr, "[%s] checking large numpmid field\n", name);
     memset(log_ctl, 0, sizeof(*log_ctl));
@@ -952,7 +1069,7 @@ decode_log_control(const char *name)
     log_ctl->numpmid = htonl(INT_MAX - 42);
     sts = __pmDecodeLogControl((__pmPDU *)log_ctl, &result, &ctl, &state, &delta);
     fprintf(stderr, "  __pmDecodeLogControl: sts = %d (%s)\n", sts, pmErrStr(sts));
-    if (sts >= 0) pmFreeResult(result);
+    if (sts >= 0) __pmFreeResult(result);
 
     fprintf(stderr, "[%s] checking negative numpmid field\n", name);
     memset(log_ctl, 0, sizeof(*log_ctl));
@@ -961,7 +1078,7 @@ decode_log_control(const char *name)
     log_ctl->numpmid = htonl(-42);
     sts = __pmDecodeLogControl((__pmPDU *)log_ctl, &result, &ctl, &state, &delta);
     fprintf(stderr, "  __pmDecodeLogControl: sts = %d (%s)\n", sts, pmErrStr(sts));
-    if (sts >= 0) pmFreeResult(result);
+    if (sts >= 0) __pmFreeResult(result);
 
     fprintf(stderr, "[%s] checking access beyond basic buffer\n", name);
     memset(log_ctl, 0, sizeof(*log_ctl));
@@ -970,7 +1087,7 @@ decode_log_control(const char *name)
     log_ctl->numpmid = htonl(2);
     sts = __pmDecodeLogControl((__pmPDU *)log_ctl, &result, &ctl, &state, &delta);
     fprintf(stderr, "  __pmDecodeLogControl: sts = %d (%s)\n", sts, pmErrStr(sts));
-    if (sts >= 0) pmFreeResult(result);
+    if (sts >= 0) __pmFreeResult(result);
 
     fprintf(stderr, "[%s] checking large numval field\n", name);
     memset(logvlist, 0, sizeof(*logvlist));
@@ -980,7 +1097,7 @@ decode_log_control(const char *name)
     logvlist->numval = htonl(INT_MAX - 3);
     sts = __pmDecodeLogControl((__pmPDU *)logvlist, &result, &ctl, &state, &delta);
     fprintf(stderr, "  __pmDecodeLogControl: sts = %d (%s)\n", sts, pmErrStr(sts));
-    if (sts >= 0) pmFreeResult(result);
+    if (sts >= 0) __pmFreeResult(result);
 
     fprintf(stderr, "[%s] checking access beyond extended buffer\n", name);
     memset(logvlist, 0, sizeof(*logvlist));
@@ -990,22 +1107,25 @@ decode_log_control(const char *name)
     logvlist->numval = htonl(2);
     sts = __pmDecodeLogControl((__pmPDU *)logvlist, &result, &ctl, &state, &delta);
     fprintf(stderr, "  __pmDecodeLogControl: sts = %d (%s)\n", sts, pmErrStr(sts));
-    if (sts >= 0) pmFreeResult(result);
+    if (sts >= 0) __pmFreeResult(result);
 
     free(log_ctl);
     free(logvlist);
 }
 
 static void
-decode_log_status(const char *name)
+decode_log_status(const char *name, int version)
 {
     __pmLoggerStatus	*log;
     int			sts;
+    int			save_ipc_version = __pmVersionIPC(0);
     struct log_sts {
 	__pmPDUHdr	hdr;
-	int		pad;
-	__pmLoggerStatus sts;
+				/* big enough for V2 or V3 */
+	__int32_t	buf[20+2*PM_LOG_MAXHOSTLEN+2*PM_TZ_MAXLEN];
     } *log_sts;
+
+    __pmSetVersionIPC(0, version);
 
     log_sts = (struct log_sts *)malloc(sizeof(*log_sts));
 
@@ -1013,15 +1133,38 @@ decode_log_status(const char *name)
     memset(log_sts, 0, sizeof(*log_sts));
     sts = __pmDecodeLogStatus((__pmPDU *)log_sts, &log);
     fprintf(stderr, "  __pmDecodeLogStatus: sts = %d (%s)\n", sts, pmErrStr(sts));
+    if (sts == 0)
+	__pmFreeLogStatus(log, 1);
 
     fprintf(stderr, "[%s] checking access beyond buffer\n", name);
     memset(log_sts, 0, sizeof(*log_sts));
-    log_sts->hdr.len = sizeof(*log_sts) - 4;
-    log_sts->hdr.type = PDU_LOG_STATUS;
+    log_sts->hdr.len = 100;
+    if (version == LOG_PDU_VERSION3) {
+	log_sts->hdr.type = PDU_LOG_STATUS;
+	log_sts->buf[13] = 64*1024;		/* pmcd_hostname_len */
+    }
+    else {
+	log_sts->hdr.type = PDU_LOG_STATUS_V2;
+    }
     sts = __pmDecodeLogStatus((__pmPDU *)log_sts, &log);
     fprintf(stderr, "  __pmDecodeLogStatus: sts = %d (%s)\n", sts, pmErrStr(sts));
+    if (sts == 0)
+	__pmFreeLogStatus(log, 1);
 
     free(log_sts);
+    __pmSetVersionIPC(0, save_ipc_version);
+}
+
+static void
+decode_log_status_v2(const char *name)
+{
+    decode_log_status(name, LOG_PDU_VERSION2);
+}
+
+static void
+decode_log_status_v3(const char *name)
+{
+    decode_log_status(name, LOG_PDU_VERSION3);
 }
 
 static void
@@ -1053,7 +1196,7 @@ static void
 decode_result(const char *name)
 {
     int			sts;
-    pmResult		*resp;
+    __pmResult		*resp;
     struct result {
 	__pmPDUHdr	hdr;
 	pmTimeval	stamp;
@@ -1081,7 +1224,7 @@ decode_result(const char *name)
     memset(result, 0, sizeof(*result));
     sts = __pmDecodeResult((__pmPDU *)result, &resp);
     fprintf(stderr, "  __pmDecodeResult: sts = %d (%s)\n", sts, pmErrStr(sts));
-    if (sts >= 0) pmFreeResult(resp);
+    if (sts >= 0) __pmFreeResult(resp);
 
     fprintf(stderr, "[%s] checking large numpmid field\n", name);
     memset(result, 0, sizeof(*result));
@@ -1090,7 +1233,7 @@ decode_result(const char *name)
     result->numpmid = htonl(INT_MAX - 42);
     sts = __pmDecodeResult((__pmPDU *)result, &resp);
     fprintf(stderr, "  __pmDecodeResult: sts = %d (%s)\n", sts, pmErrStr(sts));
-    if (sts >= 0) pmFreeResult(resp);
+    if (sts >= 0) __pmFreeResult(resp);
 
     fprintf(stderr, "[%s] checking negative numpmid field\n", name);
     memset(result, 0, sizeof(*result));
@@ -1099,7 +1242,7 @@ decode_result(const char *name)
     result->numpmid = htonl(-42);
     sts = __pmDecodeResult((__pmPDU *)result, &resp);
     fprintf(stderr, "  __pmDecodeResult: sts = %d (%s)\n", sts, pmErrStr(sts));
-    if (sts >= 0) pmFreeResult(resp);
+    if (sts >= 0) __pmFreeResult(resp);
 
     fprintf(stderr, "[%s] checking access beyond basic buffer\n", name);
     memset(result, 0, sizeof(*result));
@@ -1108,7 +1251,7 @@ decode_result(const char *name)
     result->numpmid = htonl(4);
     sts = __pmDecodeResult((__pmPDU *)result, &resp);
     fprintf(stderr, "  __pmDecodeResult: sts = %d (%s)\n", sts, pmErrStr(sts));
-    if (sts >= 0) pmFreeResult(resp);
+    if (sts >= 0) __pmFreeResult(resp);
 
     fprintf(stderr, "[%s] checking large numval field\n", name);
     memset(resultlist, 0, sizeof(*resultlist));
@@ -1118,7 +1261,7 @@ decode_result(const char *name)
     resultlist->numval = htonl(INT_MAX - 3);
     sts = __pmDecodeResult((__pmPDU *)resultlist, &resp);
     fprintf(stderr, "  __pmDecodeResult: sts = %d (%s)\n", sts, pmErrStr(sts));
-    if (sts >= 0) pmFreeResult(resp);
+    if (sts >= 0) __pmFreeResult(resp);
 
     fprintf(stderr, "[%s] checking negative numval field\n", name);
     memset(resultlist, 0, sizeof(*resultlist));
@@ -1128,17 +1271,17 @@ decode_result(const char *name)
     resultlist->numval = htonl(-3);
     sts = __pmDecodeResult((__pmPDU *)resultlist, &resp);
     fprintf(stderr, "  __pmDecodeResult: sts = %d (%s)\n", sts, pmErrStr(sts));
-    if (sts >= 0) pmFreeResult(resp);
+    if (sts >= 0) __pmFreeResult(resp);
 
     fprintf(stderr, "[%s] checking access beyond extended buffer\n", name);
     memset(resultlist, 0, sizeof(*resultlist));
     resultlist->result.hdr.len = sizeof(*resultlist);
-    resultlist->result.hdr.type = PDU_LOG_CONTROL;
+    resultlist->result.hdr.type = PDU_RESULT;
     resultlist->result.numpmid = htonl(1);
     resultlist->numval = htonl(2);
     sts = __pmDecodeResult((__pmPDU *)resultlist, &resp);
     fprintf(stderr, "  __pmDecodeResult: sts = %d (%s)\n", sts, pmErrStr(sts));
-    if (sts >= 0) pmFreeResult(resp);
+    if (sts >= 0) __pmFreeResult(resp);
 
     fprintf(stderr, "[%s] checking insitu valfmt field\n", name);
     memset(resultlist, 0, sizeof(*resultlist));
@@ -1149,7 +1292,7 @@ decode_result(const char *name)
     resultlist->numval = htonl(1);
     sts = __pmDecodeResult((__pmPDU *)resultlist, &resp);
     fprintf(stderr, "  __pmDecodeResult: sts = %d (%s)\n", sts, pmErrStr(sts));
-    if (sts >= 0) pmFreeResult(resp);
+    if (sts >= 0) __pmFreeResult(resp);
 
     fprintf(stderr, "[%s] checking non-insitu valfmt field\n", name);
     memset(resultlist, 0, sizeof(*resultlist));
@@ -1160,7 +1303,7 @@ decode_result(const char *name)
     resultlist->numval = htonl(1);
     sts = __pmDecodeResult((__pmPDU *)resultlist, &resp);
     fprintf(stderr, "  __pmDecodeResult: sts = %d (%s)\n", sts, pmErrStr(sts));
-    if (sts >= 0) pmFreeResult(resp);
+    if (sts >= 0) __pmFreeResult(resp);
 
     fprintf(stderr, "[%s] checking access beyond non-insitu valfmt field\n", name);
     memset(resultdynlist, 0, sizeof(*resultdynlist));
@@ -1172,7 +1315,137 @@ decode_result(const char *name)
     resultdynlist->values.value.lval = htonl(10);
     sts = __pmDecodeResult((__pmPDU *)resultdynlist, &resp);
     fprintf(stderr, "  __pmDecodeResult: sts = %d (%s)\n", sts, pmErrStr(sts));
-    if (sts >= 0) pmFreeResult(resp);
+    if (sts >= 0) __pmFreeResult(resp);
+
+    free(resultdynlist);
+    free(resultlist);
+    free(result);
+}
+
+static void
+decode_highres_result(const char *name)
+{
+    int			sts;
+    __pmResult		*resp;
+    struct highres_result {
+	__pmPDUHdr	hdr;
+	int		numpmid;
+	pmTimespec	stamp;
+	__pmPDU		data[0];
+    } *result;
+    struct highres_resultlist {
+	struct highres_result result;
+	pmID		pmid;
+	int		numval;
+	int		valfmt;
+	__pmValue_PDU	vlist[0];
+    } *resultlist;
+    struct highres_resultdynlist {
+	struct highres_resultlist vlist;
+	__pmValue_PDU	values;
+	pmValueBlock	block[0];
+    } *resultdynlist;
+
+    result = (struct highres_result *)malloc(sizeof(*result));
+    resultlist = (struct highres_resultlist *)malloc(sizeof(*resultlist));
+    resultdynlist = (struct highres_resultdynlist *)malloc(sizeof(*resultdynlist));
+
+    fprintf(stderr, "[%s] checking all-zeroes structure\n", name);
+    memset(result, 0, sizeof(*result));
+    sts = __pmDecodeHighResResult((__pmPDU *)result, &resp);
+    fprintf(stderr, "  __pmDecodeHighResResult: sts = %d (%s)\n", sts, pmErrStr(sts));
+    if (sts >= 0) __pmFreeResult(resp);
+
+    fprintf(stderr, "[%s] checking large numpmid field\n", name);
+    memset(result, 0, sizeof(*result));
+    result->hdr.len = sizeof(*result);
+    result->hdr.type = PDU_HIGHRES_RESULT;
+    result->numpmid = htonl(INT_MAX - 42);
+    sts = __pmDecodeHighResResult((__pmPDU *)result, &resp);
+    fprintf(stderr, "  __pmDecodeHighResResult: sts = %d (%s)\n", sts, pmErrStr(sts));
+    if (sts >= 0) __pmFreeResult(resp);
+
+    fprintf(stderr, "[%s] checking negative numpmid field\n", name);
+    memset(result, 0, sizeof(*result));
+    result->hdr.len = sizeof(*result);
+    result->hdr.type = PDU_HIGHRES_RESULT;
+    result->numpmid = htonl(-42);
+    sts = __pmDecodeHighResResult((__pmPDU *)result, &resp);
+    fprintf(stderr, "  __pmDecodeHighResResult: sts = %d (%s)\n", sts, pmErrStr(sts));
+    if (sts >= 0) __pmFreeResult(resp);
+
+    fprintf(stderr, "[%s] checking access beyond basic buffer\n", name);
+    memset(result, 0, sizeof(*result));
+    result->hdr.len = sizeof(*result);
+    result->hdr.type = PDU_HIGHRES_RESULT;
+    result->numpmid = htonl(4);
+    sts = __pmDecodeHighResResult((__pmPDU *)result, &resp);
+    fprintf(stderr, "  __pmDecodeHighResResult: sts = %d (%s)\n", sts, pmErrStr(sts));
+    if (sts >= 0) __pmFreeResult(resp);
+
+    fprintf(stderr, "[%s] checking large numval field\n", name);
+    memset(resultlist, 0, sizeof(*resultlist));
+    resultlist->result.hdr.len = sizeof(*resultlist);
+    resultlist->result.hdr.type = PDU_HIGHRES_RESULT;
+    resultlist->result.numpmid = htonl(1);
+    resultlist->numval = htonl(INT_MAX - 3);
+    sts = __pmDecodeHighResResult((__pmPDU *)resultlist, &resp);
+    fprintf(stderr, "  __pmDecodeHighResResult: sts = %d (%s)\n", sts, pmErrStr(sts));
+    if (sts >= 0) __pmFreeResult(resp);
+
+    fprintf(stderr, "[%s] checking negative numval field\n", name);
+    memset(resultlist, 0, sizeof(*resultlist));
+    resultlist->result.hdr.len = sizeof(*resultlist);
+    resultlist->result.hdr.type = PDU_HIGHRES_RESULT;
+    resultlist->result.numpmid = htonl(1);
+    resultlist->numval = htonl(-3);
+    sts = __pmDecodeHighResResult((__pmPDU *)resultlist, &resp);
+    fprintf(stderr, "  __pmDecodeHighResResult: sts = %d (%s)\n", sts, pmErrStr(sts));
+    if (sts >= 0) __pmFreeResult(resp);
+
+    fprintf(stderr, "[%s] checking access beyond extended buffer\n", name);
+    memset(resultlist, 0, sizeof(*resultlist));
+    resultlist->result.hdr.len = sizeof(*resultlist);
+    resultlist->result.hdr.type = PDU_HIGHRES_RESULT;
+    resultlist->result.numpmid = htonl(1);
+    resultlist->numval = htonl(2);
+    sts = __pmDecodeHighResResult((__pmPDU *)resultlist, &resp);
+    fprintf(stderr, "  __pmDecodeHighResResult: sts = %d (%s)\n", sts, pmErrStr(sts));
+    if (sts >= 0) __pmFreeResult(resp);
+
+    fprintf(stderr, "[%s] checking insitu valfmt field\n", name);
+    memset(resultlist, 0, sizeof(*resultlist));
+    resultlist->result.hdr.len = sizeof(*resultlist);
+    resultlist->result.hdr.type = PDU_HIGHRES_RESULT;
+    resultlist->result.numpmid = htonl(1);
+    resultlist->valfmt = htonl(PM_VAL_INSITU);
+    resultlist->numval = htonl(1);
+    sts = __pmDecodeHighResResult((__pmPDU *)resultlist, &resp);
+    fprintf(stderr, "  __pmDecodeHighResResult: sts = %d (%s)\n", sts, pmErrStr(sts));
+    if (sts >= 0) __pmFreeResult(resp);
+
+    fprintf(stderr, "[%s] checking non-insitu valfmt field\n", name);
+    memset(resultlist, 0, sizeof(*resultlist));
+    resultlist->result.hdr.len = sizeof(*resultlist);
+    resultlist->result.hdr.type = PDU_HIGHRES_RESULT;
+    resultlist->result.numpmid = htonl(1);
+    resultlist->valfmt = htonl(PM_VAL_DPTR);
+    resultlist->numval = htonl(1);
+    sts = __pmDecodeHighResResult((__pmPDU *)resultlist, &resp);
+    fprintf(stderr, "  __pmDecodeHighResResult: sts = %d (%s)\n", sts, pmErrStr(sts));
+    if (sts >= 0) __pmFreeResult(resp);
+
+    fprintf(stderr, "[%s] checking access beyond non-insitu valfmt field\n", name);
+    memset(resultdynlist, 0, sizeof(*resultdynlist));
+    resultdynlist->vlist.result.hdr.len = sizeof(*resultdynlist);
+    resultdynlist->vlist.result.hdr.type = PDU_HIGHRES_RESULT;
+    resultdynlist->vlist.result.numpmid = htonl(1);
+    resultdynlist->vlist.valfmt = htonl(PM_VAL_DPTR);
+    resultdynlist->vlist.numval = htonl(1);
+    resultdynlist->values.value.lval = htonl(10);
+    sts = __pmDecodeHighResResult((__pmPDU *)resultdynlist, &resp);
+    fprintf(stderr, "  __pmDecodeHighResResult: sts = %d (%s)\n", sts, pmErrStr(sts));
+    if (sts >= 0) __pmFreeResult(resp);
 
     free(resultdynlist);
     free(resultlist);
@@ -1373,7 +1646,8 @@ struct pdu {
     { "pmns_child",	decode_pmns_child },
     { "pmns_traverse",	decode_pmns_traverse },
     { "log_control",	decode_log_control },
-    { "log_status",	decode_log_status },
+    { "log_status_v2",	decode_log_status_v2 },
+    { "log_status_v3",	decode_log_status_v3 },
     { "log_request",	decode_log_request },
     { "result", 	decode_result },
     { "text_req", 	decode_text_req },
@@ -1383,6 +1657,10 @@ struct pdu {
     { "attr",		decode_attr },
     { "label_req",	decode_label_req },
     { "label", 		decode_label },
+    { "highres_fetch",	decode_highres_fetch },
+    { "highres_result",	decode_highres_result },
+    { "desc_ids",	decode_desc_ids },
+    { "descs", 		decode_descs },
 };
 
 int

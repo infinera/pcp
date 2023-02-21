@@ -1,15 +1,15 @@
 QA output created by 374
 
-=== pmlogger host type: -b 64 -v pcp=2 ===
+=== pmlogger host type: -b 64 -v pcp>=5.3.5 ===
 last log entry   DATE
 current time     DATE
 log volume       0
-log size more than 200
+log size [label] plus more than 200
 New log volume 1
 last log entry   DATE
 current time     DATE
 log volume       1
-log size more than 100
+log size [label]
 pmcd.simabi
     adv  off nl             
 
@@ -94,6 +94,18 @@ pmcd.pdu_in.label_req
     adv  off nl             
 
 pmcd.pdu_in.label
+    adv  off nl             
+
+pmcd.pdu_in.highres_fetch
+    adv  off nl             
+
+pmcd.pdu_in.highres_result
+    adv  off nl             
+
+pmcd.pdu_in.desc_ids
+    adv  off nl             
+
+pmcd.pdu_in.descs
     adv  off nl             
 
 pmcd.agent.type

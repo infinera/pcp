@@ -14,6 +14,7 @@
 #include <ctype.h>
 #include <unistd.h>
 #include <stdlib.h>
+#include <assert.h>
 #include "encoding.h"
 
 static const char base64_decoding_table[] = {
@@ -43,7 +44,7 @@ base64_decode(const char *src, size_t len)
 
     if (len % 4)	/* invalid base64 string length */
 	return NULL;
-    if ((result = dest = sdsnewlen(SDS_NOINIT, len / 4 * 3)) == NULL)
+    if ((result = dest = sdsnewlen(NULL, len / 4 * 3)) == NULL)
 	return NULL;
     while (*src) {
 	a = base64_decoding_table[(unsigned char)*(src++)];
@@ -59,6 +60,9 @@ base64_decode(const char *src, size_t len)
 	*(dest++) = ((c & 0x03) << 6) | d;
     }
     *dest = '\0';
+    // fix string length of padded base64 strings
+    assert(dest - result <= sdslen(result));
+    sdssetlen(result, dest - result);
     return result;
 }
 
@@ -69,7 +73,7 @@ base64_encode(const char *src, size_t len)
     unsigned int	i, triple;
     unsigned char	a, b, c;
 
-    if ((result = dest = sdsnewlen(SDS_NOINIT, len * 4 / 3)) == NULL)
+    if ((result = dest = sdsnewlen(NULL, len * 4 / 3)) == NULL)
 	return NULL;
     for (i = 0; i < len; dest++) {
 	a = i < len ? src[i++] : 0;

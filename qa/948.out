@@ -20,10 +20,11 @@ Goodbye
 === OK case ===
 Log for pmlogger on HOST started DATE
 
+[DATE] pmlogger(PID) Info: Start
 Config parsed
 Starting logger for host "HOST"
 Archive basename: ARCHIVE
-pmlogger: End of run time, exiting
+[DATE] pmlogger(PID) Info: pmlogger: End of run time, exiting
 
 Log finished DATE
 verifying the archive

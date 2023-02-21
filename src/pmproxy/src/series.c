@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2019-2020 Red Hat.
+ * Copyright (c) 2019-2020,2022 Red Hat.
  *
  * This program is free software; you can redistribute it and/or modify it
  * under the terms of the GNU Lesser General Public License as published
@@ -12,6 +12,7 @@
  * License for more details.
  */
 #include "server.h"
+#include "util.h"
 #include <assert.h>
 
 typedef enum pmSeriesRestKey {
@@ -535,9 +536,9 @@ on_pmseries_done(int status, void *arg)
 {
     pmSeriesBaton	*baton = (pmSeriesBaton *)arg;
     struct client	*client = baton->client;
-    http_options	options = baton->options;
-    http_flags		flags = client->u.http.flags;
-    http_code		code;
+    http_options_t	options = baton->options;
+    http_flags_t	flags = client->u.http.flags;
+    http_code_t		code;
     sds			msg;
 
     if (pmDebugOptions.query && pmDebugOptions.desperate)
@@ -592,6 +593,9 @@ on_pmseries_done(int status, void *arg)
 	flags |= HTTP_FLAG_JSON;
     }
     http_reply(client, msg, code, flags, options);
+
+    /* release lock of pmseries_request_done */
+    client_put(client);
 }
 
 static void
@@ -599,9 +603,9 @@ on_pmseries_error(pmLogLevel level, sds message, void *arg)
 {
     pmSeriesBaton	*baton = (pmSeriesBaton *)arg;
     struct client	*client = baton->client;
-    http_options	options = baton->options;
-    http_flags		flags = client->u.http.flags | HTTP_FLAG_JSON;
-    http_code		status_code;
+    http_options_t	options = baton->options;
+    http_flags_t	flags = client->u.http.flags | HTTP_FLAG_JSON;
+    http_code_t		status_code;
     sds			quoted, msg;
 
     if (((status_code = client->u.http.parser.status_code)) == 0)
@@ -630,8 +634,17 @@ pmseries_log(pmLogLevel level, sds message, void *arg)
     pmSeriesBaton	*baton = (pmSeriesBaton *)arg;
 
     /* locally log low priority diagnostics or when already responding */
-    if (level <= PMLOG_INFO || baton->suffix)
-	proxylog(level, message, baton->client->proxy);
+    if (baton == NULL) {
+	fprintf(stderr, "pmseries_log: Botch: baton is NULL msg=\"%s\"\n", message);
+	__pmDumpStack();
+	return;
+    }
+    if (level <= PMLOG_INFO || baton->suffix) {
+	if (baton->client == NULL)
+	    proxylog(level, message, NULL);
+	else
+	    proxylog(level, message, baton->client->proxy);
+    }
     else	/* inform client, complete request */
 	on_pmseries_error(level, message, baton);
 }
@@ -824,30 +837,26 @@ static int
 pmseries_request_body(struct client *client, const char *content, size_t length)
 {
     pmSeriesBaton	*baton = (pmSeriesBaton *)client->u.http.data;
-    sds			series;
 
     if (pmDebugOptions.http)
 	fprintf(stderr, "series servlet body (client=%p)\n", client);
 
-    if (client->u.http.parser.method != HTTP_POST)
+    if (client->u.http.parser.method != HTTP_POST || client->u.http.parameters != NULL)
 	return 0;
 
     switch (baton->restkey) {
     case RESTKEY_LOAD:
     case RESTKEY_QUERY:
-	sdsfree(baton->query);
-	baton->query = sdsnewlen(content, length);
-	break;
-
     case RESTKEY_DESC:
     case RESTKEY_INSTS:
     case RESTKEY_LABELS:
     case RESTKEY_METRIC:
     case RESTKEY_SOURCE:
     case RESTKEY_VALUES:
-	series = sdsnewlen(content, length);
-	baton->sids = sdssplitlen(series, length, "\n", 1, &baton->nsids);
-	sdsfree(series);
+	/* parse URL encoded parameters in the request body */
+	/* in the same way as the URL query string */
+	http_parameters(content, length, &client->u.http.parameters);
+	pmseries_setup_request_parameters(client, baton, client->u.http.parameters);
 	break;
 
     default:
@@ -890,11 +899,18 @@ pmseries_request_load(struct client *client, pmSeriesBaton *baton)
 	message = sdsnewlen(failed, sizeof(failed) - 1);
 	http_reply(client, message, HTTP_STATUS_BAD_REQUEST,
 			HTTP_FLAG_JSON, baton->options);
+
+	/* release lock of pmseries_request_done */
+	client_put(client);
     } else if (baton->working) {
 	message = sdsnewlen(loading, sizeof(loading) - 1);
 	http_reply(client, message, HTTP_STATUS_CONFLICT,
 			HTTP_FLAG_JSON, baton->options);
+
+	/* release lock of pmseries_request_done */
+	client_put(client);
     } else {
+        baton->loading.data = baton;         
 	uv_queue_work(client->proxy->events, &baton->loading,
 			pmseries_load_work, pmseries_load_done);
     }
@@ -905,6 +921,9 @@ pmseries_request_done(struct client *client)
 {
     pmSeriesBaton	*baton = (pmSeriesBaton *)client->u.http.data;
     int			sts;
+
+    /* reference to prevent freeing while waiting for a Redis reply callback */
+    client_get(client);
 
     if (client->u.http.parser.status_code) {
 	on_pmseries_done(-EINVAL, baton);

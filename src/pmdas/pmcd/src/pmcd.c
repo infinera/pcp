@@ -1,12 +1,12 @@
 /*
- * Copyright (c) 2013-2020 Red Hat.
+ * Copyright (c) 2013-2021 Red Hat.
  * Copyright (c) 1995-2004 Silicon Graphics, Inc.  All Rights Reserved.
- * 
+ *
  * This program is free software; you can redistribute it and/or modify it
  * under the terms of the GNU General Public License as published by the
  * Free Software Foundation; either version 2 of the License, or (at your
  * option) any later version.
- * 
+ *
  * This program is distributed in the hope that it will be useful, but
  * WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY
  * or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License
@@ -87,6 +87,8 @@ static pmDesc	desctab[] = {
     { PMDA_PMID(0,24), PM_TYPE_U32, PM_INDOM_NULL, PM_SEM_DISCRETE, PMDA_PMUNITS(0,0,0,0,0,0) },
 /* labels */
     { PMDA_PMID(0,25), PM_TYPE_STRING, PM_INDOM_NULL, PM_SEM_INSTANT, PMDA_PMUNITS(0,0,0,0,0,0) },
+/* zoneinfo -- local timezone tzfile identification  -- for pmlogger timezone */
+    { PMDA_PMID(0,26), PM_TYPE_STRING, PM_INDOM_NULL, PM_SEM_DISCRETE, PMDA_PMUNITS(0,0,0,0,0,0) },
 
 /* pdu_in.error */
     { PMDA_PMID(1,0), PM_TYPE_U32, PM_INDOM_NULL, PM_SEM_COUNTER, PMDA_PMUNITS(0,0,1,0,0,PM_COUNT_ONE) },
@@ -128,6 +130,14 @@ static pmDesc	desctab[] = {
     { PMDA_PMID(1,19), PM_TYPE_U32, PM_INDOM_NULL, PM_SEM_COUNTER, PMDA_PMUNITS(0,0,1,0,0,PM_COUNT_ONE) },
 /* pdu_in.label */
     { PMDA_PMID(1,20), PM_TYPE_U32, PM_INDOM_NULL, PM_SEM_COUNTER, PMDA_PMUNITS(0,0,1,0,0,PM_COUNT_ONE) },
+/* pdu_in.highres_fetch */
+    { PMDA_PMID(1,21), PM_TYPE_U32, PM_INDOM_NULL, PM_SEM_COUNTER, PMDA_PMUNITS(0,0,1,0,0,PM_COUNT_ONE) },
+/* pdu_in.highres_result */
+    { PMDA_PMID(1,22), PM_TYPE_U32, PM_INDOM_NULL, PM_SEM_COUNTER, PMDA_PMUNITS(0,0,1,0,0,PM_COUNT_ONE) },
+/* pdu_in.desc_ids */
+    { PMDA_PMID(1,23), PM_TYPE_U32, PM_INDOM_NULL, PM_SEM_COUNTER, PMDA_PMUNITS(0,0,1,0,0,PM_COUNT_ONE) },
+/* pdu_in.descs */
+    { PMDA_PMID(1,24), PM_TYPE_U32, PM_INDOM_NULL, PM_SEM_COUNTER, PMDA_PMUNITS(0,0,1,0,0,PM_COUNT_ONE) },
 
 /* pdu_out.error */
     { PMDA_PMID(2,0), PM_TYPE_U32, PM_INDOM_NULL, PM_SEM_COUNTER, PMDA_PMUNITS(0,0,1,0,0,PM_COUNT_ONE) },
@@ -169,6 +179,14 @@ static pmDesc	desctab[] = {
     { PMDA_PMID(2,19), PM_TYPE_U32, PM_INDOM_NULL, PM_SEM_COUNTER, PMDA_PMUNITS(0,0,1,0,0,PM_COUNT_ONE) },
 /* pdu_out.label */
     { PMDA_PMID(2,20), PM_TYPE_U32, PM_INDOM_NULL, PM_SEM_COUNTER, PMDA_PMUNITS(0,0,1,0,0,PM_COUNT_ONE) },
+/* pdu_out.highres_fetch */
+    { PMDA_PMID(2,21), PM_TYPE_U32, PM_INDOM_NULL, PM_SEM_COUNTER, PMDA_PMUNITS(0,0,1,0,0,PM_COUNT_ONE) },
+/* pdu_out.highres_result */
+    { PMDA_PMID(2,22), PM_TYPE_U32, PM_INDOM_NULL, PM_SEM_COUNTER, PMDA_PMUNITS(0,0,1,0,0,PM_COUNT_ONE) },
+/* pdu_out.desc_ids */
+    { PMDA_PMID(2,23), PM_TYPE_U32, PM_INDOM_NULL, PM_SEM_COUNTER, PMDA_PMUNITS(0,0,1,0,0,PM_COUNT_ONE) },
+/* pdu_out.descs */
+    { PMDA_PMID(2,24), PM_TYPE_U32, PM_INDOM_NULL, PM_SEM_COUNTER, PMDA_PMUNITS(0,0,1,0,0,PM_COUNT_ONE) },
 
 /* pmlogger.port */
     { PMDA_PMID(3,0), PM_TYPE_U32, PM_INDOM_NULL, PM_SEM_DISCRETE, PMDA_PMUNITS(0,0,0,0,0,0) },
@@ -288,6 +306,8 @@ static struct {
     {   8193,	"8192+" },
 };
 static const int	nbufsz = sizeof(bufinst) / sizeof(bufinst[0]);
+
+static char *zoneinfo = NULL;
 
 /*
  * Per-context structures
@@ -1530,6 +1550,17 @@ pmcd_fetch(int numpmid, pmID pmidlist[], pmResult **resp, pmdaExt *pmda)
 
 			case 25:	/* context labels */
 				fetch_labels(pmda->e_context, &atom, &host);
+				break;
+
+			case 26:	/* zoneinfo */
+				if (zoneinfo == NULL) {
+				    zoneinfo = __pmZoneinfo();
+				    if (zoneinfo == NULL) {
+					/* value is an empty string if not available */
+					zoneinfo = "";
+				    }
+				}
+				atom.cp = zoneinfo;
 				break;
 
 			default:

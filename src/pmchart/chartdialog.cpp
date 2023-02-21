@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2013-2015, Red Hat.
+ * Copyright (c) 2013-2015,2021 Red Hat.
  * Copyright (c) 2007-2008, Aconex.  All Rights Reserved.
  * 
  * This program is free software; you can redistribute it and/or modify it
@@ -374,19 +374,21 @@ void ChartDialog::archiveButtonClicked()
     af->setAcceptMode(QFileDialog::AcceptOpen);
     af->setIconProvider(fileIconProvider);
     af->setWindowTitle(tr("Add Archive"));
-    af->setDirectory(QDir::toNativeSeparators(QDir::homePath()));
+    af->setDirectory(globalSettings.lastArchivePath);
 
-    if (af->exec() == QDialog::Accepted)
+    if (af->exec() == QDialog::Accepted) {
 	al = af->selectedFiles();
+	QString path = QFileInfo(al.at(0)).dir().absolutePath();
+	if (globalSettings.lastArchivePath != path) {
+	    globalSettings.lastArchivePath = path;
+	    globalSettings.lastArchivePathModified = true;
+	}
+    }
+
     for (QStringList::Iterator it = al.begin(); it != al.end(); ++it) {
 	QString archive = *it;
 	if ((sts = archiveGroup->use(PM_CONTEXT_ARCHIVE, archive)) < 0) {
-	    archive.prepend(tr("Cannot open PCP archive: "));
-	    archive.append(tr("\n"));
-	    archive.append(tr(pmErrStr(sts)));
-	    QMessageBox::warning(this, pmGetProgname(), archive,
-		    QMessageBox::Ok|QMessageBox::Default|QMessageBox::Escape,
-		    Qt::NoButton, Qt::NoButton);
+	    pmflush();
 	} else {
 	    setupAvailableMetricsTree(true);
 	    archiveGroup->updateBounds();
@@ -412,12 +414,7 @@ void ChartDialog::hostButtonClicked()
 		    QMessageBox::Ok|QMessageBox::Default|QMessageBox::Escape,
 		    Qt::NoButton, Qt::NoButton);
 	} else if ((sts = liveGroup->use(PM_CONTEXT_HOST, hostspec, flags)) < 0) {
-	    hostspec.prepend(tr("Cannot connect to host: "));
-	    hostspec.append(tr("\n"));
-	    hostspec.append(tr(pmErrStr(sts)));
-	    QMessageBox::warning(this, pmGetProgname(), hostspec,
-		    QMessageBox::Ok|QMessageBox::Default|QMessageBox::Escape,
-		    Qt::NoButton, Qt::NoButton);
+	    pmflush();
 	} else {
 	    console->post(PmChart::DebugUi,
 			"ChartDialog::newHost: %s (flags=0x%x)",
@@ -500,17 +497,17 @@ void ChartDialog::setScheme(QString scheme, int sequence)
     my.sequence = sequence;
 }
 
-void ChartDialog::scale(bool *autoScale, double *yMin, double *yMax)
+void ChartDialog::scale(bool *autoScaled, double *yMin, double *yMax)
 {
-    *autoScale = autoScaleOn->isChecked();
+    *autoScaled = autoScaleOn->isChecked();
     *yMin = my.yMin;
     *yMax = my.yMax;
 }
 
-void ChartDialog::setScale(bool autoScale, double yMin, double yMax)
+void ChartDialog::setScale(bool autoScaled, double yMin, double yMax)
 {
-    autoScaleOn->setChecked(autoScale);
-    autoScaleOff->setChecked(!autoScale);
+    autoScaleOn->setChecked(autoScaled);
+    autoScaleOff->setChecked(!autoScaled);
     yAxisMaximum->setValue(yMax);
     yAxisMinimum->setValue(yMin);
 }

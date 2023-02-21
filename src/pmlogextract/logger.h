@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2018 Red Hat.
+ * Copyright (c) 2018,2022 Red Hat.
  * Copyright (c) 2004 Silicon Graphics, Inc.  All Rights Reserved.
  *
  * This program is free software; you can redistribute it and/or modify it
@@ -25,8 +25,8 @@
  *  list of pdu's to write out at start of time window
  */
 typedef struct reclist {
-    __pmPDU		*pdu;		/* PDU ptr */
-    pmTimeval		stamp;		/* for indom and label records */
+    __int32_t		*pdu;		/* PDU ptr */
+    __pmTimestamp	stamp;		/* for indom and label records */
     pmDesc		desc;
     unsigned int	written : 16;	/* written PDU status */
     unsigned int	sorted : 16;	/* sorted indom status */
@@ -39,18 +39,21 @@ typedef struct reclist {
  *  Input archive control
  */
 typedef struct {
-    int		ctx;
-    char	*name;
-    pmLogLabel	label;
-    __pmPDU	*pb[2];
-    pmResult	*_result;
-    pmResult	*_Nresult;
-    int		eof[2];
-    int		mark;		/* need EOL marker */
-    int		recnum;
-    int64_t	pmcd_pid;	/* from prologue/epilogue records */
-    int32_t	pmcd_seqnum;	/* from prologue/epilogue records */
+    int			ctx;
+    char		*name;
+    __pmLogLabel	label;
+    __int32_t		*pb[2];		/* current physical record buffer */
+    __pmResult		*_result;
+    __pmResult		*_Nresult;
+    __pmTimestamp	laststamp;
+    int			eof[2];
+    int			mark;		/* need EOL marker */
+    int			recnum;
+    int64_t		pmcd_pid;	/* from prologue/epilogue records */
+    int32_t		pmcd_seqnum;	/* from prologue/epilogue records */
 } inarch_t;
+#define LOG			0	/* pb[] & eof[] index for data volume */
+#define META			1	/* pb[] & eof[] index for metadata */
 
 extern inarch_t	*inarch;	/* input archive control(s) */
 extern int	inarchnum;	/* number of input archives */
@@ -67,10 +70,10 @@ typedef struct {
 
 
 /*
- *  pmResult list
+ *  __pmResult list
  */
 typedef struct __rlist_t {
-    pmResult		*res;		/* ptr to pmResult */
+    __pmResult		*res;		/* ptr to __pmResult */
     struct __rlist_t	*next;		/* ptr to next element in list */
 } rlist_t;
 
@@ -82,7 +85,7 @@ typedef struct __rlist_t {
 extern int	ml_numpmid;		/* num pmid in ml list */
 extern int	ml_size;		/* actual size of ml array */
 extern mlist_t	*ml;			/* list of pmids with indoms */
-extern rlist_t	*rl;			/* list of pmResults */
+extern rlist_t	*rl;			/* list of __pmResults */
 
 /*
  * metrics with mismatched metadata across archives that are to be
@@ -112,17 +115,14 @@ extern int	yyparse(void);
 extern void	dometric(const char *);
 
 /* log I/O helper routines */
-extern int _pmLogGet(__pmArchCtl *, int, __pmPDU **);
-extern int _pmLogPut(__pmFILE *, __pmPDU *);
-extern pmUnits ntoh_pmUnits(pmUnits);
 #define ntoh_pmInDom(indom) ntohl(indom)
 #define ntoh_pmID(pmid) ntohl(pmid)
 #define ntoh_pmLabelType(ltype) ntohl(ltype)
 #define ntoh_pmTextType(ltype) ntohl(ltype)
 
 /* internal routines */
-extern void insertresult(rlist_t **, pmResult *);
-extern pmResult *searchmlist(pmResult *);
+extern void insertresult(rlist_t **, __pmResult *);
+extern __pmResult *searchmlist(__pmResult *);
 extern void abandon_extract(void);
 
 /* command line args needed across source files */

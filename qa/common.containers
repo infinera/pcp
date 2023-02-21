@@ -11,8 +11,8 @@
 _check_containers()
 {
     [ $PCP_PLATFORM = linux ] || _notrun "Linux-specific containers testing"
-    _contain=`pmprobe -v pmcd.feature.containers | awk '{ print $3 }'`
-    [ $_contain = 1 ] || _notrun "Running kernel does not support containers"
+    __contain=`pmprobe -v pmcd.feature.containers | awk '{ print $3 }'`
+    [ $__contain = 1 ] || _notrun "Running kernel does not support containers"
     pminfo -f pmcd.agent.type 2>/dev/null | grep linux | grep -q 'value 4'
     [ $? = 0 ] || _notrun "pmdalinux has insufficient privileges as a DSO"
 }
@@ -25,7 +25,7 @@ _check_podman_binary()
     [ $? -eq 0 ] || _notrun "No podman binary found"
     podman="$sudo $podman"
 
-    $sudo test -S /run/podman/io.podman || _notrun "no podman varlink socket"
+    $sudo test -f "$PCP_SYSTEMDUNIT_DIR/podman.socket" || _notrun "No podman REST API service found"
 }
 
 _check_docker_binary()
@@ -59,7 +59,7 @@ _check_podman_images()
 	# podman does not seem to terminate the line the same way (so, -c)
 	__count=`eval $podman images --quiet $__image 2>/dev/null | wc -c`
 	[ "$__count" -gt 0 ] || \
-	    _notrun "Cannot find $image podman image.  Use: $__command $__image"
+	    _notrun "Cannot find $__image podman image.  Use: $__command $__image"
     done
 }
 
@@ -71,7 +71,7 @@ _check_docker_images()
     do
 	__count=`eval $docker images --quiet $__image 2>/dev/null | wc -l`
 	[ "$__count" -gt 0 ] || \
-	    _notrun "Cannot find $image docker image.  Use: $__command $__image"
+	    _notrun "Cannot find $__image docker image.  Use: $__command $__image"
     done
 }
 
@@ -82,7 +82,7 @@ _remove_podman_containers()
 {
     for __container in "$@"
     do
-	eval $podman stop --time=2 $__container >/dev/null
+	eval $podman stop --time=2 $__container >/dev/null 2>&1
 	eval $podman rm --force $__container >/dev/null
     done
 }

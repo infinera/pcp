@@ -1,5 +1,6 @@
 /*
  * Copyright (c) 2019 Miroslav Foltýn.  All Rights Reserved.
+ * Copyright (c) 2022 Red Hat.
  * 
  * This program is free software; you can redistribute it and/or modify it
  * under the terms of the GNU General Public License as published by the
@@ -25,12 +26,12 @@ init_pmda_stats(struct agent_config* config) {
     (void)config;
     struct pmda_stats_container* container =
         (struct pmda_stats_container*) malloc(sizeof(struct pmda_stats_container));
-    ALLOC_CHECK("Unable to initialize container for PMDA stats.");
+    ALLOC_CHECK(container, "Unable to initialize container for PMDA stats.");
     pthread_mutex_init(&container->mutex, NULL);
     struct pmda_stats* stats = (struct pmda_stats*) malloc(sizeof(struct pmda_stats));
-    ALLOC_CHECK("Unable to initialize PMDA stats.");
+    ALLOC_CHECK(stats, "Unable to initialize PMDA stats.");
     struct metric_counters* counters = (struct metric_counters*) malloc(sizeof(struct metric_counters));
-    ALLOC_CHECK("Unable to initialize metric counters stat structure.");
+    ALLOC_CHECK(counters, "Unable to initialize metric counters stat structure.");
     *counters = (struct metric_counters) { 0 };
     *stats = (struct pmda_stats) { 0 };
     stats->metrics_recorded = counters;
@@ -110,8 +111,7 @@ process_stat(struct agent_config* config, struct pmda_stats_container* s, enum S
             break;
         case STAT_TRACKED_METRIC:
         {
-            enum METRIC_TYPE metric = (enum METRIC_TYPE)data;
-            switch (metric) {
+            switch ((enum METRIC_TYPE)data) {
                 case METRIC_TYPE_COUNTER:
                     s->stats->metrics_recorded->counter += 1;
                     break;
@@ -217,16 +217,16 @@ get_agent_stat(struct agent_config* config, struct pmda_stats_container* stats, 
         case STAT_TRACKED_METRIC:
         {
             if (data != NULL) {
-                enum METRIC_TYPE type = (enum METRIC_TYPE)data;
-                if (type == METRIC_TYPE_COUNTER) {
+                enum METRIC_TYPE metric_type = (enum METRIC_TYPE)data;
+                if (metric_type == METRIC_TYPE_COUNTER) {
                     result = stats->stats->metrics_recorded->counter;
                     break;
                 }
-                if (type == METRIC_TYPE_GAUGE) {
+                if (metric_type == METRIC_TYPE_GAUGE) {
                     result = stats->stats->metrics_recorded->gauge;
                     break;
                 }
-                if (type == METRIC_TYPE_DURATION) {
+                if (metric_type == METRIC_TYPE_DURATION) {
                     result = stats->stats->metrics_recorded->duration;
                     break;
                 }

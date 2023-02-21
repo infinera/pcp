@@ -1,6 +1,7 @@
 # mostly this needs to be matched against the GNUmakefile ... anything
 # cleaned up in "make clobber" should also be mentioned here ...
 #
+.rnd
 /*.full
 /*.notrun
 /*.full.ok
@@ -9,15 +10,18 @@
 /*.new
 /*.raw
 /*.log
+/*.bz2
+tmp/*
 big1.*
+tls.conf/*
 134.full.*
 051.work/*
 121.full.cull
 121.full.in
 121.full.out
 151.work/*
-661.png
 bpftrace/__pycache__/*
+check.onetrip
 check.out
 check.log
 check.callback
@@ -29,11 +33,8 @@ check.time
 check.timings
 localconfig
 localconfig.h
-pcpqa.fc
-pcpqa.if
 pcpqa.installed
-pcpqa.pp
-pcpqa.te
+pcp-testsuite.pp
 qa_hosts
 qa_outfiles
 rc_cron_check.clean
@@ -90,12 +91,13 @@ sudo
 661.png
 740.out
 798.out
-886.out
 905.out
-917.out
 919.out
 926.out
 944.out
 1051.out
 1067.out
 1251.out
+1411.out
+1414.out
+1623.out

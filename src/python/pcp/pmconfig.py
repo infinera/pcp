@@ -94,19 +94,25 @@ class pmConfig(object):
             except Exception:
                 pass
 
+    # Deprecated, use set_config_path() below instead
     def set_config_file(self, default_config):
         """ Set default config file """
+        return self.set_config_path(default_config)
+
+    def set_config_path(self, default_config):
+        """ Set default config path """
         config = None
         usrdir = os.path.expanduser('~')
         sysdir = pmapi.pmContext.pmGetConfig("PCP_SYSCONF_DIR")
         for conf in default_config:
             conf = conf.replace("$HOME", usrdir)
             conf = conf.replace("$PCP_SYSCONF_DIR", sysdir)
-            if os.path.isfile(conf) and os.access(conf, os.R_OK):
+            if os.access(conf, os.R_OK) and \
+               (os.path.isfile(conf) or os.path.isdir(conf)):
                 config = conf
                 break
 
-        # Possibly override the default config file before
+        # Possibly override the default config path before
         # parsing the rest of the command line options
         args = iter(sys.argv[1:])
         for arg in args:
@@ -118,15 +124,36 @@ class pmConfig(object):
                         config = next(args)
                     else:
                         config = arg.replace("-c", "", 1)
-                    if not os.path.isfile(config) or not os.access(config, os.R_OK):
-                        raise IOError("Failed to read configuration file '%s'." % config)
+                    if not os.access(config, os.R_OK) or \
+                       not (os.path.isfile(config) or os.path.isdir(config)):
+                        if not os.path.exists(config):
+                            err = "No such file or directory"
+                        elif not os.access(config, os.R_OK):
+                            err = "Permission denied"
+                        else:
+                            err = "Not a regular file"
+                        raise IOError("Failed to read configuration from '%s':\n%s." % (config, err))
                 except StopIteration:
                     break
 
         return config
 
+    def _get_conf_files(self):
+        """ Helper to get individual config files """
+        conf_files = []
+        if self.util.config:
+            if os.path.isfile(self.util.config):
+                conf_files.append(self.util.config)
+            else:
+                for f in sorted(os.listdir(self.util.config)):
+                    fn = os.path.join(self.util.config, f)
+                    if fn.endswith(".conf") and os.access(fn, os.R_OK) and os.path.isfile(fn):
+                        conf_files.append(fn)
+        return conf_files
+
     def set_attr(self, name, value):
         """ Set options read from file """
+        value = str(value)
         if name == 'colxrow':
             # As a special service for pmrep(1) utility we handle
             # its config colxrow parameter here with minimal impact.
@@ -141,10 +168,10 @@ class pmConfig(object):
         if name == 'speclocal':
             self.util.speclocal = value
         elif name == 'derived':
-            if ';' in value:
+            if value.find(';') != -1:
                 self.util.derived = value
             else:
-                self.util.derived = str(value).replace(",", ";")
+                self.util.derived = value.replace(",", ";")
         elif name == 'samples':
             self.util.opts.pmSetOptionSamples(value)
             self.util.samples = self.util.opts.pmGetOptionSamples()
@@ -162,12 +189,12 @@ class pmConfig(object):
             else:
                 self.util.type_prefer = 0
         elif name == 'instances':
-            self.util.instances = value.split(",") # pylint: disable=no-member
+            self.util.instances = value.split(",")
         else:
             try:
                 setattr(self.util, name, int(value))
             except ValueError:
-                if value.startswith('"') and value.endswith('"'): # pylint: disable=no-member
+                if value.startswith('"') and value.endswith('"'):
                     value = value[1:-1]
                 setattr(self.util, name, value)
 
@@ -176,11 +203,12 @@ class pmConfig(object):
         if not config.has_section(section):
             return
         for opt in config.options(section):
+            if opt in self.util.keys and not config.get(section, opt):
+                raise ValueError("No value set for option %s in [%s]" % (opt, section))
             if opt in self.util.keys:
                 self.set_attr(opt, config.get(section, opt))
             elif section == 'options':
-                sys.stderr.write("Unknown option %s in [%s].\n" % (opt, section))
-                sys.exit(1)
+                raise ValueError("Unknown option %s in [%s]" % (opt, section))
 
     def read_options(self):
         """ Read options from configuration file """
@@ -190,17 +218,23 @@ class pmConfig(object):
         else:
             config = ConfigParser.SafeConfigParser()
         config.optionxform = str
-        if self.util.config:
+        for conf in self._get_conf_files():
             try:
-                config.read(self.util.config)
+                config.read(conf)
+                section = 'options'
+                self.read_section_options(config, section)
+                for arg in iter(sys.argv[1:]):
+                    if arg.startswith(":") and arg[1:] in config.sections():
+                        section = arg[1:]
+                        self.read_section_options(config, section)
             except ConfigParser.Error as error:
-                sys.stderr.write("Failed to read configuration file '%s', line %d:\n%s\n"
-                                 % (self.util.config, error.lineno, str(error.message).split("\n")[0])) # pylint: disable=no-member
+                lineno = str(error.lineno) if hasattr(error, 'lineno') else error.errors[0][0]
+                sys.stderr.write("Failed to read configuration file '%s', line %s:\n%s\n"
+                                 % (conf, lineno, str(error.message)))
                 sys.exit(1)
-        self.read_section_options(config, 'options')
-        for arg in iter(sys.argv[1:]):
-            if arg.startswith(":") and arg[1:] in config.sections():
-                self.read_section_options(config, arg[1:])
+            except ValueError as error:
+                sys.stderr.write("Failed to read configuration file '%s':\n%s.\n" % (conf, error))
+                sys.exit(1)
 
     def read_cmd_line(self):
         """ Read command line options """
@@ -297,8 +331,7 @@ class pmConfig(object):
                 # Additional info
                 key, spec = key.rsplit(".")
                 if key not in metrics:
-                    sys.stderr.write("Undeclared metric key %s.\n" % key)
-                    sys.exit(1)
+                    raise ValueError("Undeclared metric key %s" % key)
                 self.parse_verbose_metric_info(metrics, key, spec, value)
 
     def prepare_metrics(self):
@@ -308,76 +341,125 @@ class pmConfig(object):
             sys.stderr.write("No metrics specified.\n")
             raise pmapi.pmUsageErr()
 
+        def read_cmd_line_items():
+            """ Helper to read command line items """
+            tempmet = OrderedDict()
+            for metric in metrics:
+                if metric.startswith(":"):
+                    tempmet[metric[1:]] = None
+                else:
+                    spec, insts = self.parse_metric_spec_instances(metric)
+                    m = spec.split(",")
+                    m[2] = insts
+                    tempmet[m[0]] = m[1:]
+            return tempmet
+
+        # Metrics from different sources
+        globmet = OrderedDict()
+        confmet = OrderedDict()
+        cmdlmet = read_cmd_line_items()
+        sources = OrderedDict()
+
         # Read config
         # Python < 3.2 compat
         if sys.version_info[0] >= 3 and sys.version_info[1] >= 2:
             config = ConfigParser.ConfigParser()
+            all_sets = ConfigParser.ConfigParser()
         else:
             config = ConfigParser.SafeConfigParser()
+            all_sets = ConfigParser.SafeConfigParser()
+        all_sets.optionxform = str
         config.optionxform = str
-        if self.util.config:
+        for conf in self._get_conf_files():
             try:
-                config.read(self.util.config)
+                config.read(conf)
             except ConfigParser.Error as error:
-                sys.stderr.write("Failed to read configuration file '%s', line %d:\n%s\n"
-                                 % (self.util.config, error.lineno, str(error.message).split("\n")[0])) # pylint: disable=no-member
+                lineno = str(error.lineno) if hasattr(error, 'lineno') else error.errors[0][0]
+                sys.stderr.write("Failed to read configuration file '%s', line %s:\n%s\n"
+                                 % (conf, lineno, str(error.message)))
                 sys.exit(1)
 
-        # First read global metrics (if not disabled already)
-        globmet = OrderedDict()
-        if self.util.globals == 1:
-            if config.has_section('global'):
-                parsemet = OrderedDict()
-                for key in config.options('global'):
-                    if key in self.util.keys:
-                        sys.stderr.write("No options allowed in [global] section.\n")
-                        sys.exit(1)
-                    self.parse_metric_info(parsemet, key, config.get('global', key))
-                for metric in parsemet:
-                    name = parsemet[metric][:1][0]
-                    globmet[name] = parsemet[metric][1:]
-
-        # Add command line and configuration file metricsets
-        tempmet = OrderedDict()
-        for metric in metrics:
-            if metric.startswith(":"):
-                tempmet[metric[1:]] = None
-            else:
-                spec, insts = self.parse_metric_spec_instances(metric)
-                m = spec.split(",")
-                m[2] = insts
-                tempmet[m[0]] = m[1:]
-
-        # Get config and set details for configuration file metricsets
-        confmet = OrderedDict()
-        for spec in tempmet:
-            if tempmet[spec] is None:
-                if config.has_section(spec):
+            # Read global metrics
+            if self.util.globals == 1:
+                if config.has_section('global'):
                     parsemet = OrderedDict()
-                    for key in config.options(spec):
-                        if key not in self.util.keys:
-                            self.parse_metric_info(parsemet, key, config.get(spec, key))
+                    for key in config.options('global'):
+                        if key in self.util.keys:
+                            sys.stderr.write("Failed to read configuration file ")
+                            sys.stderr.write("'%s':\nSection [global] contains options.\n" % conf)
+                            sys.exit(1)
+                        if not config.get('global', key):
+                            sys.stderr.write("Failed to read configuration file ")
+                            sys.stderr.write("'%s':\nNo value set for %s in [global].\n" % (conf, key))
+                            sys.exit(1)
+                        try:
+                            self.parse_metric_info(parsemet, key, config.get('global', key))
+                        except ValueError as error:
+                            sys.stderr.write("Failed to read configuration file ")
+                            sys.stderr.write("'%s':\n" + str(error) % conf + ".\n")
+                            sys.exit(1)
+                    for metric in parsemet:
+                        name = parsemet[metric][:1][0]
+                        globmet[name] = parsemet[metric][1:]
+
+            # Add latest metricsets to full configuration
+            for section in config.sections():
+                if all_sets.has_section(section):
+                    all_sets.remove_section(section)
+                all_sets.add_section(section)
+                sources[section] = conf
+                for key, value in config.items(section):
+                    all_sets.set(section, key, value.replace('%', '%%'))
+                if section not in ('options', 'global'):
+                    config.remove_section(section)
+
+        # Get details for configuration file metricsets
+        for spec in cmdlmet:
+            if cmdlmet[spec] is None:
+                if all_sets.has_section(spec):
+                    parsemet = OrderedDict()
+                    for key in all_sets.options(spec):
+                        if not all_sets.get(spec, key):
+                            conf = sources[spec]
+                            sys.stderr.write("Failed to read configuration file ")
+                            sys.stderr.write("'%s':\nNo value set for %s in [%s].\n" % (conf, key, spec))
+                            sys.exit(1)
+                        if key in self.util.keys or \
+                           (hasattr(self.util, 'keys_ignore') and key in self.util.keys_ignore):
+                            continue
+                        try:
+                            self.parse_metric_info(parsemet, key, all_sets.get(spec, key))
+                        except ValueError as error:
+                            conf = sources[spec]
+                            sys.stderr.write("Failed to read configuration file ")
+                            sys.stderr.write("'%s':\n" % conf + str(error) + ".\n")
+                            sys.exit(1)
                     for metric in parsemet:
                         name = parsemet[metric][:1][0]
                         confmet[name] = parsemet[metric][1:]
-                    tempmet[spec] = confmet
-                else:
-                    raise IOError("Metricset definition ':%s' not found." % spec)
+                    cmdlmet[spec] = confmet
+
+        # Check for metricsets not found
+        for spec in cmdlmet:
+            if cmdlmet[spec] is None:
+                sys.stderr.write("Metricset definition ':%s' not found.\n" % spec)
+                sys.exit(1)
 
         # Create combined metricset
         if self.util.globals == 1:
             for metric in globmet:
                 self.util.metrics[metric] = globmet[metric]
-        for metric in tempmet:
-            if isinstance(tempmet[metric], list):
-                self.util.metrics[metric] = tempmet[metric]
+        for metric in cmdlmet:
+            if isinstance(cmdlmet[metric], list):
+                self.util.metrics[metric] = cmdlmet[metric]
             else:
-                if tempmet[metric]:
-                    for m in tempmet[metric]:
+                if cmdlmet[metric]:
+                    for m in cmdlmet[metric]:
                         self.util.metrics[m] = confmet[m]
 
         if not self.util.metrics:
-            raise IOError("No metrics specified.")
+            sys.stderr.write("No metrics specified.\n")
+            sys.exit(1)
 
         self._conf_metrics = deepcopy(self.util.metrics)
 
@@ -447,8 +529,7 @@ class pmConfig(object):
         """ Get instance domain for metric """
         if self.util.context.type == pmapi.c_api.PM_CONTEXT_ARCHIVE:
             return self.util.context.pmGetInDomArchive(desc)
-        else:
-            return self.util.context.pmGetInDom(desc)
+        return self.util.context.pmGetInDom(desc)
 
     def get_inst_labels(self, indom, curr=True, insts=[]): # pylint: disable=dangerous-default-value
         """ Get instance labels """
@@ -461,6 +542,20 @@ class pmConfig(object):
         for i in insts:
             inst_labels.append(indom_labels[i] if i in indom_labels else {})
         return inst_labels
+
+    def get_proc_basename(self, proc):
+        """ Get process basename """
+        if proc.startswith('('):
+            # Kernel thread
+            proc = proc[1:-1]
+        else:
+            # User space process
+            if proc.startswith('-'):
+                proc = proc[1:]
+            if proc.endswith(':'):
+                proc = proc[:-1]
+            proc = os.path.basename(proc)
+        return proc
 
     def check_metric(self, metric):
         """ Validate individual metric and get its details """
@@ -477,13 +572,13 @@ class pmConfig(object):
                 if not inst[0]:
                     inst = ([pmapi.c_api.PM_IN_NULL], [None]) # pmcd.pmie.logfile
             # Reject unsupported types
-            if not (desc.contents.type == pmapi.c_api.PM_TYPE_32 or
-                    desc.contents.type == pmapi.c_api.PM_TYPE_U32 or
-                    desc.contents.type == pmapi.c_api.PM_TYPE_64 or
-                    desc.contents.type == pmapi.c_api.PM_TYPE_U64 or
-                    desc.contents.type == pmapi.c_api.PM_TYPE_FLOAT or
-                    desc.contents.type == pmapi.c_api.PM_TYPE_DOUBLE or
-                    desc.contents.type == pmapi.c_api.PM_TYPE_STRING):
+            if desc.contents.type not in (pmapi.c_api.PM_TYPE_32,
+                                          pmapi.c_api.PM_TYPE_U32,
+                                          pmapi.c_api.PM_TYPE_64,
+                                          pmapi.c_api.PM_TYPE_U64,
+                                          pmapi.c_api.PM_TYPE_FLOAT,
+                                          pmapi.c_api.PM_TYPE_DOUBLE,
+                                          pmapi.c_api.PM_TYPE_STRING):
                 raise pmapi.pmErr(pmapi.c_api.PM_ERR_TYPE)
             instances = self.util.instances if not self._tmp else self._tmp
             if hasattr(self.util, 'omit_flat') and self.util.omit_flat and not inst[1][0]:
@@ -491,16 +586,28 @@ class pmConfig(object):
             if instances and inst[1][0] and not self.do_live_filtering():
                 found = [[], []]
                 for r in instances:
+                    hit = False
+                    msg = ""
                     try:
                         if r.isdigit():
-                            msg = "Invalid instance id"
-                            for i, s in enumerate(inst[1]):
-                                sp = s.split()[0]
-                                if sp.isdigit() and int(r) == int(sp):
-                                    found[0].append(inst[0][i])
-                                    found[1].append(inst[1][i])
-                                    break
-                        else:
+                            msg = "Invalid instance"
+                            if inst[1][0].split()[0].isdigit():
+                                for i, s in enumerate(inst[1]):
+                                    sp = s.split()[0]
+                                    if sp.isdigit() and int(r) == int(sp):
+                                        found[0].append(inst[0][i])
+                                        found[1].append(inst[1][i])
+                                        hit = True
+                                        break
+                        if r.replace('.', '').replace('_', '').replace('-', '').isalnum():
+                            msg = "Invalid process"
+                            if ' ' in inst[1][0] and inst[1][0].split()[0].isdigit():
+                                for i, s in enumerate(inst[1]):
+                                    if r == self.get_proc_basename(s.split()[1]):
+                                        found[0].append(inst[0][i])
+                                        found[1].append(inst[1][i])
+                                        hit = True
+                        if not hit:
                             msg = "Invalid regex"
                             cr = re.compile(r'\A' + r + r'\Z')
                             for i, s in enumerate(inst[1]):
@@ -579,37 +686,47 @@ class pmConfig(object):
 
     def validate_common_options(self):
         """ Validate common utility options """
+        err = "Integer expected"
+        attr = "unknown"
         try:
-            err = "Integer expected"
             if hasattr(self.util, 'rank') and self.util.rank:
+                attr = 'rank'
                 self.util.rank = int(self.util.rank)
             if hasattr(self.util, 'limit_filter') and self.util.limit_filter:
+                attr = 'limit_filter'
                 self.util.limit_filter = int(self.util.limit_filter)
             if hasattr(self.util, 'limit_filter_force') and self.util.limit_filter_force:
+                attr = 'limit_filter_force'
                 self.util.limit_filter_force = int(self.util.limit_filter_force)
             err = "Non-negative integer expected"
             if hasattr(self.util, 'width') and self.util.width:
+                attr = 'width'
                 self.util.width = int(self.util.width)
                 if self.util.width < 0:
                     raise ValueError(err)
             if hasattr(self.util, 'width_force') and self.util.width_force:
+                attr = 'width_force'
                 self.util.width_force = int(self.util.width_force)
                 if self.util.width_force < 0:
                     raise ValueError(err)
             if hasattr(self.util, 'precision') and self.util.precision:
+                attr = 'precision'
                 self.util.precision = int(self.util.precision)
                 if self.util.precision < 0:
                     raise ValueError(err)
             if hasattr(self.util, 'precision_force') and self.util.precision_force:
+                attr = 'precision_force'
                 self.util.precision_force = int(self.util.precision_force)
                 if self.util.precision_force < 0:
                     raise ValueError(err)
             if hasattr(self.util, 'repeat_header') and self.util.repeat_header:
-                self.util.repeat_header = int(self.util.repeat_header)
-                if self.util.repeat_header < 0:
-                    raise ValueError(err)
+                attr = 'repeat_header'
+                if self.util.repeat_header != "auto":
+                    self.util.repeat_header = int(self.util.repeat_header)
+                    if self.util.repeat_header < 0:
+                        raise ValueError(err)
         except ValueError:
-            sys.stderr.write("Error while parsing options: %s.\n" % err)
+            sys.stderr.write("Error while reading option %s: %s.\n" % (attr, err))
             sys.exit(1)
 
     def validate_metrics(self, curr_insts=CURR_INSTS, max_insts=0):
@@ -630,10 +747,12 @@ class pmConfig(object):
                     try:
                         self.util.context.pmLoadDerivedConfig(derived)
                     except pmapi.pmErr as error:
-                        sys.stderr.write("Failed to load derived metric definitions from file '%s':\n%s.\n" % (derived, str(error)))
+                        sys.stderr.write("Failed to load derived metric definitions ")
+                        sys.stderr.write("from file '%s':\n%s.\n" % (derived, str(error)))
                         sys.exit(1)
                 else:
                     err = ""
+                    expr = ""
                     try:
                         name, expr = derived.split("=", 1)
                         self.util.context.pmLookupName(name.strip())
@@ -644,15 +763,15 @@ class pmConfig(object):
                             try:
                                 self.util.context.pmRegisterDerived(name.strip(), expr.strip())
                                 continue
-                            except pmapi.pmErr as error:
-                                err = error.message()
+                            except pmapi.pmErr as error2:
+                                err = error2.message()
                     except ValueError as error:
                         err = "Invalid syntax (expected metric=expression)"
                     except Exception as error:
                         err = "Unidentified error"
                     finally:
                         if err:
-                            sys.stderr.write("Failed to register derived metric: %s.\n" % err)
+                            sys.stderr.write("Failed to register derived metric:\n%s.\n" % err)
                             sys.exit(1)
 
         if not hasattr(self.util, 'leaf_only') or not self.util.leaf_only:
@@ -680,8 +799,8 @@ class pmConfig(object):
                     ignore = False
                     try:
                         self.util.context.pmLookupName(metric)
-                    except pmapi.pmErr as error:
-                        if error.args[0] != pmapi.c_api.PM_ERR_NAME:
+                    except pmapi.pmErr as error2:
+                        if error2.args[0] != pmapi.c_api.PM_ERR_NAME:
                             raise
                         if self.ignore_unknown_metrics() and metric in self._conf_metrics:
                             ignore = True
@@ -754,8 +873,8 @@ class pmConfig(object):
                 self.util.metrics[metric][3] = 1
             else:
                 self.util.metrics[metric][3] = 0
-            # As a special service for the pmrep(1) utility,
-            # we force raw output with its archive mode.
+            # Force raw output with archive mode of any tool in order to
+            # create pmlogger(1) compatible archives that can be merged.
             if (hasattr(self.util, 'type') and self.util.type == 1) or \
                self.util.metrics[metric][3] == 'raw' or \
                (hasattr(self.util, 'output') and self.util.output == 'archive'):
@@ -813,6 +932,11 @@ class pmConfig(object):
                 elif not self.util.metrics[metric][2]:
                     self.util.metrics[metric][2] = str(unit)
             if not self.util.metrics[metric][2]:
+                self.util.metrics[metric][2] = str(unit)
+
+            # Force native units with archive mode of any tool in order to
+            # create pmlogger(1) compatible archives that can be merged.
+            if hasattr(self.util, 'output') and self.util.output == 'archive':
                 self.util.metrics[metric][2] = str(unit)
 
             # Finalize text label and unit/scale
@@ -918,7 +1042,8 @@ class pmConfig(object):
                                 del self.labels[i][1][v]
                     self.util.metrics[metric][5] = self.pmfg_items_to_indom(items)
                 else:
-                    self.util.metrics[metric][5] = self.util.pmfg.extend_indom(metric, mtype, scale, max_insts)
+                    self.util.metrics[metric][5] = \
+                        self.util.pmfg.extend_indom(metric, mtype, scale, max_insts)
 
                 # Populate per-metric regex cache for live filtering
                 if self.do_live_filtering():
@@ -963,12 +1088,14 @@ class pmConfig(object):
         """ Finalize util options """
         # Runtime overrides samples/interval
         if self.util.opts.pmGetOptionFinishOptarg():
-            origin = float(self.util.opts.pmGetOptionOrigin()) if self.util.opts.pmGetOptionOrigin() is not None else 0
+            if self.util.opts.pmGetOptionOrigin() is None:
+                origin = 0
+            else:
+                origin = float(self.util.opts.pmGetOptionOrigin())
             self.util.runtime = float(self.util.opts.pmGetOptionFinish()) - origin
             if self.util.opts.pmGetOptionSamples():
                 self.util.samples = self.util.opts.pmGetOptionSamples()
-                if self.util.samples < 2:
-                    self.util.samples = 2
+                self.util.samples = max(2, self.util.samples)
                 self.util.interval = float(self.util.runtime) / (self.util.samples - 1)
                 self.util.opts.pmSetOptionInterval(str(self.util.interval))
                 self.util.interval = self.util.opts.pmGetOptionInterval()
@@ -1020,6 +1147,9 @@ class pmConfig(object):
         except pmapi.pmErr as error:
             if error.args[0] == pmapi.c_api.PM_ERR_EOL:
                 return -1
+            if error.args[0] == pmapi.c_api.PM_ERR_TOOSMALL:
+                raise pmapi.pmErr(pmapi.c_api.PM_ERR_TOOSMALL,
+                                  "\nNo metrics or instances to report present.")
             raise error
 
         # Watch for end time in uninterpolated mode
@@ -1058,6 +1188,12 @@ class pmConfig(object):
         """ Filter instance name against metric instances """
         if not self._re_cache[metric]:
             return True
+
+        for r in self.util.metrics[metric][1]:
+            if r.replace('.', '').replace('_', '').replace('-', '').isalnum():
+                if ' ' in name and name.split()[0].isdigit():
+                    if r == self.get_proc_basename(name.split()[1]):
+                        return True
 
         for cr in self._re_cache[metric]:
             if re.match(cr, name):

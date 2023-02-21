@@ -1,6 +1,6 @@
 '\"macro stdmacro
 .\"
-.\" Copyright (c) 2013-2015,2018-2019 Red Hat.
+.\" Copyright (c) 2013-2015,2018-2019,2021-2022 Red Hat.
 .\" Copyright (c) 2000 Silicon Graphics, Inc.  All Rights Reserved.
 .\"
 .\" This program is free software; you can redistribute it and/or modify it
@@ -19,18 +19,17 @@
 \f3pmproxy\f1 \- proxy for performance metrics collector and querying
 .SH SYNOPSIS
 \f3pmproxy\f1
-[\f3\-AFft?\f1]
-[\f3\-C\f1 \f2dirname\f1]
+[\f3\-AdfFt?\f1]
+[\f3\-c\f1 \f2conffile\f1]
 [\f3\-h\f1 \f2host\f1[,\f2host\f1 ...]
 [\f3\-i\f1 \f2ipaddress\f1]
 [\f3\-l\f1 \f2logfile\f1]
 [\f3\-L\f1 \f2bytes\f1]
-[\f3\-M\f1 \f2certname\f1]
 [\f3\-p\f1 \f2port\f1[,\f2port\f1 ...]
-[\f3\-P\f1 \f2passfile\f1]
 [\f3\-r\f1 \f2port\f1[,\f2port\f1 ...]
+[\f3\-s\f1 \f2sockname\f1]
 [\f3\-U\f1 \f2username\f1]
-[\f3\-x\f1 \f2file\f1]
+[\f3\-x\f1 \f2outfile\f1]
 .SH DESCRIPTION
 .B pmproxy
 acts as a protocol proxy,
@@ -106,26 +105,11 @@ will advertise its presence on the network using any available mechanisms
 (such as Avahi/DNS-SD), assisting remote monitoring tools with finding it.
 These mechanisms are disabled with this option.
 .TP
-\f3\-c\f1 \f2file\f1, \f3\-\-config\f1=\f2file\f1
+\f3\-c\f1 \f2conffile\f1, \f3\-\-config\f1=\f2conffile\f1
 Specify the path to an optional configuration
-.IR file ,
+.IR conffile ,
 with format as described in the ``CONFIGURATION'' section.
 This option implies \f3pmproxy\f1 is running in \f3timeseries\f1 mode.
-.TP
-\f3\-C\f1 \f2dirname\f1, \f3\-\-certpath\f1=\f2dirname\f1
-Specify the path to the Network Security Services certificate database,
-for (optional) secure connections.
-This option implies \f3pmproxy\f1 is running in \f3deprecated\f1 mode.
-The default is
-.BR /etc/pki/nssdb .
-Refer also to the \f3\-P\f1 option.
-If it does not already exist, this database can be created using the
-.B certutil
-utility.
-This process and other certificate database maintenance information
-is provided in the
-.BR PCPIntro (1)
-manual page and the online PCP tutorials.
 .TP
 \f3\-d\f1, \f3\-\-deprecated\f1
 By default
@@ -135,8 +119,8 @@ asynchronous network I/O, scalable time series, and secure connections
 using OpenSSL.
 However, legacy deployments may wish to use the original synchronous
 .B pmproxy
-implementation using NSS and libpcp networking; this can be achieved
-using this option.
+implementation using libpcp networking; this can be achieved using
+this option.
 Note that the \f3\-d\f1 and \f3\-t\f1 options are mutually exclusive.
 .TP
 \f3\-f\f1, \f3\-\-foreground\f1
@@ -186,7 +170,7 @@ to connect to for time series querying, overriding any configuration
 file settings.
 This option implies \f3pmproxy\f1 is running in \f3timeseries\f1 mode.
 .TP
-\f3\-i\f1 \f2ipaddress\f1
+\f3\-i\f1 \f2ipaddress\f1, \f3\-\-interface\f1=\f2ipaddress\f1
 This option is usually only used on hosts with more than one network
 interface (very common for firewall and ``head'' node hosts where
 .B pmproxy
@@ -209,17 +193,17 @@ When one or more
 .B \-i
 options is specified, attempted connections made on any other IP addresses will be refused.
 .TP
-\f3\-l\f1 \f2file\f1, \f3\-\-log\f1=\f2file\f1
+\f3\-l\f1 \f2logfile\f1, \f3\-\-log\f1=\f2logfile\f1
 By default a log file named
 .I pmproxy.log
 is written in the current directory.
 The
 .B \-l
 option causes the log file to be written to a given
-.I file
+.I logfile
 instead of the default.
 If this
-.I file
+.I logfile
 cannot be created or is not writable, output is
 written to the standard error instead.
 .TP
@@ -236,38 +220,11 @@ option may be used to change the maximum incoming
 .I PDU
 size.
 .TP
-\f3\-M\f1 \f2name\f1, \f3\-\-certname\f1=\f2name\f1
-By default
-.B pmproxy
-will try to use a certificate called
-.B "PCP Collector certificate"
-in its server role.
-The
-.B \-M
-option allows this certificate
-.I name
-to be changed.
-This option implies \f3pmproxy\f1 is running in \f3deprecated\f1 mode.
-.TP
 \f3\-p\f1 \f2port\f1, \f3\-\-port\f1=\f2port\f1
 Specify an alternate
 .I port
 number to listen on for client connections.
 The default value is 44322.
-.TP
-\f3\-P\f1 \f2file\f1, \f3\-\-passfile\f1=\f2file\f1
-Specify the path to a
-.I file
-containing the Network Security Services certificate
-database password for (optional) secure connections, and for databases that are
-password protected.
-This option implies \f3pmproxy\f1 is running in \f3deprecated\f1 mode.
-Refer also to the \f3\-C\f1 option.
-When using this option, great care should be exercised to ensure appropriate
-ownership ("pcp" user, typically) and permissions on this file (0400, so as to
-be unreadable by any user other than the user running the
-.B pmproxy
-process).
 .TP
 \f3\-r\f1 \f2port\f1, \f3\-\-redisport\f1=\f2port\f1
 Specify an alternate Redis
@@ -287,19 +244,44 @@ This option implies \f3pmproxy\f1 is running in \f3timeseries\f1 mode.
 Operate in automatic archive timeseries discovery mode.
 This mode of operation will enable the
 .BR PMWEBAPI (3)
-REST APIs, detect system archives created by
+REST APIs, dynamiclly and automatically detect active system
+archives being written by
 .BR pmlogger (1)
 and import them into a
-.BR redis-server (1)
-automatically, for fast, scalable time series querying described in
+.BR redis-server (1),
+for fast, scalable time series querying described in
 .BR pmseries (1).
+Note that in this mode of operation,
+.B pmproxy
+only "log-tails" and ingests actively growing archives, e.g. as written by one or more
+.BR pmlogger (1)
+instances.
+When an archive is first discovered (usually but not limited to
+.B pmproxy
+startup),
+all metadata is loaded and sent to the configured
+.BR redis-server (1)
+however note that only
+.B new
+archive metric value data from the tail end of each archive is ingested.
+Compressed archives never grow and so are ignored.
+See the
+.B \-\-load
+option to
+.BR pmseries (1)
+for a supported mechanism for manually loading all of the metric value data
+from previously collected (inactive) archives,
+whether compressed or not.
+It would be normal, though not mandated, for a set of archives being manually loaded
+to cover the same time period, e.g. archive data for a particular week for one or more
+hosts in the same data-centre.
 .TP
-\f3\-U\f1 \f2user\f1, \f3\-\-username\f1=\f2user\f1
+\f3\-U\f1 \f2username\f1, \f3\-\-username\f1=\f2username\f1
 Assume the identity of the given
-.I user
+.I username
 before starting to accept incoming packets from PCP monitoring clients.
 .TP
-\f3\-x\f1 \f2file\f1
+\f3\-x\f1 \f2outfile\f1
 Before the
 .B pmproxy
 .I logfile
@@ -309,7 +291,10 @@ may encounter a fatal error which prevents it from starting.
 By default the output describing this error is sent to
 .B /dev/tty
 but it may redirected to
-.IR file .
+.IR outfile .
+.TP
+\fB\-?\fR, \fB\-\-help\fR
+Display usage message and exit.
 .SH CONFIGURATION
 When running in the \f3timeseries\f1 mode of operation, runtime
 configuration is relatively complex and typically handled via the
@@ -326,7 +311,7 @@ section can be used to explicitly enable or disable each of the
 different protocols.
 .PP
 The
-.I [pmseries]
+.I [redis]
 section allows connection information for one or more backing
 .B redis-server
 processes to be configured (hostnames and ports).
@@ -339,6 +324,14 @@ Alternatively, it can be a single
 host that will be queried using the "CLUSTER INFO" command to
 automatically configure multiple backing hosts, described at
 .BR https://redis.io/topics/cluster-spec .
+.PP
+In earlier versions of PCP (before 6) an alternative configuration
+setting section was used for this purpose \- Redis
+.I servers
+were specified in the
+.I [pmseries]
+section and this is still accepted as a fallback for backwards
+compatibility.
 .SH STARTING AND STOPPING PMPROXY
 Normally,
 .B pmproxy
@@ -426,7 +419,7 @@ currently supports the debugging option
 for tracing client connections and disconnections.
 .SH FILES
 .TP 5
-.I PCP_PMPROXYOPTIONS_PATH
+.I $PCP_PMPROXYOPTIONS_PATH
 command line options for
 .B pmproxy
 when launched from
@@ -435,7 +428,7 @@ All the command line option lines should start with a hyphen as
 the first character.
 .TP
 .I $PCP_SYSCONFIG_DIR/pmproxy
-additional environment variables that will be set when
+Environment variables that will be set when
 .B pmproxy
 executes.
 Only settings of the form "PMPROXY_VARIABLE=value" will be honoured.
@@ -448,19 +441,11 @@ when started automatically)
 All messages and diagnostics are directed here
 .TP
 .I /etc/pki/tls
-default OpenSSL certificate database directory, used for optional
-Secure Socket Layer connections in \f3timeseries\f1 mode of operation.
+default OpenSSL certificate database directory, optionally used for
+Secure Socket Layer connection in \f3timeseries\f1 mode of operation.
 These certificates can be created and queried using the
 .B openssl
 tool, amongst others.
-.TP
-.I /etc/pki/nssdb
-default Network Sercity Services (NSS) database directory, used for optional
-Secure Socket Layer connections in \f3deprecated\f1 mode of operation.
-This database can be created and queried using the NSS
-.B certutil
-tool, amongst others.
-This is only used when \f3pmproxy\f1 is running in \f3deprecated\f1 mode.
 .SH ENVIRONMENT
 In addition to the PCP environment variables described in the
 .B "PCP ENVIRONMENT"

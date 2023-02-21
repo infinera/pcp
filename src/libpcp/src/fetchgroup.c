@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2014-2018 Red Hat.
+ * Copyright (c) 2014-2018,2022 Red Hat.
  *
  * This library is free software; you can redistribute it and/or modify it
  * under the terms of the GNU Lesser General Public License as published
@@ -21,17 +21,18 @@
 #include <limits.h>
 #include <float.h>
 
-#ifndef LLONG_MAX
-#define LLONG_MAX LONGLONG_MAX
-#endif
-#ifndef LLONG_MIN
-#define LLONG_MIN -LLONG_MAX-1L
-#endif
-#ifndef ULLONG_MAX
-#define ULLONG_MAX ULONGLONG_MAX
-#endif
-
-/* ------------------------------------------------------------------------ */
+/*
+ * Cache to avoid unnecessary repeated calls to pmGetInDom for individual
+ * instance domains.  This involves a round trip to pmcd and it does not
+ * change frequently (certainly not for processing results of one sample).
+ */
+struct __pmInDomCache {
+   pmInDom	indom;
+   int		*codes;	/* saved from pmGetInDom */
+   char		**names;
+   unsigned int	size;
+   int		refreshed;
+};
 
 /*
  * An individual fetch-group is a linked list of requests tied to a
@@ -41,10 +42,12 @@
 struct __pmFetchGroup {
     int	ctx;			/* our pcp context */
     int wrap;			/* wrap-handling flag, set at fg-create-time */
-    pmResult *prevResult;
+    pmHighResResult *prevResult;
     struct __pmFetchGroupItem *items;
+    struct __pmInDomCache *unique_indoms;
     pmID *unique_pmids;
     size_t num_unique_pmids;
+    size_t num_unique_indoms;
 };
 
 /*
@@ -66,7 +69,7 @@ typedef struct __pmFetchGroupConversionSpec *pmFGC;
  */
 struct __pmFetchGroupItem {
     struct __pmFetchGroupItem *next;
-    enum { pmfg_item, pmfg_indom, pmfg_event, pmfg_timestamp } type;
+    enum { pmfg_item, pmfg_indom, pmfg_event, pmfg_timeval, pmfg_timespec } type;
 
     union {
 	struct {
@@ -81,9 +84,6 @@ struct __pmFetchGroupItem {
 	struct {
 	    pmID metric_pmid;
 	    pmDesc metric_desc;
-	    int *indom_codes;	/* saved from pmGetInDom */
-	    char **indom_names;
-	    unsigned indom_size;
 	    struct __pmFetchGroupConversionSpec conv;
 	    int *output_inst_codes;	/* NB: may be NULL */
 	    char **output_inst_names;	/* NB: may be NULL */
@@ -112,14 +112,14 @@ struct __pmFetchGroupItem {
 	    unsigned *output_num;	/* NB: may be NULL */
 	} event;
 	struct {
+	    struct timespec *output_value;	/* NB: may be NULL */
+	} timespec;
+	struct {
 	    struct timeval *output_value;	/* NB: may be NULL */
-	} timestamp;
+	} timeval;
     } u;
 };
 typedef struct __pmFetchGroupItem *pmFGI;
-
-/* ------------------------------------------------------------------------ */
-/* Internal functions for finding, converting data. */
 
 static inline struct timespec *
 pmfg_timespec_from_timeval(const struct timeval *tv, struct timespec *ts)
@@ -127,13 +127,6 @@ pmfg_timespec_from_timeval(const struct timeval *tv, struct timespec *ts)
     ts->tv_sec = tv->tv_sec;
     ts->tv_nsec = tv->tv_usec * 1000;
     return ts;
-}
-
-static inline double
-pmfg_timespec_delta(const struct timespec *ap, const struct timespec *bp)
-{
-     return (double)(ap->tv_sec - bp->tv_sec) +
-	    (long double)(ap->tv_nsec - bp->tv_nsec) / (long double)1000000000;
 }
 
 /*
@@ -168,9 +161,7 @@ pmfg_add_pmid(pmFG pmfg, pmID pmid)
 /*
  * Populate given pmFGI item structure based on common lookup &
  * verification for pmfg inputs.  Adjust instance profile to
- * include requested instance.  If it's a derived metric, we 
- * don't know what instance domain(s) it could involve, so we
- * clear the instance profile entirely.
+ * include requested instance.
  */
 static int
 pmfg_lookup_item(const char *metric, const char *instance, pmFGI item)
@@ -192,18 +183,12 @@ pmfg_lookup_item(const char *metric, const char *instance, pmFGI item)
 	(item->u.item.metric_desc.indom != PM_INDOM_NULL && !instance))
 	return PM_ERR_INDOM;
 
-    /* Clear instance profile if this is an opaque derived metric. */
-    if (IS_DERIVED(item->u.item.metric_desc.pmid)) {
-        (void) pmAddProfile(PM_INDOM_NULL, 0, NULL);
-    }
-
     /* Add given instance to profile. */
     if (item->u.item.metric_desc.indom != PM_INDOM_NULL) {
 	sts = pmLookupInDom(item->u.item.metric_desc.indom, instance);
 	if (sts < 0)
 	    return sts;
 	item->u.item.metric_inst = sts;
-        /* Moot & harmless if IS_DERIVED. */
 	sts = pmAddProfile(item->u.item.metric_desc.indom, 1,
 			   &item->u.item.metric_inst);
     }
@@ -212,9 +197,12 @@ pmfg_lookup_item(const char *metric, const char *instance, pmFGI item)
 
 /* Same for a whole indom.  Add the whole instance profile.  */
 static int
-pmfg_lookup_indom(const char *metric, pmFGI item)
+pmfg_lookup_indom(pmFG pmfg, const char *metric, pmFGI item)
 {
-    int sts;
+    struct __pmInDomCache *indoms;
+    pmInDom indom;
+    size_t size;
+    int i, sts;
 
     assert(item != NULL);
     assert(item->type == pmfg_indom);
@@ -226,21 +214,35 @@ pmfg_lookup_indom(const char *metric, pmFGI item)
     if (sts < 0)
 	return sts;
 
-    /* Clear instance profile if this is an opaque derived metric. */
-    if (IS_DERIVED(item->u.item.metric_desc.pmid)) {
-        (void) pmAddProfile(PM_INDOM_NULL, 0, NULL);
+    /* As a convenience to users, we also accept non-indom'd metrics */
+    if ((indom = item->u.indom.metric_desc.indom) == PM_INDOM_NULL)
+	return 0;
+
+    /*
+     * Insert into the instance domain cache if not seen previously
+     */
+    for (i = 0; i < pmfg->num_unique_indoms; i++) {
+	if (pmfg->unique_indoms[i].indom == indom)
+	    return 0;
     }
 
-    /* As a convenience to users, we also accept non-indom'd metrics */
-    if (item->u.indom.metric_desc.indom == PM_INDOM_NULL)
-	return 0;
+    size = sizeof(struct __pmInDomCache) * (pmfg->num_unique_indoms + 1);
+    indoms = realloc(pmfg->unique_indoms, size);
+
+    if (indoms == NULL)
+	return -ENOMEM;
+    pmfg->unique_indoms = indoms;
+    pmfg->unique_indoms[pmfg->num_unique_indoms].indom = indom;
+    pmfg->unique_indoms[pmfg->num_unique_indoms].codes = NULL;
+    pmfg->unique_indoms[pmfg->num_unique_indoms].names = NULL;
+    pmfg->unique_indoms[pmfg->num_unique_indoms].refreshed = 0;
+    pmfg->num_unique_indoms++;
 
     /*
      * Add all instances; this will override any other past or future
      * piecemeal instance requests from __pmExtendFetchGroup_lookup.
-     * Moot & harmless if IS_DERIVED.
      */
-    return pmAddProfile(item->u.indom.metric_desc.indom, 0, NULL);
+    return pmAddProfile(indom, 0, NULL);
 }
 
 /* Same for an event field.  */
@@ -394,8 +396,8 @@ pmfg_prep_conversion(const pmDesc *desc, const char *scale, pmFGC conv, int otyp
 }
 
 /*
- * Extract value from pmResult interior.  Extends pmExtractValue/pmAtomStr with
- * string<->numeric conversion support.
+ * Extract value from result value sets.
+ * Extends pmExtractValue/pmAtomStr with string<->numeric conversion support.
  */
 static int
 __pmExtractValue2(int valfmt, const pmValue *ival, int itype, pmAtomValue *oval, int otype)
@@ -509,13 +511,13 @@ __pmStuffDoubleValue(double val, pmAtomValue *oval, int otype)
 		oval->ul = val;
 	    break;
 	case PM_TYPE_64:
-	    if (val > LLONG_MAX || val < LLONG_MIN)
+	    if (val > (double)LONGLONG_MAX || val < (double)(-LONGLONG_MAX-1L))
 		sts = PM_ERR_TRUNC;
 	    else
 		oval->ll = val;
 	    break;
 	case PM_TYPE_U64:
-	    if (val > ULLONG_MAX)
+	    if (val > (double)ULONGLONG_MAX)
 		sts = PM_ERR_TRUNC;
 	    else if (val < 0.0)
 		sts = PM_ERR_SIGN;
@@ -554,13 +556,23 @@ __pmStuffDoubleValue(double val, pmAtomValue *oval, int otype)
 }
 
 static void
-pmfg_reinit_timestamp(pmFGI item)
+pmfg_reinit_timespec(pmFGI item)
 {
     assert(item != NULL);
-    assert(item->type == pmfg_timestamp);
+    assert(item->type == pmfg_timespec);
 
-    if (item->u.timestamp.output_value)
-	memset(item->u.timestamp.output_value, 0, sizeof(struct timeval));
+    if (item->u.timespec.output_value)
+	memset(item->u.timespec.output_value, 0, sizeof(struct timespec));
+}
+
+static void
+pmfg_reinit_timeval(pmFGI item)
+{
+    assert(item != NULL);
+    assert(item->type == pmfg_timeval);
+
+    if (item->u.timeval.output_value)
+	memset(item->u.timeval.output_value, 0, sizeof(struct timeval));
 }
 
 static void
@@ -593,7 +605,7 @@ pmfg_reinit_indom(pmFGI item)
 
     if (item->u.indom.output_inst_names)
 	for (i = 0; i < item->u.indom.output_maxnum; i++)
-	    item->u.indom.output_inst_names[i] = NULL;	/* break ref into indom_names[] */
+	    item->u.indom.output_inst_names[i] = NULL;	/* ptr into names[] */
 
     if (item->u.indom.output_stss)
 	for (i = 0; i < item->u.indom.output_maxnum; i++)
@@ -639,7 +651,7 @@ pmfg_reinit_event(pmFGI item)
 
 /*
  * Find the pmValue corresponding to the item within the given
- * pmResult.  Convert it to given output type, including possible
+ * valueset.  Convert it to given output type, including possible
  * string<->number conversions.
  */
 static int
@@ -738,15 +750,13 @@ pmfg_extract_convert_item(pmFG pmfg, pmID metric_pmid, int metric_inst,
 
     if (conv->rate_convert) {
 	if (pmfg->prevResult) {
-	    pmResult *prev_r;
+	    pmHighResResult *prev_r;
 	    pmAtomValue prev_v;
-	    struct timespec prev_t;
 	    double deltaT, delta;
 	    const double epsilon = 0.000000001;	/* 1 nanosecond */
 
 	    prev_r = pmfg->prevResult;
-	    pmfg_timespec_from_timeval(&prev_r->timestamp, &prev_t);
-	    deltaT = pmfg_timespec_delta(timestamp, &prev_t);
+	    deltaT = pmtimespecSub(timestamp, &prev_r->timestamp);
 
 	    if (deltaT < epsilon)	/* avoid division by zero */
 		deltaT = epsilon;	/* (chose not to PM_ERR_CONV here) */
@@ -797,7 +807,7 @@ pmfg_extract_convert_item(pmFG pmfg, pmID metric_pmid, int metric_inst,
 }
 
 static void
-pmfg_fetch_item(pmFG pmfg, pmFGI item, pmResult *newResult)
+pmfg_fetch_item(pmFG pmfg, pmFGI item, pmHighResResult *newResult)
 {
     int sts;
     pmAtomValue v;
@@ -825,13 +835,10 @@ pmfg_fetch_item(pmFG pmfg, pmFGI item, pmResult *newResult)
     }
 
     if (item->u.item.conv.rate_convert || item->u.item.conv.unit_convert) {
-	struct timespec timestamp;
-
-	pmfg_timespec_from_timeval(&newResult->timestamp, &timestamp),
 	sts = pmfg_extract_convert_item(pmfg,
 			item->u.item.metric_pmid, item->u.item.metric_inst, 0,
 		 	&item->u.item.metric_desc, &item->u.item.conv,
-			newResult->vset, newResult->numpmid, &timestamp,
+			newResult->vset, newResult->numpmid, &newResult->timestamp,
 			&v, item->u.item.output_type);
 	if (sts < 0)
 	    goto out;
@@ -856,24 +863,38 @@ out:
 }
 
 static void
-pmfg_fetch_timestamp(pmFG pmfg, pmFGI item, pmResult *newResult)
+pmfg_fetch_timespec(pmFG pmfg, pmFGI item, pmHighResResult *newResult)
 {
-    assert(item->type == pmfg_timestamp);
+    assert(item->type == pmfg_timespec);
     assert(newResult != NULL);
     (void) pmfg;
 
-    if (item->u.timestamp.output_value)
-	*item->u.timestamp.output_value = newResult->timestamp;
+    if (item->u.timespec.output_value)
+	*item->u.timespec.output_value = newResult->timestamp;
 }
 
 static void
-pmfg_fetch_indom(pmFG pmfg, pmFGI item, pmResult *newResult)
+pmfg_fetch_timeval(pmFG pmfg, pmFGI item, pmHighResResult *newResult)
 {
-    int sts = 0;
-    int i;
-    unsigned j;
-    int need_indom_refresh;
+    assert(item->type == pmfg_timeval);
+    assert(newResult != NULL);
+    (void) pmfg;
+
+    if (item->u.timeval.output_value) {
+	unsigned int microseconds = newResult->timestamp.tv_nsec / 1000;
+	item->u.timeval.output_value->tv_usec = microseconds;
+	item->u.timeval.output_value->tv_sec = newResult->timestamp.tv_sec;
+    }
+}
+
+static void
+pmfg_fetch_indom(pmFG pmfg, pmFGI item, pmHighResResult *newResult)
+{
+    int i, sts = 0;
+    unsigned int j, k;
+    struct __pmInDomCache *cache;
     const pmValueSet *iv;
+    pmInDom indom;
 
     assert(item != NULL);
     assert(item->type == pmfg_indom);
@@ -882,7 +903,7 @@ pmfg_fetch_indom(pmFG pmfg, pmFGI item, pmResult *newResult)
     /*
      * Find our pmid in the newResult.	If rate-converting, we'll need to
      * find the corresponding pmid (and each instance) anew in the previous
-     * pmResult.
+     * result.
      */
     for (i = 0; i < newResult->numpmid; i++) {
 	if (newResult->vset[i]->pmid == item->u.indom.metric_pmid)
@@ -913,36 +934,44 @@ pmfg_fetch_indom(pmFG pmfg, pmFGI item, pmResult *newResult)
 
     /*
      * Analyze newResult to see whether it only contains instances we
-     * already know.  This is unfortunately an O(N**2) operation.  It
-     * could be made a bit faster if we build a pmGetInDom()- variant
-     * that provides instances in sorted order.
+     * already know.
      */
-    need_indom_refresh = 0;
-    if (item->u.indom.output_inst_names) {	/* Caller interested at all? */
-	for (j = 0; j < (unsigned)iv->numval; j++) {
-	    unsigned k;
-	    for (k = 0; k < item->u.indom.indom_size; k++)
-		if (item->u.indom.indom_codes[k] == iv->vlist[j].inst)
+    cache = NULL;
+    indom = item->u.indom.metric_desc.indom;
+    for (j = 0; j < pmfg->num_unique_indoms; j++) {
+	if (indom != pmfg->unique_indoms[j].indom)
+	    continue;
+	cache = &pmfg->unique_indoms[j];
+	break;
+    }
+    if (cache && cache->refreshed &&
+	item->u.indom.output_inst_names) {	/* Caller interested at all? */
+	for (j = 0; j < (unsigned int)iv->numval; j++) {
+	    for (k = 0; k < cache->size; k++)
+		if (cache->codes[k] == iv->vlist[j].inst)
 		    break;
-	    if (k >= item->u.indom.indom_size) {
-		need_indom_refresh = 1;
+	    if (k >= cache->size) {
+		cache->refreshed = 0;
 		break;
 	    }
 	}
     }
-    if (need_indom_refresh) {
-	free(item->u.indom.indom_codes);
-	free(item->u.indom.indom_names);
-	sts = pmGetInDom(item->u.indom.metric_desc.indom,
-			&item->u.indom.indom_codes, &item->u.indom.indom_names);
+    if (cache && !cache->refreshed) {
+	cache->refreshed = 1;
+
+	free(cache->codes);
+	free(cache->names);
+	cache->codes = NULL;
+	cache->names = NULL;
+
+	sts = pmGetInDom(indom, &cache->codes, &cache->names);
 	if (sts < 1) {
-	    /* Need to manually clear; pmGetInDom claims they are undefined. */
-	    item->u.indom.indom_codes = NULL;
-	    item->u.indom.indom_names = NULL;
-	    item->u.indom.indom_size = 0;
+	    if (sts < 0)
+		cache->refreshed = 0;
+	    cache->size = 0;
 	}
 	else {
-	    item->u.indom.indom_size = sts;
+	    cache->size = sts;
 	}
 	/*
 	 * NB: Even if the pmGetInDom failed, we can proceed with
@@ -977,18 +1006,19 @@ pmfg_fetch_indom(pmFG pmfg, pmFGI item, pmResult *newResult)
 	 * results from pmGetIndom.
 	 */
 	if (item->u.indom.output_inst_names) {
-	    unsigned k;
-
-	    for (k = 0; k < item->u.indom.indom_size; k++) {
-		if (item->u.indom.indom_codes[k] == jv->inst) {
-		    /*
-		     * NB: copy the indom name char* by value.
-		     * The user is not supposed to modify / free this pointer,
-		     * or use it after a subsequent fetch or delete operation.
-		     */
-		    item->u.indom.output_inst_names[j] =
-				item->u.indom.indom_names[k];
-		    break;
+	    if (cache == NULL)
+		item->u.indom.output_inst_names[j] = NULL;
+	    else {
+	        for (k = 0; k < cache->size; k++) {
+		    if (cache->codes[k] == jv->inst) {
+			/*
+			 * NB: copy the indom name char* by value.
+			 * User may not modify / free this pointer,
+			 * nor use it after subsequent fetch / delete.
+			 */
+			item->u.indom.output_inst_names[j] = cache->names[k];
+			break;
+		    }
 		}
 	    }
 	}
@@ -996,13 +1026,11 @@ pmfg_fetch_indom(pmFG pmfg, pmFGI item, pmResult *newResult)
 	/* Fetch & convert the actual value. */
 	if (item->u.indom.conv.rate_convert ||
 	    item->u.indom.conv.unit_convert) {
-	    struct timespec timestamp;
-
-	    pmfg_timespec_from_timeval(&newResult->timestamp, &timestamp);
 	    stss = pmfg_extract_convert_item(pmfg, item->u.indom.metric_pmid,
 				jv->inst, 0, &item->u.indom.metric_desc,
 				&item->u.indom.conv,
-				newResult->vset, newResult->numpmid, &timestamp,
+				newResult->vset, newResult->numpmid,
+				&newResult->timestamp,
 				&v, item->u.indom.output_type);
 	    if (stss < 0)
 		goto out1;
@@ -1112,7 +1140,7 @@ pmfg_fetch_event_field(pmFG pmfg, pmFGI item, unsigned int *output_num,
 }
 
 static void
-pmfg_fetch_event(pmFG pmfg, pmFGI item, pmResult *newResult)
+pmfg_fetch_event(pmFG pmfg, pmFGI item, pmHighResResult *newResult)
 {
     int sts = 0;
     int i;
@@ -1213,26 +1241,29 @@ out:
 static int
 pmfg_clear_profile(pmFG pmfg)
 {
-    int sts;
+    int i, sts;
 
     sts = pmUseContext(pmfg->ctx);
     if (sts != 0)
 	return sts;
 
     /*
-     * Wipe clean all instances; we'll add them back incrementally as
-     * the fetchgroup is extended.  This cannot fail for the manner in
-     * which we call it - see pmDelProfile(3) man page discussion.
+     * Wipe clean all instances profiles; we'll add them back incrementally
+     * as the fetchgroup is extended.
+     * Walk the fetchgroup, just clearing the profile for any indoms
+     * that are not PM_INDOM_NULL.
+     * Any errors here are benign (or rather there's nothing we can do
+     * about 'em), so ignore pmDelProfile() return value.
      */
-    return pmDelProfile(PM_INDOM_NULL, 0, NULL);
+    for (i = 0; i < pmfg->num_unique_indoms; i++)
+	(void)pmDelProfile(pmfg->unique_indoms[i].indom, 0, NULL);
+
+    return 0;
 }
 
 
-/* ------------------------------------------------------------------------ */
-/* Public functions exported from libpcp and in pmapi.h */
-
 /*
- * Create a new fetchgroup.  Take a duplicate of the incoming pcp context.
+ * Create a new fetchgroup with an associated new PMAPI context.
  * Return 0 and set *ptr on success.
  */
 int
@@ -1317,25 +1348,32 @@ pmExtendFetchGroup_item(pmFG pmfg,
 	__pmContext *ctxp = __pmHandleToPtr(pmfg->ctx);
 
 	if (ctxp->c_type == PM_CONTEXT_ARCHIVE) {
-	    struct timeval saved_origin;
-	    struct timeval archive_end;
-	    int saved_mode, saved_delta;
+	    struct timespec saved_origin, saved_delta, archive_end;
+	    int saved_mode, saved_direction;
 
-	    saved_origin.tv_sec = ctxp->c_origin.tv_sec;
-	    saved_origin.tv_usec = ctxp->c_origin.tv_usec;
+	    saved_origin.tv_sec = ctxp->c_origin.sec;
+	    saved_origin.tv_nsec = ctxp->c_origin.nsec;
 	    saved_mode = ctxp->c_mode;
-	    saved_delta = ctxp->c_delta;
-	    sts = pmGetArchiveEnd_ctx(ctxp, &archive_end);
+	    saved_delta.tv_sec = ctxp->c_delta.sec;
+	    saved_delta.tv_nsec = ctxp->c_delta.nsec;
+	    saved_direction = ctxp->c_direction;
 	    PM_UNLOCK(ctxp->c_lock);
+	    sts = pmGetHighResArchiveEnd(&archive_end);
 	    if (sts < 0)
 		goto out;
-	    sts = pmSetMode(PM_MODE_BACK, &archive_end, 0);
+	    sts = pmSetModeHighRes(PM_MODE_BACK, &archive_end, NULL);
 	    if (sts < 0)
 		goto out;
 	    /* try again */
 	    sts = pmfg_lookup_item(metric, instance, item);
 	    /* go back to saved position */
-	    rc = pmSetMode(saved_mode, &saved_origin, saved_delta);
+	    if (saved_direction) {
+		if (saved_delta.tv_sec)
+		    saved_delta.tv_sec *= saved_direction;
+		else
+		    saved_delta.tv_nsec *= saved_direction;
+	    }
+	    rc = pmSetModeHighRes(saved_mode, &saved_origin, &saved_delta);
 	    if (sts < 0)
 		goto out;
 	    if (rc < 0) {
@@ -1379,7 +1417,7 @@ out:
 }
 
 int
-pmExtendFetchGroup_timestamp(pmFG pmfg, struct timeval *out_value)
+pmExtendFetchGroup_timespec(pmFG pmfg, struct timespec *out_value)
 {
     pmFGI item;
 
@@ -1390,16 +1428,47 @@ pmExtendFetchGroup_timestamp(pmFG pmfg, struct timeval *out_value)
     if (item == NULL)
 	return -ENOMEM;
 
-    item->type = pmfg_timestamp;
-    item->u.timestamp.output_value = out_value;
+    item->type = pmfg_timespec;
+    item->u.timespec.output_value = out_value;
 
-    pmfg_reinit_timestamp(item);
+    pmfg_reinit_timespec(item);
 
     /* link in */
     item->next = pmfg->items;
     pmfg->items = item;
 
     return 0;
+}
+
+int
+pmExtendFetchGroup_timeval(pmFG pmfg, struct timeval *out_value)
+{
+    pmFGI item;
+
+    if (pmfg == NULL)
+	return -EINVAL;
+
+    item = calloc(1, sizeof(*item));
+    if (item == NULL)
+	return -ENOMEM;
+
+    item->type = pmfg_timeval;
+    item->u.timeval.output_value = out_value;
+
+    pmfg_reinit_timeval(item);
+
+    /* link in */
+    item->next = pmfg->items;
+    pmfg->items = item;
+
+    return 0;
+}
+
+int
+pmExtendFetchGroup_timestamp(pmFG pmfg, struct timeval *out_value)
+{
+    /* backwards compatibility */
+    return pmExtendFetchGroup_timeval(pmfg, out_value);
 }
 
 int
@@ -1426,7 +1495,7 @@ pmExtendFetchGroup_indom(pmFG pmfg,
 
     item->type = pmfg_indom;
 
-    sts = pmfg_lookup_indom(metric, item);
+    sts = pmfg_lookup_indom(pmfg, metric, item);
     if (sts != 0)
 	goto out;
 
@@ -1499,25 +1568,32 @@ pmExtendFetchGroup_event(pmFG pmfg,
 	__pmContext *ctxp = __pmHandleToPtr(pmfg->ctx);
 
 	if (ctxp->c_type == PM_CONTEXT_ARCHIVE) {
-	    struct timeval saved_origin;
-	    struct timeval archive_end;
-	    int saved_mode, saved_delta;
+	    struct timespec saved_origin, saved_delta, archive_end;
+	    int saved_mode, saved_direction;
 
-	    saved_origin.tv_sec = ctxp->c_origin.tv_sec;
-	    saved_origin.tv_usec = ctxp->c_origin.tv_usec;
+	    saved_origin.tv_sec = ctxp->c_origin.sec;
+	    saved_origin.tv_nsec = ctxp->c_origin.nsec;
 	    saved_mode = ctxp->c_mode;
-	    saved_delta = ctxp->c_delta;
-	    sts = pmGetArchiveEnd_ctx(ctxp, &archive_end);
+	    saved_delta.tv_sec = ctxp->c_delta.sec;
+	    saved_delta.tv_nsec = ctxp->c_delta.nsec;
+	    saved_direction = ctxp->c_direction;
 	    PM_UNLOCK(ctxp->c_lock);
+	    sts = pmGetHighResArchiveEnd(&archive_end);
 	    if (sts < 0)
 		goto out;
-	    sts = pmSetMode(PM_MODE_BACK, &archive_end, 0);
+	    sts = pmSetModeHighRes(PM_MODE_BACK, &archive_end, NULL);
 	    if (sts < 0)
 		goto out;
 	    /* try again */
 	    sts = pmfg_lookup_event(metric, instance, field, item);
 	    /* go back to saved position */
-	    rc = pmSetMode(saved_mode, &saved_origin, saved_delta);
+	    if (saved_direction) {
+		if (saved_delta.tv_sec)
+		    saved_delta.tv_sec *= saved_direction;
+		else
+		    saved_delta.tv_nsec *= saved_direction;
+	    }
+	    rc = pmSetModeHighRes(saved_mode, &saved_origin, &saved_delta);
 	    if (sts < 0)
 		goto out;
 	    if (rc < 0) {
@@ -1589,20 +1665,22 @@ pmFetchGroup(pmFG pmfg)
 {
     int sts;
     pmFGI item;
-    pmResult *newResult;
-    pmResult dummyResult;
+    pmHighResResult *newResult;
+    pmHighResResult dummyResult;
 
     if (pmfg == NULL)
 	return -EINVAL;
-
     /*
      * Walk the fetchgroup, reinitializing every output spot, regardless of
      * later errors.
      */
     for (item = pmfg->items; item; item = item->next) {
 	switch (item->type) {
-	    case pmfg_timestamp:
-		pmfg_reinit_timestamp(item);
+	    case pmfg_timespec:
+		pmfg_reinit_timespec(item);
+		break;
+	    case pmfg_timeval:
+		pmfg_reinit_timeval(item);
 		break;
 	    case pmfg_item:
 		if (item->u.item.metric_desc.sem != PM_SEM_DISCRETE)
@@ -1625,27 +1703,29 @@ pmFetchGroup(pmFG pmfg)
     if (sts != 0)
 	return sts;
 
-    sts = pmFetch(pmfg->num_unique_pmids, pmfg->unique_pmids, &newResult);
+    sts = pmFetchHighRes(pmfg->num_unique_pmids, pmfg->unique_pmids, &newResult);
     if (sts < 0 || newResult == NULL) {
 	/*
 	 * Populate an empty fetch result, which will send out the
 	 * appropriate PM_ERR_VALUE etc. indications to the fetchgroup
 	 * items.
 	 */
-	gettimeofday(&dummyResult.timestamp, NULL);
-	dummyResult.numpmid = 0;
-	dummyResult.vset[0] = NULL;
+	memset(&dummyResult, 0, sizeof(dummyResult));
+	__pmGetTimespec(&dummyResult.timestamp);
 	newResult = &dummyResult;
     }
 
     /* Sort instances so that the indom fetchgroups come out conveniently */
-    pmSortInstances(newResult);
+    pmSortHighResInstances(newResult);
 
     /* Walk the fetchgroup. */
     for (item = pmfg->items; item; item = item->next) {
 	switch (item->type) {
-	    case pmfg_timestamp:
-		pmfg_fetch_timestamp(pmfg, item, newResult);
+	    case pmfg_timeval:
+		pmfg_fetch_timeval(pmfg, item, newResult);
+		break;
+	    case pmfg_timespec:
+		pmfg_fetch_timespec(pmfg, item, newResult);
 		break;
 	    case pmfg_item:
 		pmfg_fetch_item(pmfg, item, newResult);
@@ -1669,11 +1749,11 @@ pmFetchGroup(pmFG pmfg)
      */
     if (newResult != &dummyResult) {
 	if (pmfg->prevResult)
-	    pmFreeResult(pmfg->prevResult);
+	    pmFreeHighResResult(pmfg->prevResult);
 	pmfg->prevResult = newResult;
     }
 
-    /* NB: we pass through the pmFetch() sts. */
+    /* NB: we pass through the pmFetchHighRes() sts. */
     return sts;
 }
 
@@ -1684,6 +1764,7 @@ int
 pmClearFetchGroup(pmFG pmfg)
 {
     pmFGI item;
+    size_t n;
 
     if (pmfg == NULL)
 	return -EINVAL;
@@ -1698,13 +1779,12 @@ pmClearFetchGroup(pmFG pmfg)
 		break;
 	    case pmfg_indom:
 		pmfg_reinit_indom(item);
-		free(item->u.indom.indom_codes);
-		free(item->u.indom.indom_names);
 		break;
 	    case pmfg_event:
 		pmfg_reinit_event(item);
 		break;
-	    case pmfg_timestamp:
+	    case pmfg_timespec:
+	    case pmfg_timeval:
 		/* no dynamically allocated content. */
 		break;
 	    default:
@@ -1716,12 +1796,22 @@ pmClearFetchGroup(pmFG pmfg)
     pmfg->items = NULL;
 
     if (pmfg->prevResult)
-	pmFreeResult(pmfg->prevResult);
+	pmFreeHighResResult(pmfg->prevResult);
     pmfg->prevResult = NULL;
+
     if (pmfg->unique_pmids)
 	free(pmfg->unique_pmids);
     pmfg->unique_pmids = NULL;
     pmfg->num_unique_pmids = 0;
+
+    for (n = 0; n < pmfg->num_unique_indoms; n++) {
+	free(pmfg->unique_indoms[n].codes);
+	free(pmfg->unique_indoms[n].names);
+    }
+    if (pmfg->unique_indoms)
+	free(pmfg->unique_indoms);
+    pmfg->unique_indoms = NULL;
+    pmfg->num_unique_indoms = 0;
 
     return pmfg_clear_profile(pmfg);
 }

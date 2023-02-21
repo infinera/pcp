@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2015,2020 Red Hat.
+ * Copyright (c) 2015,2021 Red Hat.
  * Copyright (c) 2014-2015 Martins Innus.  All Rights Reserved.
  * Copyright (c) 2000,2004 Silicon Graphics, Inc.  All Rights Reserved.
  * 
@@ -39,6 +39,7 @@ enum {
     DYNPROC_GROUP_SCHEDSTAT,
     DYNPROC_GROUP_NAMESPACE,
     DYNPROC_GROUP_SMAPS,
+    DYNPROC_GROUP_AUTOGROUP,
 
     NUM_DYNPROC_GROUPS
 };
@@ -65,6 +66,9 @@ static int proc_hotproc_cluster_list[][2] = {
 	{ CLUSTER_PID_FD,	    CLUSTER_HOTPROC_PID_FD },
 	{ CLUSTER_PID_OOM_SCORE,    CLUSTER_HOTPROC_PID_OOM_SCORE },
 	{ CLUSTER_PID_SMAPS,	    CLUSTER_HOTPROC_PID_SMAPS },
+	{ CLUSTER_PID_EXE,	    CLUSTER_HOTPROC_PID_EXE },
+	{ CLUSTER_PID_CWD,	    CLUSTER_HOTPROC_PID_CWD },
+	{ CLUSTER_PID_AUTOGROUP,    CLUSTER_HOTPROC_PID_AUTOGROUP },
 };
 
 
@@ -132,19 +136,22 @@ static dynproc_metric_t psinfo_metrics[] = {
 	{ .name = "guest_time",	    .cluster = CLUSTER_PID_STAT,	.item=45 },
 	{ .name = "cguest_time",    .cluster = CLUSTER_PID_STAT,	.item=46 },
 	{ .name = "environ",        .cluster = CLUSTER_PID_STAT,	.item=47 },
+	{ .name = "policy_s",	    .cluster = CLUSTER_PID_STAT,	.item=48 },
 	{ .name = "signal_s",	    .cluster = CLUSTER_PID_STATUS,	.item=16 },
 	{ .name = "blocked_s",	    .cluster = CLUSTER_PID_STATUS,	.item=17 },
 	{ .name = "sigignore_s",    .cluster = CLUSTER_PID_STATUS,	.item=18 },
 	{ .name = "sigcatch_s",	    .cluster = CLUSTER_PID_STATUS,	.item=19 },
 	{ .name = "threads",	    .cluster = CLUSTER_PID_STATUS,	.item=28 },
-	{ .name = "cgroups",	    .cluster = CLUSTER_PID_CGROUP,	.item = PROC_PID_CGROUP },
-	{ .name = "labels",	    .cluster = CLUSTER_PID_LABEL,	.item = PROC_PID_LABEL },
+	{ .name = "cgroups",	    .cluster = CLUSTER_PID_CGROUP,	.item=0 },
+	{ .name = "labels",	    .cluster = CLUSTER_PID_LABEL,	.item=0 },
 	{ .name = "vctxsw",	    .cluster = CLUSTER_PID_STATUS,	.item=29 },
 	{ .name = "nvctxsw",	    .cluster = CLUSTER_PID_STATUS,	.item=30 },
-	{ .name = "cpusallowed",    .cluster = CLUSTER_PID_STATUS,	.item = PROC_PID_STATUS_CPUSALLOWED },
-	{ .name = "ngid",	    .cluster = CLUSTER_PID_STATUS,	.item = PROC_PID_STATUS_NGID },
-        { .name = "tgid",	    .cluster = CLUSTER_PID_STATUS,	.item = PROC_PID_STATUS_TGID },
-	{ .name = "oom_score",	    .cluster = CLUSTER_PID_OOM_SCORE,	.item = PROC_PID_OOM_SCORE },
+	{ .name = "cpusallowed",    .cluster = CLUSTER_PID_STATUS,	.item=31 },
+	{ .name = "ngid",	    .cluster = CLUSTER_PID_STATUS,	.item=32 },
+        { .name = "tgid",	    .cluster = CLUSTER_PID_STATUS,	.item=41 },
+	{ .name = "oom_score",	    .cluster = CLUSTER_PID_OOM_SCORE,	.item=0 },
+	{ .name = "exe",	    .cluster = CLUSTER_PID_EXE,		.item=0 },
+	{ .name = "cwd",	    .cluster = CLUSTER_PID_CWD,		.item=0 },
 };
 
 static dynproc_metric_t id_metrics[] = {
@@ -168,36 +175,42 @@ static dynproc_metric_t id_metrics[] = {
 };
 
 static dynproc_metric_t memory_metrics[] = {
-        { .name = "size",   .cluster = CLUSTER_PID_STATM,  .item=0 },
-        { .name = "rss",    .cluster = CLUSTER_PID_STATM,  .item=1 },
-        { .name = "share",  .cluster = CLUSTER_PID_STATM,  .item=2 },
-        { .name = "textrss",.cluster = CLUSTER_PID_STATM,  .item=3 },
-        { .name = "librss", .cluster = CLUSTER_PID_STATM,  .item=4 },
-        { .name = "datrss", .cluster = CLUSTER_PID_STATM,  .item=5 },
-        { .name = "dirty",  .cluster = CLUSTER_PID_STATM,  .item=6 },
-        { .name = "maps",   .cluster = CLUSTER_PID_STATM,  .item=7 },
-        { .name = "vmsize", .cluster = CLUSTER_PID_STATUS,  .item=20 },
-        { .name = "vmlock", .cluster = CLUSTER_PID_STATUS,  .item=21 },
-        { .name = "vmrss",  .cluster = CLUSTER_PID_STATUS,  .item=22 },
-        { .name = "vmdata", .cluster = CLUSTER_PID_STATUS,  .item=23 },
-        { .name = "vmstack",.cluster = CLUSTER_PID_STATUS,  .item=24 },
-        { .name = "vmexe",  .cluster = CLUSTER_PID_STATUS,  .item=25 },
-        { .name = "vmlib",  .cluster = CLUSTER_PID_STATUS,  .item=26 },
-        { .name = "vmswap", .cluster = CLUSTER_PID_STATUS,  .item=27 },
-        { .name = "vmpeak",	.cluster = CLUSTER_PID_STATUS,	.item = PROC_PID_STATUS_VMPEAK },
-	{ .name = "vmpin",	.cluster = CLUSTER_PID_STATUS,	.item = PROC_PID_STATUS_VMPIN },
-	{ .name = "vmhwm",	.cluster = CLUSTER_PID_STATUS,	.item = PROC_PID_STATUS_VMHWM },
-	{ .name = "vmpte",	.cluster = CLUSTER_PID_STATUS,	.item = PROC_PID_STATUS_VMPTE },
-	{ .name = "vmreal",	.cluster = CLUSTER_PID_STATUS,	.item = PROC_PID_STATUS_VMREAL },
-	{ .name = "vmnonlib",	.cluster = CLUSTER_PID_STATUS,	.item = PROC_PID_STATUS_VMNONLIB },
+        { .name = "size",     .cluster = CLUSTER_PID_STATM,  .item=0 },
+        { .name = "rss",      .cluster = CLUSTER_PID_STATM,  .item=1 },
+        { .name = "share",    .cluster = CLUSTER_PID_STATM,  .item=2 },
+        { .name = "textrss",  .cluster = CLUSTER_PID_STATM,  .item=3 },
+        { .name = "librss",   .cluster = CLUSTER_PID_STATM,  .item=4 },
+        { .name = "datrss",   .cluster = CLUSTER_PID_STATM,  .item=5 },
+        { .name = "dirty",    .cluster = CLUSTER_PID_STATM,  .item=6 },
+        { .name = "maps",     .cluster = CLUSTER_PID_STATM,  .item=7 },
+        { .name = "vmsize",   .cluster = CLUSTER_PID_STATUS, .item=20 },
+        { .name = "vmlock",   .cluster = CLUSTER_PID_STATUS, .item=21 },
+        { .name = "vmrss",    .cluster = CLUSTER_PID_STATUS, .item=22 },
+        { .name = "vmdata",   .cluster = CLUSTER_PID_STATUS, .item=23 },
+        { .name = "vmstack",  .cluster = CLUSTER_PID_STATUS, .item=24 },
+        { .name = "vmexe",    .cluster = CLUSTER_PID_STATUS, .item=25 },
+        { .name = "vmlib",    .cluster = CLUSTER_PID_STATUS, .item=26 },
+        { .name = "vmswap",   .cluster = CLUSTER_PID_STATUS, .item=27 },
+        { .name = "vmpeak",   .cluster = CLUSTER_PID_STATUS, .item=33 },
+	{ .name = "vmpin",    .cluster = CLUSTER_PID_STATUS, .item=34 },
+	{ .name = "vmhwm",    .cluster = CLUSTER_PID_STATUS, .item=35 },
+	{ .name = "vmpte",    .cluster = CLUSTER_PID_STATUS, .item=36 },
+	{ .name = "vmreal",   .cluster = CLUSTER_PID_STATUS, .item=43 },
+	{ .name = "vmnonlib", .cluster = CLUSTER_PID_STATUS, .item=44 },
 };
 
 static dynproc_metric_t namespace_metrics[] = {
-        { .name = "tgid",	.cluster = CLUSTER_PID_STATUS,	.item = PROC_PID_STATUS_NSTGID },
-        { .name = "pid",	.cluster = CLUSTER_PID_STATUS,	.item = PROC_PID_STATUS_NSPID },
-        { .name = "pgid",	.cluster = CLUSTER_PID_STATUS,	.item = PROC_PID_STATUS_NSPGID },
-        { .name = "sid",	.cluster = CLUSTER_PID_STATUS,	.item = PROC_PID_STATUS_NSSID },
-        { .name = "envid",	.cluster = CLUSTER_PID_STATUS,	.item = PROC_PID_STATUS_ENVID },
+        { .name = "tgid",   .cluster = CLUSTER_PID_STATUS, .item=37 },
+        { .name = "pid",    .cluster = CLUSTER_PID_STATUS, .item=38 },
+        { .name = "pgid",   .cluster = CLUSTER_PID_STATUS, .item=39 },
+        { .name = "sid",    .cluster = CLUSTER_PID_STATUS, .item=40 },
+        { .name = "envid",  .cluster = CLUSTER_PID_STATUS, .item=42 },
+};
+
+static dynproc_metric_t autogroup_metrics[] = {
+        { .name = "enabled",  .cluster = CLUSTER_PID_AUTOGROUP, .item=0 },
+        { .name = "id",       .cluster = CLUSTER_PID_AUTOGROUP, .item=1 },
+        { .name = "nice",     .cluster = CLUSTER_PID_AUTOGROUP, .item=2 },
 };
 
 static dynproc_metric_t io_metrics[] = {
@@ -221,26 +234,26 @@ static dynproc_metric_t schedstat_metrics[] = {
 };
 
 static dynproc_metric_t smaps_metrics[] = {
-	{ .name = "rss",	.cluster = CLUSTER_PID_SMAPS,	.item = PROC_PID_SMAPS_RSS },
-	{ .name = "pss",	.cluster = CLUSTER_PID_SMAPS,	.item = PROC_PID_SMAPS_PSS },
-	{ .name = "pss_anon",	.cluster = CLUSTER_PID_SMAPS,	.item = PROC_PID_SMAPS_PSS_ANON },
-	{ .name = "pss_file",	.cluster = CLUSTER_PID_SMAPS,	.item = PROC_PID_SMAPS_PSS_FILE },
-	{ .name = "pss_shmem",	.cluster = CLUSTER_PID_SMAPS,	.item = PROC_PID_SMAPS_PSS_SHMEM },
-	{ .name = "shared_clean",	.cluster = CLUSTER_PID_SMAPS,	.item = PROC_PID_SMAPS_SHARED_CLEAN },
-	{ .name = "shared_dirty",	.cluster = CLUSTER_PID_SMAPS,	.item = PROC_PID_SMAPS_SHARED_DIRTY },
-	{ .name = "private_clean",	.cluster = CLUSTER_PID_SMAPS,	.item = PROC_PID_SMAPS_PRIVATE_CLEAN },
-	{ .name = "private_dirty",	.cluster = CLUSTER_PID_SMAPS,	.item = PROC_PID_SMAPS_PRIVATE_DIRTY },
-	{ .name = "referenced",	.cluster = CLUSTER_PID_SMAPS,	.item = PROC_PID_SMAPS_REFERENCED },
-	{ .name = "anonymous",	.cluster = CLUSTER_PID_SMAPS,	.item = PROC_PID_SMAPS_ANONYMOUS },
-	{ .name = "lazyfree",	.cluster = CLUSTER_PID_SMAPS,	.item = PROC_PID_SMAPS_LAZYFREE },
-	{ .name = "anonhugepages",	.cluster = CLUSTER_PID_SMAPS,	.item = PROC_PID_SMAPS_ANONHUGEPAGES },
-	{ .name = "shmempmdmapped",	.cluster = CLUSTER_PID_SMAPS,	.item = PROC_PID_SMAPS_SHMEMPMDMAPPED },
-	{ .name = "filepmdmapped",	.cluster = CLUSTER_PID_SMAPS,	.item = PROC_PID_SMAPS_FILEPMDMAPPED },
-	{ .name = "shared_hugetlb",	.cluster = CLUSTER_PID_SMAPS,	.item = PROC_PID_SMAPS_SHARED_HUGETLB },
-	{ .name = "private_hugetlb", 	.cluster = CLUSTER_PID_SMAPS,	.item = PROC_PID_SMAPS_PRIVATE_HUGETLB },
-	{ .name = "swap",	.cluster = CLUSTER_PID_SMAPS,	.item = PROC_PID_SMAPS_SWAP },
-	{ .name = "swappss",	.cluster = CLUSTER_PID_SMAPS,	.item = PROC_PID_SMAPS_SWAPPSS },
-	{ .name = "locked",	.cluster = CLUSTER_PID_SMAPS,	.item = PROC_PID_SMAPS_LOCKED },
+	{ .name = "rss",             .cluster = CLUSTER_PID_SMAPS,  .item=0 },
+	{ .name = "pss",             .cluster = CLUSTER_PID_SMAPS,  .item=1 },
+	{ .name = "pss_anon",        .cluster = CLUSTER_PID_SMAPS,  .item=2 },
+	{ .name = "pss_file",        .cluster = CLUSTER_PID_SMAPS,  .item=3 },
+	{ .name = "pss_shmem",       .cluster = CLUSTER_PID_SMAPS,  .item=4 },
+	{ .name = "shared_clean",    .cluster = CLUSTER_PID_SMAPS,  .item=5 },
+	{ .name = "shared_dirty",    .cluster = CLUSTER_PID_SMAPS,  .item=6 },
+	{ .name = "private_clean",   .cluster = CLUSTER_PID_SMAPS,  .item=7 },
+	{ .name = "private_dirty",   .cluster = CLUSTER_PID_SMAPS,  .item=8 },
+	{ .name = "referenced",      .cluster = CLUSTER_PID_SMAPS,  .item=9 },
+	{ .name = "anonymous",       .cluster = CLUSTER_PID_SMAPS,  .item=10 },
+	{ .name = "lazyfree",        .cluster = CLUSTER_PID_SMAPS,  .item=11 },
+	{ .name = "anonhugepages",   .cluster = CLUSTER_PID_SMAPS,  .item=12 },
+	{ .name = "shmempmdmapped",  .cluster = CLUSTER_PID_SMAPS,  .item=13 },
+	{ .name = "filepmdmapped",   .cluster = CLUSTER_PID_SMAPS,  .item=14 },
+	{ .name = "shared_hugetlb",  .cluster = CLUSTER_PID_SMAPS,  .item=15 },
+	{ .name = "private_hugetlb", .cluster = CLUSTER_PID_SMAPS,  .item=16 },
+	{ .name = "swap",            .cluster = CLUSTER_PID_SMAPS,  .item=17 },
+	{ .name = "swappss",         .cluster = CLUSTER_PID_SMAPS,  .item=18 },
+	{ .name = "locked",          .cluster = CLUSTER_PID_SMAPS,  .item=19 },
 };
 
 static dynproc_group_t dynproc_groups[] = {
@@ -252,6 +265,7 @@ static dynproc_group_t dynproc_groups[] = {
 	[DYNPROC_GROUP_SCHEDSTAT] = { .name = "schedstat",  .metrics = schedstat_metrics,   .nmetrics = sizeof(schedstat_metrics)/sizeof(dynproc_metric_t) },
 	[DYNPROC_GROUP_NAMESPACE] = { .name = "namespaces", .metrics = namespace_metrics,   .nmetrics = sizeof(namespace_metrics)/sizeof(dynproc_metric_t) },
 	[DYNPROC_GROUP_SMAPS]     = { .name = "smaps",	    .metrics = smaps_metrics,	    .nmetrics = sizeof(smaps_metrics)/sizeof(dynproc_metric_t)},
+	[DYNPROC_GROUP_AUTOGROUP] = { .name = "autogroup", .metrics = autogroup_metrics,   .nmetrics = sizeof(autogroup_metrics)/sizeof(dynproc_metric_t) },
 };
 
 /*
@@ -262,9 +276,9 @@ static int
 get_hot_cluster(int proc_cluster)
 {
     int i;
-    int num_mapings = sizeof(proc_hotproc_cluster_list)/(sizeof(int)*2);
+    int num_mappings = sizeof(proc_hotproc_cluster_list)/(sizeof(int)*2);
 
-    for (i = 0; i < num_mapings; i++) {
+    for (i = 0; i < num_mappings; i++) {
 	if (proc_hotproc_cluster_list[i][0] == proc_cluster)
 	    return proc_hotproc_cluster_list[i][1];
     }

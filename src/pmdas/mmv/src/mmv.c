@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2012-2020 Red Hat.
+ * Copyright (c) 2012-2021 Red Hat.
  * Copyright (c) 2009-2010 Aconex. All Rights Reserved.
  * Copyright (c) 1995-2000,2009 Silicon Graphics, Inc. All Rights Reserved.
  *
@@ -89,7 +89,7 @@ typedef struct {
     int			reload;		/* require reload of maps */
     int			notify;		/* notify pmcd of changes */
     int			statsdir_code;	/* last statsdir stat code */
-    time_t		statsdir_ts;	/* last statsdir timestamp */
+    struct stat		statsdir_stat;	/* last statsdir stat struct */
     const char		*prefix;
     char		*pcptmpdir;		/* probably /var/tmp */
     char		*pcpvardir;		/* probably /var/pcp */
@@ -286,18 +286,61 @@ verify_metric_name(agent_t *ap, const char *name, int pos, stats_t *s)
     return 0;
 }
 
-/* check client item number validity - must not be too large to fit in PMID! */
+/*
+ * Check client item number validity - must not be too large to fit in PMID!
+ * and must be unique within a cluster
+ *
+ * We're checking the kth entry in ml[].
+ */
 static int
-verify_metric_item(unsigned int item, char *name, stats_t *s)
+verify_metric_item(mmv_disk_metric_t *ml, int k, char *name, stats_t *s)
 {
+    mmv_disk_metric_t	*mp = &ml[k];
+    unsigned int	item = mp->item;
+    int			j;
+
     if (pmDebugOptions.appl0)
 	pmNotifyErr(LOG_DEBUG, "MMV: verify_metric_item: %u - %s", item, name);
 
     if (pmID_item(item) != item) {
-	pmNotifyErr(LOG_WARNING, "invalid item %u (%s) in %s, ignored",
+	pmNotifyErr(LOG_WARNING, "MMV: verify_metric_item: invalid item %u (%s) in %s, ignored",
 			item, name, s->name);
 	return -EINVAL;
     }
+
+    for (j = 0; j < k; j++) {
+	if (ml[j].item == item) {
+	    pmNotifyErr(LOG_DEBUG, "MMV: verify_metric_item: duplicate item %u - [%d] and [%d] %s, second will be ignored", item, j, k, name);
+	    return -EINVAL;
+	}
+    }
+
+    return 0;
+}
+
+static int
+verify_metric_item2(mmv_disk_metric2_t *ml, int k, char *name, stats_t *s)
+{
+    mmv_disk_metric2_t	*mp = &ml[k];
+    unsigned int	item = mp->item;
+    int			j;
+
+    if (pmDebugOptions.appl0)
+	pmNotifyErr(LOG_DEBUG, "MMV: verify_metric_item2: %u - %s", item, name);
+
+    if (pmID_item(item) != item) {
+	pmNotifyErr(LOG_WARNING, "MMV: verify_metric_item2: invalid item %u (%s) in %s, ignored",
+			item, name, s->name);
+	return -EINVAL;
+    }
+
+    for (j = 0; j < k; j++) {
+	if (ml[j].item == item) {
+	    pmNotifyErr(LOG_DEBUG, "MMV: verify_metric_item2: duplicate item %u - [%d] and [%d] %s, second will be ignored", item, j, k, name);
+	    return -EINVAL;
+	}
+    }
+
     return 0;
 }
 
@@ -618,22 +661,21 @@ map_stats(pmdaExt *pmda)
 
 		    for (k = 0; k < count; k++) {
 			mmv_disk_metric_t *mp = &ml[k];
-			char name[MAXPATHLEN];
 			pmID pmid;
 
 			/* build name, check its legitimate and unique */
 			if (hdr->flags & MMV_FLAG_NOPREFIX)
-			    pmsprintf(name, sizeof(name), "%s.", ap->prefix);
+			    pmsprintf(path, sizeof(path), "%s.", ap->prefix);
 			else
-			    pmsprintf(name, sizeof(name), "%s.%s.", ap->prefix, s->name);
-			strcat(name, mp->name);
-			if (verify_metric_name(ap, name, k, s) != 0)
+			    pmsprintf(path, sizeof(path), "%s.%s.", ap->prefix, s->name);
+			strcat(path, mp->name);
+			if (verify_metric_name(ap, path, k, s) != 0)
 			    continue;
-			if (verify_metric_item(mp->item, name, s) != 0)
+			if (verify_metric_item(ml, k, path, s) != 0)
 			    continue;
 
 			pmid = pmID_build(pmda->e_domain, s->cluster, mp->item);
-			create_metric(pmda, s, name, pmid, mp->indom,
+			create_metric(pmda, s, path, pmid, mp->indom,
 					mp->type, mp->semantics, mp->dimension);
 		    }
 		}
@@ -658,7 +700,6 @@ map_stats(pmdaExt *pmda)
 			mmv_disk_metric2_t *mp = &ml[k];
 			mmv_disk_string_t *string;
 			char buf[MMV_STRINGMAX];
-			char name[MAXPATHLEN];
 			__uint64_t mname;
 			pmID pmid;
 
@@ -677,18 +718,18 @@ map_stats(pmdaExt *pmda)
 
 			/* build name, check its legitimate and unique */
 			if (hdr->flags & MMV_FLAG_NOPREFIX)
-			    pmsprintf(name, sizeof(name), "%s.", ap->prefix);
+			    pmsprintf(path, sizeof(path), "%s.", ap->prefix);
 			else
-			    pmsprintf(name, sizeof(name), "%s.%s.", ap->prefix, s->name);
-			strcat(name, buf);
+			    pmsprintf(path, sizeof(path), "%s.%s.", ap->prefix, s->name);
+			strcat(path, buf);
 
-			if (verify_metric_name(ap, name, k, s) != 0)
+			if (verify_metric_name(ap, path, k, s) != 0)
 			    continue;
-			if (verify_metric_item(mp->item, name, s) != 0)
+			if (verify_metric_item2(ml, k, path, s) != 0)
 			    continue;
 
 			pmid = pmID_build(pmda->e_domain, s->cluster, mp->item);
-			create_metric(pmda, s, name, pmid, mp->indom,
+			create_metric(pmda, s, path, pmid, mp->indom,
 					mp->type, mp->semantics, mp->dimension);
 		    }
 		}
@@ -716,7 +757,7 @@ map_stats(pmdaExt *pmda)
 		}
 
 		for (k = 0; k < count; k++) {
-		    int sts, serial = id[k].serial;
+		    int serial = id[k].serial;
 		    pmInDom pmindom;
 		    pmdaIndom *ip;
 		    __uint64_t ioffset = id[k].offset;
@@ -1039,16 +1080,25 @@ mmv_reload_maybe(pmdaExt *pmda)
      * versa), and so on.
      */
     if (stat(ap->statsdir, &s) >= 0) {
-	if (s.st_mtime != ap->statsdir_ts) {
+#if defined(HAVE_ST_MTIME_WITH_E)
+	if (s.st_mtime != ap->statsdir_stat.st_mtime)
+#elif defined(HAVE_ST_MTIME_WITH_SPEC)
+	if (s.st_mtimespec.tv_sec != ap->statsdir_stat.st_mtimespec.tv_sec ||
+	    s.st_mtimespec.tv_nsec != ap->statsdir_stat.st_mtimespec.tv_nsec)
+#else
+	if (s.st_mtim.tv_sec != ap->statsdir_stat.st_mtim.tv_sec ||
+	    s.st_mtim.tv_nsec != ap->statsdir_stat.st_mtim.tv_nsec)
+#endif
+	{
 	    need_reload++;
 	    ap->statsdir_code = 0;
-	    ap->statsdir_ts = s.st_mtime;
+	    ap->statsdir_stat = s;
 	}
     } else {
 	i = oserror();
 	if (ap->statsdir_code != i) {
 	    ap->statsdir_code = i;
-	    ap->statsdir_ts = 0;
+	    memset(&ap->statsdir_stat, 0, sizeof(ap->statsdir_stat));
 	    need_reload++;
 	}
     }

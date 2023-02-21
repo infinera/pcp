@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2017-2019 Red Hat.
+ * Copyright (c) 2017-2019,2022 Red Hat.
  *
  * This library is free software; you can redistribute it and/or modify it
  * under the terms of the GNU Lesser General Public License as published
@@ -11,6 +11,8 @@
  * or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU Lesser General Public
  * License for more details.
  */
+#include "pmapi.h"
+#include "libpcp.h"
 #include "pmwebapi.h"
 #include "slots.h"
 #include "util.h"
@@ -122,19 +124,43 @@ dictType sdsDictCallBacks = {
 void
 redisMapsInit(void)
 {
-    static const char * const mapnames[] = {
-	"inst.name", "metric.name", "label.name", "context.name"
-    };
-    static int		setup;
+    if (instmap == NULL)
+	instmap = dictCreate(&sdsDictCallBacks,
+				(void *)sdsnew("inst.name"));
+    if (namesmap == NULL)
+	namesmap = dictCreate(&sdsDictCallBacks,
+				(void *)sdsnew("metric.name"));
+    if (labelsmap == NULL)
+	labelsmap = dictCreate(&sdsDictCallBacks,
+				(void *)sdsnew("label.name"));
+    if (contextmap == NULL)
+	contextmap = dictCreate(&sdsDictCallBacks,
+				(void *)sdsnew("context.name"));
+}
 
-    if (setup)
-	return;
-    setup = 1;
-
-    instmap = dictCreate(&sdsDictCallBacks, (void *)sdsnew(mapnames[0]));
-    namesmap = dictCreate(&sdsDictCallBacks, (void *)sdsnew(mapnames[1]));
-    labelsmap = dictCreate(&sdsDictCallBacks, (void *)sdsnew(mapnames[2]));
-    contextmap = dictCreate(&sdsDictCallBacks, (void *)sdsnew(mapnames[3]));
+void
+redisMapsClose(void)
+{
+    if (instmap) {
+	sdsfree(redisMapName(instmap));
+	dictRelease(instmap);
+	instmap = NULL;
+    }
+    if (namesmap) {
+	sdsfree(redisMapName(namesmap));
+	dictRelease(namesmap);
+	namesmap = NULL;
+    }
+    if (labelsmap) {
+	sdsfree(redisMapName(labelsmap));
+	dictRelease(labelsmap);
+	labelsmap = NULL;
+    }
+    if (contextmap) {
+	sdsfree(redisMapName(contextmap));
+	dictRelease(contextmap);
+	contextmap = NULL;
+    }
 }
 
 sds
@@ -160,6 +186,12 @@ redisMapLookup(redisMap *map, sds key)
 void
 redisMapInsert(redisMap *map, sds key, sds value)
 {
+    redisMapEntry *entry = redisMapLookup(map, key);
+
+    if (entry) {
+	/* fix for Coverity CID323605 Resource Leak */
+	dictDelete(map, key);
+    }
     dictAdd(map, key, value);
 }
 

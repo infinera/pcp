@@ -1,6 +1,6 @@
 #!/usr/bin/env pmpython
 #
-# Copyright (C) 2015-2019 Marko Myllynen <myllynen@redhat.com>
+# Copyright (C) 2015-2021 Marko Myllynen <myllynen@redhat.com>
 # Copyright (C) 2014-2017 Red Hat.
 #
 # This program is free software; you can redistribute it and/or modify it
@@ -74,6 +74,14 @@ class PCP2Graphite(object):
                      'speclocal', 'instances', 'ignore_incompat', 'ignore_unknown',
                      'omit_flat')
 
+        # Ignored for pmrep(1) compatibility
+        self.keys_ignore = (
+                     'timestamp', 'unitinfo', 'colxrow', 'separate_header', 'fixed_header',
+                     'delay', 'width', 'delimiter', 'extcsv', 'width_force',
+                     'extheader', 'repeat_header', 'timefmt', 'interpol',
+                     'dynamic_header', 'overall_rank', 'overall_rank_alt', 'sort_metric',
+                     'instinfo', 'include_labels', 'include_texts')
+
         # The order of preference for options (as present):
         # 1 - command line options
         # 2 - options from configuration file(s)
@@ -133,7 +141,7 @@ class PCP2Graphite(object):
         self.pmfg_ts = None
 
         # Read configuration and prepare to connect
-        self.config = self.pmconfig.set_config_file(DEFAULT_CONFIG)
+        self.config = self.pmconfig.set_config_path(DEFAULT_CONFIG)
         self.pmconfig.read_options()
         self.pmconfig.read_cmd_line()
         self.pmconfig.prepare_metrics()
@@ -440,9 +448,9 @@ class PCP2Graphite(object):
                     if self.context.pmDebug(PM_DEBUG_APPL0):
                         print("Sending %s: %s" % (timestamp, msg.rstrip().decode()))
                     self.socket.send(msg) # pylint: disable=no-member
-        except socket.error as error:
+        except socket.error as send_error:
             sys.stderr.write("Can't send message to Graphite server %s:%d, %s, continuing.\n" %
-                             (self.graphite_host, self.graphite_port, error.strerror))
+                             (self.graphite_host, self.graphite_port, send_error.strerror))
             self.socket = None
 
     def finalize(self):
@@ -451,8 +459,8 @@ class PCP2Graphite(object):
             try:
                 self.socket.close()
                 self.socket = None
-            except socket.error as error:
-                if error.errno != errno.EPIPE:
+            except socket.error as socket_error:
+                if socket_error.errno != errno.EPIPE:
                     raise
 
 if __name__ == '__main__':

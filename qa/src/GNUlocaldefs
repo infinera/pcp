@@ -1,5 +1,5 @@
 #
-# Copyright (c) 2012-2020 Red Hat.
+# Copyright (c) 2012-2021 Red Hat.
 # Copyright (c) 2009 Aconex.  All Rights Reserved.
 # Copyright (c) 1997-2002 Silicon Graphics, Inc.  All Rights Reserved.
 #
@@ -22,9 +22,9 @@ CFILES = disk_test.c exercise.c context_test.c chkoptfetch.c \
 	pcp_lite_crash.c compare.c mkfiles.c nameall.c nullinst.c \
 	storepdu.c fetchpdu.c badloglabel.c interp_bug2.c interp_bug.c \
 	xmktime.c descreqX2.c recon.c torture_indom.c \
-	fetchrate.c stripmark.c pmnsinarchives.c \
+	fetchrate.c stripmark.c pmnsinarchives.c pmnsunload.c \
 	endian.c chk_memleak.c chk_metric_types.c mark-bug.c \
-	pmnsunload.c parsemetricspec.c parseinterval.c \
+	parsemetricspec.c parseinterval.c parsehighresinterval.c \
 	pducheck.c pducrash.c pdu-server.c \
 	pmprintf.c pmsprintf.c pmsocks_objstyle.c numberstr.c \
 	read-bf.c write-bf.c slow_af.c indom.c tztest.c \
@@ -39,18 +39,20 @@ CFILES = disk_test.c exercise.c context_test.c chkoptfetch.c \
 	pmdacache.c check_import.c unpack.c hrunpack.c aggrstore.c atomstr.c \
 	semstr.c grind_conv.c getconfig.c err.c torture_logmeta.c keycache.c \
 	keycache2.c pmdaqueue.c drain-server.c template.c anon-sa.c \
-	username.c rtimetest.c getcontexthost.c badpmda.c chkputlogresult.c \
+	username.c rtimetest.c getcontexthost.c badpmda.c chklogputresult.c \
 	churnctx.c badUnitsStr_r.c units-parse.c rootclient.c derived.c \
 	lookupnametest.c getversion.c pdubufbounds.c statvfs.c storepmcd.c \
-	github-50.c archfetch.c sortinst.c fetchgroup.c \
+	github-50.c archfetch.c sortinst.c fetchgroup.c loadconfig2.c \
 	loadderived.c sum16.c badmmv.c multictx.c mmv_simple.c \
-	httpfetch.c json_test.c check_pmiend_fdleak.c loadconfig2.c \
+	httpfetch.c json_test.c check_pmiend_fdleak.c check_pmi_errconv.c \
 	archctl_segfault.c debug.c int2pmid.c int2indom.c exectest.c \
 	unpickargs.c hanoi.c progname.c countmark.c \
 	indom2int.c pmid2int.c scanmeta.c traverse_return_codes.c \
 	timeshift.c checkstructs.c bcc_profile.c sha1int2ext.c \
 	getdomainname.c profilecrash.c store_and_fetch.c test_service_notify.c \
-	ctx_derive.c pmstrn.c
+	ctx_derive.c pmstrn.c pmfstring.c pmfg-derived.c mmv_help.c sizeof.c \
+	stampconv.c time_stamp.c archend.c scandata.c wait_for_values.c \
+	dumpstack.c usergroup.c
 
 ifeq ($(shell test -f ../localconfig && echo 1), 1)
 include ../localconfig
@@ -66,18 +68,18 @@ ifeq ($(shell test $(PCP_VER) -ge 3600 && echo 1), 1)
 CFILES += multithread0.c multithread1.c multithread2.c multithread3.c \
 	multithread4.c multithread5.c multithread6.c multithread7.c \
 	multithread8.c multithread9.c multithread10.c multithread11.c \
-	multithread12.c multithread13.c \
+	multithread12.c multithread13.c multithread14.c \
 	exerlock.c
 else
 MYFILES += multithread0.c multithread1.c multithread2.c multithread3.c \
 	multithread4.c multithread5.c multithread6.c multithread7.c \
 	multithread8.c multithread9.c multithread10.c multithread11.c \
-	multithread12.c multithread13.c \
+	multithread12.c multithread13.c multithread14.c \
 	exerlock.c
 LDIRT += multithread0 multithread1 multithread2 multithread3 \
 	multithread4 multithread5 multithread6 multithread7 \
 	multithread8 multithread9 multithread10 multithread11 \
-	multithread12 multithread13 \
+	multithread12 multithread13 multithread14 \
 	exerlock
 endif
 
@@ -149,7 +151,7 @@ PYTHONFILES = \
 	mergelabels.python mergelabelsets.python \
 	bcc_version_check.python sort_xml.python labelsets.python \
 	labelsets_memleak.python labels_changing.python \
-	bcc_netproc.python
+	bcc_netproc.python redis_proxy.python
 # not installed:
 PYFILES = $(shell echo $(PYTHONFILES) | sed -e 's/\.python/.py/g')
 LDIRT += $(PYFILES)
@@ -203,6 +205,10 @@ MYCFILES += nvidia-ml.c
 LDIRT += nvidia-ml.o
 LCFLAGS += $(NVIDIACFLAGS)
 TARGETS += $(NVIDIAQALIB)
+endif
+
+ifeq "$(HAVE_CMOCKA)" "true"
+CFILES += test_encodings.c test_hostspec.c
 endif
 
 # libpcp_trace is ready
@@ -307,6 +313,9 @@ anon-sa: anon-sa.c
 bcc_profile: bcc_profile.c
 	$(CCF) $(CDEFS) -g -fno-omit-frame-pointer -o $@ bcc_profile.c
 
+sizeof:	sizeof.c
+	$(CCF) $(CDEFS) -o $@ $<
+
 # --- need libpcp
 #
 
@@ -383,6 +392,14 @@ getdomainname:	getdomainname.c
 	$(CCF) $(CDEFS) -o $@ getdomainname.c $(LDLIBS)
 
 pmstrn:	pmstrn.c
+	rm -f $@
+	$(CCF) $(CDEFS) -o $@ $< $(LDLIBS)
+
+pmfstring:	pmfstring.c
+	rm -f $@
+	$(CCF) $(CDEFS) -o $@ $< $(LDLIBS)
+
+usergroup:	usergroup.c
 	rm -f $@
 	$(CCF) $(CDEFS) -o $@ $< $(LDLIBS)
 
@@ -533,18 +550,22 @@ check_pmiend_fdleak:	check_pmiend_fdleak.c
 	rm -f $@
 	$(CCF) $(CDEFS) -o $@ $@.c $(LDLIBS) -lpcp_import
 
+check_pmi_errconv:	check_pmi_errconv.c
+	rm -f $@
+	$(CCF) $(CDEFS) -o $@ $@.c $(LDLIBS) -lpcp_import
+
 # --- need libpcp_web
 #
 
 httpfetch:	httpfetch.c
 	rm -f $@
-	$(CCF) $(CDEFS) -o $@ $@.c $(LDLIBS) $(PCP_WEBLIB)
+	$(CCF) $(CDEFS) -o $@ $@.c $(LDLIBS) -lpcp_pmda -lpcp_web -lpcp_mmv
 json_test:	json_test.c
 	rm -f $@
-	$(CCF) $(CDEFS) -o $@ $@.c $(LDLIBS) $(PCP_WEBLIB)
+	$(CCF) $(CDEFS) -o $@ $@.c $(LDLIBS) -lpcp_pmda -lpcp_web -lpcp_mmv
 sha1int2ext:	sha1int2ext.o
 	rm -f $@
-	$(CCF) $(CDEFS) -o $@ $@.c $(LDLIBS) $(PCP_WEBLIB)
+	$(CCF) $(CDEFS) -o $@ $@.c $(LDLIBS) -lpcp_pmda -lpcp_web -lpcp_mmv
 
 # --- need libpcp_fault
 #
@@ -621,6 +642,10 @@ multithread13:	multithread13.c
 	rm -f $@
 	$(CCF) $(CDEFS) -o $@ $@.c $(LIB_FOR_PTHREADS) $(LDLIBS)
 
+multithread14:	multithread14.c
+	rm -f $@
+	$(CCF) $(CDEFS) -o $@ $@.c $(LIB_FOR_PTHREADS) $(LDLIBS)
+
 exerlock:	exerlock.c
 	rm -f $@
 	$(CCF) $(CDEFS) -o $@ $@.c $(LIB_FOR_PTHREADS) $(LDLIBS)
@@ -683,6 +708,34 @@ qa_sem_msg_ctl.$(DSOSUFFIX):	 qa_sem_msg_ctl.c
 	$(CCF) $(LDFLAGS) -shared -o $@ qa_sem_msg_ctl.c
 	@rm -f qa_sem_msg_ctl.o
 
+# --- need cmocka
+
+ifeq "$(HAVE_CMOCKA)" "true"
+
+test_encodings:	test_encodings.c
+	rm -f $@
+	$(CCF) $(CDEFS) -o $@ $^ $(LDLIBS) $(LIB_FOR_CMOCKA) -lpcp_pmda -lpcp_web -lpcp_mmv
+
+test_hostspec:	test_hostspec.c
+	rm -f $@
+	$(CCF) $(CDEFS) -o $@ $^ $(LDLIBS) $(LIB_FOR_CMOCKA)
+endif
+
+# --- need libpcp_archive
+
+# --- need -rdynamic
+# need minimal gcc and ld flags to prevent smart-arse optimizations that
+# make the callstack go away ... need to make it work both in the build
+# and for ~pcpcqa once packages installed
+#
+dumpstack:	dumpstack.c
+	rm -f $@
+ifeq "$(TOPDIR)" ""
+	$(CC) -I$(PCP_INC_DIR) -I. $(PCFLAGS) -o $@ -rdynamic $^ -lpcp
+else
+	$(CC) -I$(TOPDIR)/src/include -I. $(PCFLAGS) -o $@ -rdynamic $^ -L$(TOPDIR)/src/libpcp/$(LIBPCP_ABIDIR) -lpcp
+endif
+
 ifneq ($(NVIDIAQALIB),)
 $(NVIDIAQALIB):	nvidia-ml.o
 	$(CC) $(LDFLAGS) $(_SHAREDOPTS) -o $@ $< $(LDLIBS)
@@ -702,7 +755,7 @@ chkhelp.o:	libpcp.h
 chk_memleak.o:	libpcp.h
 chknumval.o:	libpcp.h
 chkoptfetch.o:	libpcp.h
-chkputlogresult.o:	libpcp.h
+chklogputresult.o:	libpcp.h
 churnctx.o:	libpcp.h
 clientid.o:	libpcp.h
 clienttimeout.o:	libpcp.h
@@ -745,6 +798,7 @@ multithread4.o:	libpcp.h
 multithread8.o:	libpcp.h
 multithread9.o:	libpcp.h
 multithread10.o:	libpcp.h
+multithread14.o:	libpcp.h
 nameall.o:	libpcp.h
 parsehostattrs.o:	libpcp.h
 parsehostspec.o:	libpcp.h

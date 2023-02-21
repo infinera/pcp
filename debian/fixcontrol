@@ -61,7 +61,7 @@ then
     exit 1
 fi
 
-eval `egrep '^(ENABLE_|PMDA_|HAVE_|QT_)' ../src/include/builddefs | sed -e 's/ //g'`
+eval `grep -E '^(ENABLE_|PMDA_|HAVE_|QT_)' ../src/include/builddefs | sed -e 's/ //g'`
 
 if $PMDA_PERFEVENT
 then
@@ -81,7 +81,7 @@ fi
 
 if $PMDA_BCC
 then
-    echo "s/?{python3-bpfcc}, /python3-bpfcc | python3-bcc, /" >>$tmp.sed
+    echo "s/?{python3-bpfcc}, /python3-bpfcc [amd64 arm64 armhf ppc64el s390x ppc64], /" >>$tmp.sed
 else
     echo "s/?{python3-bpfcc}, //" >>$tmp.sed
 fi
@@ -91,6 +91,17 @@ then
     echo "s/?{bpftrace}, /bpftrace (>= 0.9.2) [amd64 arm64 ppc64el], /" >>$tmp.sed
 else
     echo "s/?{bpftrace}, //" >>$tmp.sed
+fi
+
+if $PMDA_BPF
+then
+    echo "s/?{clang}, /clang, /" >>$tmp.sed
+    echo "s/?{llvm}, /llvm, /" >>$tmp.sed
+    echo "s/?{libbpf-dev}, /libbpf-dev (>= 0.8.0), /" >>$tmp.sed
+else
+    echo "s/?{clang}, //" >>$tmp.sed
+    echo "s/?{llvm}, //" >>$tmp.sed
+    echo "s/?{libbpf-dev}, //" >>$tmp.sed
 fi
 
 if $PMDA_POSTGRESQL
@@ -173,6 +184,18 @@ then
     fi
 else
     echo "s/?{python-json-pointer}, //" >>$tmp.sed
+fi
+
+if $HAVE_PYTHON_OPENPYXL
+then
+    if $ENABLE_PYTHON3
+    then
+	echo "s/?{python-openpyxl}, /python3-openpyxl, /" >>$tmp.sed
+    else
+	echo "s/?{python-openpyxl}, /python-openpyxl, /" >>$tmp.sed
+    fi
+else
+    echo "s/?{python-openpyxl}, //" >>$tmp.sed
 fi
 
 if $HAVE_PYTHON_REQUESTS

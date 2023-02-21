@@ -27,8 +27,10 @@ SUBDIRS = \
 	mpstat \
 	numastat \
 	pidstat \
+	ps \
 	python \
 	shping \
+	ss \
 	summary \
 	tapestat \
 	uptime \

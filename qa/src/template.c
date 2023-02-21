@@ -4,6 +4,8 @@
  */
 
 #include <pcp/pmapi.h>
+#include "libpcp.h"
+#include <pcp/archive.h>
 
 static pmLongOptions longopts[] = {
     PMAPI_OPTIONS_HEADER("General options"),
@@ -30,7 +32,7 @@ static pmLongOptions longopts[] = {
     PMOPT_CONTAINER,		/* --container=... */
     PMAPI_OPTIONS_HEADER("template options"),
     { "config", 1, 'c', "CONFIGFILE", "some configuration file" },
-    { "flag", 0, 'f', "N", "some flag" },
+    { "flag", 0, 'f', NULL, "some flag" },
     { "instance", 1, 'i', "INST", "some instance" },
     { "log", 1, 'l', "LOGFILE", "log file" },
     PMAPI_OPTIONS_END
@@ -48,7 +50,7 @@ static pmOptions opts = {
 int	sflag;			/* ==1 if -s seen on command line */
 
 static int
-overrides(int opt, pmOptions *opts)
+overrides(int opt, pmOptions *optsp)
 {
     if (opt == 's')
 	sflag++;

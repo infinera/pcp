@@ -11,6 +11,8 @@ Warning - failed to expand action for rule entropy.available
   string: "$syslog_prefix$$rule$^ $action_expand$"
 Warning - failed to expand action for rule filesys.filling
   string: "$syslog_prefix$$rule$^ $action_expand$"
+Warning - failed to expand action for rule filesys.vfs_files
+  string: "$syslog_prefix$$rule$^ $action_expand$"
 Warning - failed to expand action for rule memory.exhausted
   string: "$syslog_prefix$$rule$^ $action_expand$"
 Warning - failed to expand action for rule memory.oom_kill
@@ -29,11 +31,17 @@ Warning - failed to expand action for rule per_cpu.some_util
   string: "$syslog_prefix$$rule$^ $action_expand$"
 Warning - failed to expand action for rule per_cpu.system
   string: "$syslog_prefix$$rule$^ $action_expand$"
+Warning - failed to expand action for rule per_disk.average_queue_length
+  string: "$syslog_prefix$$rule$^ $action_expand$"
+Warning - failed to expand action for rule per_disk.average_wait_time
+  string: "$syslog_prefix$$rule$^ $action_expand$"
 Warning - failed to expand action for rule per_netif.collisions
   string: "$syslog_prefix$$rule$^ $action_expand$"
 Warning - failed to expand action for rule per_netif.errors
   string: "$syslog_prefix$$rule$^ $action_expand$"
 Warning - failed to expand action for rule per_netif.util
+  string: "$syslog_prefix$$rule$^ $action_expand$"
+Warning - failed to expand action for rule power.thermal_throttle
   string: "$syslog_prefix$$rule$^ $action_expand$"
 Warning - failed to expand action for rule shping.status
   string: "$syslog_prefix$$rule$^ $action_expand$"

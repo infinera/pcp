@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2020 Red Hat.
+ * Copyright (c) 2020,2022 Red Hat.
  *
  * This program is free software; you can redistribute it and/or modify it
  * under the terms of the GNU Lesser General Public License as published
@@ -206,9 +206,9 @@ on_pmsearch_done(int status, void *arg)
 {
     pmSearchBaton	*baton = (pmSearchBaton *)arg;
     struct client	*client = baton->client;
-    http_options	options = baton->options;
-    http_flags		flags = client->u.http.flags;
-    http_code		code;
+    http_options_t	options = baton->options;
+    http_flags_t	flags = client->u.http.flags;
+    http_code_t		code;
     sds			msg;
 
     if (status == 0) {
@@ -253,6 +253,9 @@ on_pmsearch_done(int status, void *arg)
 	flags |= HTTP_FLAG_JSON;
     }
     http_reply(client, msg, code, flags, options);
+
+    /* release lock of pmsearch_request_done */
+    client_put(client);
 }
 
 static void
@@ -480,6 +483,9 @@ pmsearch_request_done(struct client *client)
 {
     pmSearchBaton	*baton = (pmSearchBaton *)client->u.http.data;
     int			sts;
+
+    /* reference to prevent freeing while waiting for a Redis reply callback */
+    client_get(client);
 
     if (client->u.http.parser.status_code) {
 	on_pmsearch_done(-EINVAL, baton);

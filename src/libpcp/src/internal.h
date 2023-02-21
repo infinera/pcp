@@ -1,12 +1,12 @@
 /*
- * Copyright (c) 2012-2020 Red Hat.
+ * Copyright (c) 2012-2022 Red Hat.
  * Copyright (c) 1995-2001 Silicon Graphics, Inc.  All Rights Reserved.
- * 
+ *
  * This library is free software; you can redistribute it and/or modify it
  * under the terms of the GNU Lesser General Public License as published
  * by the Free Software Foundation; either version 2.1 of the License, or
  * (at your option) any later version.
- * 
+ *
  * This library is distributed in the hope that it will be useful, but
  * WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY
  * or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU Lesser General Public
@@ -23,6 +23,9 @@
 #include <stdarg.h>
 #include "compiler.h"
 #include "derive.h"
+
+#define MAXIMUM(x, y)	((x) > (y) ? (x) : (y))
+#define MINIMUM(x, y)	((x) < (y) ? (x) : (y))
 
 extern int __pmConvertTimeout(int) _PCP_HIDDEN;
 extern int __pmConnectWithFNDELAY(int, void *, __pmSockLen) _PCP_HIDDEN;
@@ -91,7 +94,7 @@ extern void __htonf(char *) _PCP_HIDDEN;	/* float */
 #define __ntohf(v) __htonf(v)
 #define __htond(v) __htonll(v)			/* double */
 #define __ntohd(v) __ntohll(v)
-extern void __htonll(char *) _PCP_HIDDEN;	/* 64bit int */
+extern void __htonll(char *);			/* 64bit int */	
 #define __ntohll(v) __htonll(v)
 
 #endif /* HAVE_NETWORK_BYTEORDER */
@@ -103,6 +106,8 @@ extern void __pmDestroyMutex(pthread_mutex_t *) _PCP_HIDDEN;	/* mutex destroyer 
 /* local lock initilizer methods */
 extern void init_pmns_lock(void) _PCP_HIDDEN;
 extern void init_AF_lock(void) _PCP_HIDDEN;
+extern void init_result_lock(void) _PCP_HIDDEN;
+extern void init_secureclient_lock(void) _PCP_HIDDEN;
 extern void init_secureserver_lock(void) _PCP_HIDDEN;
 extern void init_connect_lock(void) _PCP_HIDDEN;
 extern void init_exec_lock(void) _PCP_HIDDEN;
@@ -158,6 +163,8 @@ extern int __pmIsLockLock(void *) _PCP_HIDDEN;
 extern int __pmIsLogutilLock(void *) _PCP_HIDDEN;
 extern int __pmIsPmnsLock(void *) _PCP_HIDDEN;
 extern int __pmIsAFLock(void *) _PCP_HIDDEN;
+extern int __pmIsresultLock(void *) _PCP_HIDDEN;
+extern int __pmIsSecureclientLock(void *) _PCP_HIDDEN;
 extern int __pmIsSecureserverLock(void *) _PCP_HIDDEN;
 extern int __pmIsConnectLock(void *) _PCP_HIDDEN;
 extern int __pmIsExecLock(void *) _PCP_HIDDEN;
@@ -185,17 +192,10 @@ extern void __pmCheckAcceptedAddress(__pmSockAddr *) _PCP_HIDDEN;
 
 #ifdef SOCKET_INTERNAL
 #ifdef HAVE_SECURE_SOCKETS
-#include <nss.h>
-#include <ssl.h>
-#include <nspr.h>
-#include <prerror.h>
-#include <private/pprio.h>
-#include <sasl.h>
+#include <openssl/ssl.h>
+#include <sasl/sasl.h>
 
-#define SECURE_SERVER_CERTIFICATE "PCP Collector certificate"
-#define SECURE_USERDB_DEFAULT_KEY "\n"
-
-/* internal NSS/NSPR/SSL/SASL implementation details */
+/* internal OpenSSL/SASL implementation details */
 extern int __pmSecureSocketsError(int) _PCP_HIDDEN;
 #endif
 
@@ -233,19 +233,17 @@ extern unsigned char *__pmFirstIpv6SubnetAddr(unsigned char *, int maskBits) _PC
 extern unsigned char *__pmNextIpv6SubnetAddr(unsigned char *, int maskBits) _PCP_HIDDEN;
 
 extern int __pmInitSecureSockets(void) _PCP_HIDDEN;
-extern int __pmInitCertificates(void) _PCP_HIDDEN;
 extern int __pmInitSocket(int, int) _PCP_HIDDEN;
 extern int __pmSocketReady(int, struct timeval *) _PCP_HIDDEN;
 extern void *__pmGetSecureSocket(int) _PCP_HIDDEN;
 extern void *__pmGetUserAuthData(int) _PCP_HIDDEN;
-extern int __pmSecureServerInit(void) _PCP_HIDDEN;
-extern int __pmSecureServerIPCFlags(int, int) _PCP_HIDDEN;
+extern int __pmSecureServerNegotiation(int, int *) _PCP_HIDDEN;
+extern int __pmSecureServerIPCFlags(int, int, void *) _PCP_HIDDEN;
 extern int __pmSecureServerHasFeature(__pmServerFeature) _PCP_HIDDEN;
 extern int __pmSecureServerSetFeature(__pmServerFeature) _PCP_HIDDEN;
 extern int __pmSecureServerClearFeature(__pmServerFeature) _PCP_HIDDEN;
 
 extern int __pmShutdownLocal(void) _PCP_HIDDEN;
-extern int __pmShutdownCertificates(void) _PCP_HIDDEN;
 extern int __pmShutdownSecureSockets(void) _PCP_HIDDEN;
 
 #define SECURE_SERVER_SASL_SERVICE "PCP Collector"
@@ -330,15 +328,17 @@ extern int pmLookupDesc_ctx(__pmContext *, int, pmID, pmDesc *) _PCP_HIDDEN;
 extern int pmNameInDom_ctx(__pmContext *, pmInDom, int, char **) _PCP_HIDDEN;
 extern int pmLookupInDom_ctx(__pmContext *, pmInDom, const char *) _PCP_HIDDEN;
 extern int pmGetInDomArchive_ctx(__pmContext *, pmInDom, int **, char ***) _PCP_HIDDEN;
-extern int pmFetch_ctx(__pmContext *, int, pmID *, pmResult **) _PCP_HIDDEN;
-extern int pmStore_ctx(__pmContext *, const pmResult *) _PCP_HIDDEN;
-extern int __pmDecodeResult_ctx(__pmContext *, __pmPDU *, pmResult **) _PCP_HIDDEN;
-extern int __pmSendResult_ctx(__pmContext *, int, int, const pmResult *) _PCP_HIDDEN;
+extern int pmFetch_ctx(__pmContext *, int, pmID *, __pmResult **) _PCP_HIDDEN;
+extern int pmStore_ctx(__pmContext *, const __pmResult *) _PCP_HIDDEN;
+extern int __pmSendResult_ctx(__pmContext *, int, int, const __pmResult *) _PCP_HIDDEN;
+extern int __pmSendHighResResult_ctx(__pmContext *, int, int, const __pmResult *) _PCP_HIDDEN;
 extern void __pmDumpResult_ctx(__pmContext *, FILE *, const pmResult *) _PCP_HIDDEN;
-extern int pmGetArchiveEnd_ctx(__pmContext *, struct timeval *) _PCP_HIDDEN;
-extern int __pmGetArchiveEnd_ctx(__pmContext *, struct timeval *) _PCP_HIDDEN;
-extern int __pmLogGenerateMark_ctx(__pmContext *, int, pmResult **) _PCP_HIDDEN;
-extern int __pmLogCheckForNextArchive(__pmLogCtl *, int, pmResult **);
+extern void __pmDumpHighResResult_ctx(__pmContext *, FILE *, const pmHighResResult *) _PCP_HIDDEN;
+extern void __pmPrintResult_ctx(__pmContext *, FILE *, const __pmResult *) _PCP_HIDDEN;
+extern int pmGetArchiveEnd_ctx(__pmContext *, __pmTimestamp *) _PCP_HIDDEN;
+extern int __pmGetArchiveEnd_ctx(__pmContext *, __pmTimestamp *) _PCP_HIDDEN;
+extern int __pmLogGenerateMark_ctx(__pmContext *, int, __pmResult **) _PCP_HIDDEN;
+extern int __pmLogCheckForNextArchive(__pmLogCtl *, int, __pmResult **) _PCP_HIDDEN;
 
 #ifdef BUILD_WITH_LOCK_ASSERTS
 #include <assert.h>
@@ -378,7 +378,6 @@ extern int __pmSetFeaturesIPC(int, int, int) _PCP_HIDDEN;
 extern int __pmSetDataIPC(int, void *) _PCP_HIDDEN;
 extern int __pmDataIPCSize(void) _PCP_HIDDEN;
 extern int __pmLastVersionIPC(void) _PCP_HIDDEN;
-extern int __pmFeaturesIPC(int) _PCP_HIDDEN;
 extern int __pmDataIPC(int, void *) _PCP_HIDDEN;
 
 extern int __pmGetSockOpt(int, int, int, void *, __pmSockLen *) _PCP_HIDDEN;
@@ -387,24 +386,23 @@ extern void	     __pmSockAddrSetScope(__pmSockAddr *, int) _PCP_HIDDEN;
 extern __pmSockAddr *__pmSockAddrFirstSubnetAddr(const __pmSockAddr *, int) _PCP_HIDDEN;
 extern __pmSockAddr *__pmSockAddrNextSubnetAddr(__pmSockAddr *, int) _PCP_HIDDEN;
 
-extern int __pmConnectPMCD(pmHostSpec *, int, int, __pmHashCtl *) _PCP_HIDDEN;
+extern int __pmConnectPMCD(__pmHostSpec *, int, int, __pmHashCtl *) _PCP_HIDDEN;
 
 extern int __pmConnectLocal(__pmHashCtl *) _PCP_HIDDEN;
 extern int __pmAuxConnectPMCD(const char *) _PCP_HIDDEN;
 extern int __pmAuxConnectPMCDUnixSocket(const char *) _PCP_HIDDEN;
-extern int __pmAddHostPorts(pmHostSpec *, int *, int) _PCP_HIDDEN;
-extern void __pmDropHostPort(pmHostSpec *) _PCP_HIDDEN;
-extern void __pmConnectGetPorts(pmHostSpec *) _PCP_HIDDEN;
+extern int __pmAddHostPorts(__pmHostSpec *, int *, int) _PCP_HIDDEN;
+extern void __pmDropHostPort(__pmHostSpec *) _PCP_HIDDEN;
+extern void __pmConnectGetPorts(__pmHostSpec *) _PCP_HIDDEN;
 
 extern int __pmLogOpen(const char *, __pmContext *) _PCP_HIDDEN;
 extern int __pmLogReopen(const char *, __pmContext *) _PCP_HIDDEN;
 extern const char *__pmLogName_r(const char *, int, char *, int) _PCP_HIDDEN;
 extern const char *__pmLogName(const char *, int) _PCP_HIDDEN;	/* NOT thread-safe */
-extern int __pmLogGenerateMark(__pmLogCtl *, int, pmResult **) _PCP_HIDDEN;
-extern int __pmLogFetchInterp(__pmContext *, int, pmID *, pmResult **) _PCP_HIDDEN;
-extern int __pmGetArchiveLabel(__pmLogCtl *, pmLogLabel *) _PCP_HIDDEN;
-extern pmTimeval *__pmLogStartTime(__pmArchCtl *) _PCP_HIDDEN;
-extern void __pmLogSetTime(__pmContext *) _PCP_HIDDEN;
+extern int __pmLogGenerateMark(__pmLogCtl *, int, __pmResult **) _PCP_HIDDEN;
+extern int __pmLogFetchInterp(__pmContext *, int, pmID *, __pmResult **) _PCP_HIDDEN;
+extern __pmTimestamp *__pmLogStartTime(__pmArchCtl *) _PCP_HIDDEN;
+extern int __pmLogSetTime(__pmContext *) _PCP_HIDDEN;
 extern void __pmLogResetInterp(__pmContext *) _PCP_HIDDEN;
 extern void __pmArchCtlFree(__pmArchCtl *) _PCP_HIDDEN;
 extern int __pmLogChangeArchive(__pmContext *, int) _PCP_HIDDEN;
@@ -425,7 +423,7 @@ extern void __pmClearDSOProfile(int) _PCP_HIDDEN;
 
 extern int __pmTimevalCmp(const pmTimeval *, const pmTimeval *) _PCP_HIDDEN;
 
-extern int __pmSecureServerSetup(const char *, const char *) _PCP_HIDDEN;
+extern int __pmSecureServerSetup(void) _PCP_HIDDEN;
 
 extern pmInDomProfile *__pmFindProfile(pmInDom, const pmProfile *) _PCP_HIDDEN;
 
@@ -439,5 +437,17 @@ extern void __pmDumpLabelSet(FILE *, const pmLabelSet *) _PCP_HIDDEN;
 extern int __pmRecvLabel(int, __pmContext *, int, int *, int *,
 			 pmLabelSet **, int *) _PCP_HIDDEN;
 extern char *__pmLabelFlagString(int, char *, int) _PCP_HIDDEN;
+
+/* logmeta.c hooks */
+extern int addindom(__pmLogCtl *, int, const __pmLogInDom *, __int32_t *) _PCP_HIDDEN;
+extern int addlabel(__pmArchCtl *, unsigned int, unsigned int, int, pmLabelSet *, const __pmTimestamp *) _PCP_HIDDEN;
+
+/* getopt.c ABI-version-specific details */
+extern void __pmParseTimeWindow2(pmOptions *,
+			struct timespec *, struct timespec *) _PCP_HIDDEN;
+extern void __pmParseTimeWindow3(pmOptions *,
+			struct timespec *, struct timespec *) _PCP_HIDDEN;
+extern void __pmSetSampleInterval2(pmOptions *, char *) _PCP_HIDDEN;
+extern void __pmSetSampleInterval3(pmOptions *, char *) _PCP_HIDDEN;
 
 #endif /* _LIBPCP_INTERNAL_H */

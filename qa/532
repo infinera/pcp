@@ -8,6 +8,8 @@
 # Note: for reasons that are not understood, this test sometimes fails
 # 	but passes when rerun
 #
+# check-group-include: pmlogrewrite pmlogextract
+#
 
 seq=`basename $0`
 echo "QA output created by $seq"
@@ -24,6 +26,9 @@ _filter()
     | sed \
 	-e '/^Roll .*\/NOTICES/d' \
 	-e '/^Start .*\/NOTICES/d' \
+	-e '/^Add merge callback for: pmlogger_daily_report/d' \
+	-e '/^Merge callbacks .../d' \
+	-e '/^callback: .*pmlogger_daily_report/d' \
 	-e "s;$tmp;TMP;g" \
 	-e "s/local:/HOST/g" \
 	-e "s/`hostname`/HOST/g" \
@@ -41,7 +46,7 @@ NEEDREWRITE=$PCP_LOG_DIR/pmlogger/.NeedRewrite
 _cleanup()
 {
     cd $here
-    $sudo rm -rf $tmp.*
+    $sudo rm -rf $tmp $tmp.*
     $sudo mv $PCP_LOG_DIR/NOTICES.$seq $PCP_LOG_DIR/NOTICES
     [ -f $NEEDREWRITE.$seq ] && $sudo mv $NEEDREWRITE.$seq $NEEDREWRITE
 }
@@ -121,7 +126,7 @@ echo "s/`pmdate %Y%m%d`/TODAY/g" >>$tmp/sed
 echo "s/$yesterday/YESTERDAY/g" >>$tmp/sed
 
 echo >$tmp/control '$version=1.1
-LOCALHOSTNAME	n   n	'"$tmp"'	./config'
+LOCALHOSTNAME	n   n	'"$tmp"'	-c ./config'
 
 # pmlogger_daily runs as the user "pcp" ... fix ownership
 #
@@ -138,7 +143,7 @@ ls -l $tmp >>$seq.full
 # complexity at the end of this pipeline
 #
 echo
-$sudo -u $PCP_USER -g $PCP_GROUP sh -c "umask 022; $PCP_BINADM_DIR/pmlogger_daily -o -c $tmp/control -x never -k 3 $verbose -l $tmp.log"
+$sudo -u $PCP_USER -g $PCP_GROUP sh -c "umask 022; $PCP_BINADM_DIR/pmlogger_daily -D -o -c $tmp/control -x never -k 3 $verbose -l $tmp.log"
 $sudo cat $tmp.log \
 | _filter \
 | $PCP_AWK_PROG '

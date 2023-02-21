@@ -1,5 +1,6 @@
 /*
  * Copyright (c) 2019 Miroslav Foltýn.  All Rights Reserved.
+ * Copyright (c) 2022 Red Hat.
  * 
  * This program is free software; you can redistribute it and/or modify it
  * under the terms of the GNU General Public License as published by the
@@ -68,10 +69,10 @@ process_labeled_datagram(
     struct metric* item,
     struct statsd_datagram* datagram
 ) {
-    char throwing_away_msg[] = "Throwing away parsed datagram.";
+    char throwing_away_msg[] = "Throwing away metric:";
     int correct_semantics = item->type == datagram->type;
     if (!correct_semantics) {
-        METRIC_PROCESSING_ERR_LOG("%s REASON: metric type doesn't match with root record.", throwing_away_msg);
+        METRIC_PROCESSING_ERR_LOG("%s %s, REASON: metric type doesn't match with root record.", throwing_away_msg, datagram->name);
         return 0;
     }
     int labeled_children_dict_exists = item->children != NULL;
@@ -80,7 +81,7 @@ process_labeled_datagram(
     }
     char* label_key = create_metric_dict_key(datagram->tags);
     if (label_key == NULL) {
-        METRIC_PROCESSING_ERR_LOG("%s REASON: unable to create hashtable key for labeled child.", throwing_away_msg);
+        METRIC_PROCESSING_ERR_LOG("%s %s, REASON: unable to create hashtable key for labeled child.", throwing_away_msg, datagram->name);
     }
     struct metric_label* label;
     int label_exists = find_label_by_name(container, item, label_key, &label);
@@ -88,7 +89,7 @@ process_labeled_datagram(
     if (label_exists) {
         int update_success = update_metric_value(config, container, label->type, datagram, &label->value);
         if (update_success != 1) {
-            METRIC_PROCESSING_ERR_LOG("%s REASON: sematically incorrect values.", throwing_away_msg);
+            METRIC_PROCESSING_ERR_LOG("%s %s, REASON: semantically incorrect values.", throwing_away_msg, datagram->name);
             status = 0;
         } else {
             status = update_success;
@@ -99,7 +100,7 @@ process_labeled_datagram(
             add_label(container, item, label_key, label);
             status = create_success;
         } else {
-            METRIC_PROCESSING_ERR_LOG("%s REASON: unable to create label.", throwing_away_msg);
+            METRIC_PROCESSING_ERR_LOG("%s %s, REASON: unable to create label.", throwing_away_msg, datagram->name);
             status = 0;
         }
     }
@@ -194,11 +195,11 @@ create_label(
     *out = label;
     size_t labels_length = strlen(datagram->tags) + 1;
     (*out)->labels = (char*) malloc(sizeof(char) * labels_length);
-    ALLOC_CHECK("Unable to allocate memory for labels string in metric label record.");
+    ALLOC_CHECK((*out)->labels, "Unable to allocate memory for labels string in metric label record.");
     memcpy((*out)->labels, datagram->tags, labels_length);
     struct metric_label_metadata* meta = 
         (struct metric_label_metadata*) malloc(sizeof(struct metric_label_metadata));
-    ALLOC_CHECK("Unable to allocate memory for metric label metadata.");
+    ALLOC_CHECK(meta, "Unable to allocate memory for metric label metadata.");
     (*out)->meta = meta;
     (*out)->type = METRIC_TYPE_NONE;
     meta->instance_label_segment_str = NULL;
@@ -271,7 +272,7 @@ free_metric_label(struct agent_config* config, struct metric_label* label) {
                 free_duration_value(config, label->value);
                 break;
             case METRIC_TYPE_NONE:
-                // not an actualy metric
+                // not actually a metric
                 break;
         }
         free(label);

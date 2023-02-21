@@ -4,6 +4,8 @@
 #
 # Copyright (c) 2019 Ken McDonell.  All Rights Reserved.
 #
+# check-group-exclude: pmdumplog
+#
 
 seq=`basename $0`
 echo "QA output created by $seq"
@@ -33,10 +35,13 @@ pminfo \
 echo "}" >>$tmp.config
 
 pmlogger -l $tmp.log -c $tmp.config -s 1 $tmp
+cat $tmp.log >>$seq.full
 
 echo "values in the archive ..." >>$seq.full
+textgrep=""
+[ $PCP_PLATFORM = linux ] && textgrep="-a"
 pmdumplog $tmp \
-| grep ' value ' \
+| grep $textgrep ' value ' \
 | wc -l >>$seq.full
 
 pmlogrewrite -c $PCP_VAR_DIR/config/pmlogrewrite -Dappl0,appl3 -q -i $tmp 2>&1

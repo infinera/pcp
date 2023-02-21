@@ -3,7 +3,7 @@
  *
  * Copyright (C) 2001,2009 Silicon Graphics, Inc.  All rights reserved.
  * Copyright (C) 2009 Aconex.  All rights reserved.
- * Copyright (C) 2013,2016,2018-2020 Red Hat.
+ * Copyright (C) 2013,2016,2018-2021 Red Hat.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU Lesser General Public License as published by
@@ -1396,6 +1396,112 @@ mmv_inc_value(void *addr, pmAtomValue *av, double inc)
 }
 
 void
+mmv_inc_atomvalue(void *addr, pmAtomValue *av, pmAtomValue *value)
+{
+    if (av != NULL && addr != NULL) {
+	mmv_disk_header_t *hdr = (mmv_disk_header_t *)addr;
+	mmv_disk_value_t *v = (mmv_disk_value_t *)av;
+	int type;
+
+	if (hdr->version == MMV_VERSION1) {
+	    mmv_disk_metric_t *m = (mmv_disk_metric_t *)
+					((char *)addr + v->metric);
+	    type = m->type;
+	} else {
+	    mmv_disk_metric2_t *m = (mmv_disk_metric2_t *)
+					((char *)addr + v->metric);
+	    type = m->type;
+	}
+	switch (type) {
+	case MMV_TYPE_I32:
+	    v->value.l += value->l;
+	    break;
+	case MMV_TYPE_U32:
+	    v->value.ul += value->ul;
+	    break;
+	case MMV_TYPE_I64:
+	    v->value.ll += value->ll;
+	    break;
+	case MMV_TYPE_U64:
+	    v->value.ull += value->ull;
+	    break;
+	case MMV_TYPE_FLOAT:
+	    v->value.f += value->f;
+	    break;
+	case MMV_TYPE_DOUBLE:
+	    v->value.d += value->d;
+	    break;
+	case MMV_TYPE_ELAPSED:
+	    if (value->ll < 0)
+		v->extra = value->ll;
+	    else {
+		v->value.ll += v->extra + value->ll;
+		v->extra = 0;
+	    }
+	    break;
+	default:
+	    break;
+	}
+    }
+}
+
+void
+mmv_add(void *registry, pmAtomValue *metric, void *value)
+{
+    mmv_inc_atomvalue(registry, metric, (pmAtomValue *)value);
+}
+
+void
+mmv_inc(void *addr, pmAtomValue *av)
+{
+    if (av != NULL && addr != NULL) {
+	mmv_disk_header_t *hdr = (mmv_disk_header_t *)addr;
+	mmv_disk_value_t *v = (mmv_disk_value_t *)av;
+	int type;
+
+	if (hdr->version == MMV_VERSION1) {
+	    mmv_disk_metric_t *m = (mmv_disk_metric_t *)
+					((char *)addr + v->metric);
+	    type = m->type;
+	} else {
+	    mmv_disk_metric2_t *m = (mmv_disk_metric2_t *)
+					((char *)addr + v->metric);
+	    type = m->type;
+	}
+	switch (type) {
+	case MMV_TYPE_I32:
+	    v->value.l++;
+	    break;
+	case MMV_TYPE_U32:
+	    v->value.ul++;
+	    break;
+	case MMV_TYPE_I64:
+	    v->value.ll++;
+	    break;
+	case MMV_TYPE_U64:
+	    v->value.ull++;
+	    break;
+	case MMV_TYPE_FLOAT:
+	    v->value.f++;
+	    break;
+	case MMV_TYPE_DOUBLE:
+	    v->value.d++;
+	    break;
+	case MMV_TYPE_ELAPSED:
+	    if (v->value.ll < 0)
+		v->extra++;
+	    else {
+		v->value.ll += v->extra + 1;
+		v->extra = 0;
+	    }
+	    break;
+	default:
+	    break;
+	}
+    }
+}
+
+void
 mmv_set_value(void *addr, pmAtomValue *av, double val)
 {
     if (av != NULL && addr != NULL) {
@@ -1475,8 +1581,40 @@ mmv_set_string(void *addr, pmAtomValue *av, const char *string, int size)
     }
 }
 
+void
+mmv_set_atomvalue(void *addr, pmAtomValue *av, pmAtomValue *value)
+{
+    if (av != NULL && addr != NULL) {
+	mmv_disk_header_t *hdr = (mmv_disk_header_t *)addr;
+	mmv_disk_value_t *v = (mmv_disk_value_t *)av;
+	int type;
+
+	if (hdr->version == MMV_VERSION1) {
+	    mmv_disk_metric_t *m = (mmv_disk_metric_t *)
+					((char *)addr + v->metric);
+	    type = m->type;
+	} else {
+	    mmv_disk_metric2_t *m = (mmv_disk_metric2_t *)
+					((char *)addr + v->metric);
+	    type = m->type;
+	}
+	if (type == MMV_TYPE_ELAPSED)
+	    v->extra = 0;
+	if (type != MMV_TYPE_STRING)
+	    v->value = *value;
+	else
+	    mmv_set_string(addr, av, value->cp, strlen(value->cp));
+    }
+}
+
+void
+mmv_set(void *registry, pmAtomValue *metric, void *value)
+{
+    mmv_set_atomvalue(registry, metric, (pmAtomValue *)value);
+}
+
 /*
- * Simple wrapper routines
+ * Simple wrapper routines, less efficient than earlier methods.
  */
 
 void

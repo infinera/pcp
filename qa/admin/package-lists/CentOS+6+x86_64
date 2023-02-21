@@ -4,7 +4,6 @@
 389-ds-base
 Net::SNMP cpan
 Spreadsheet::Read cpan
-Spreadsheet::ReadSXC cpan
 Spreadsheet::WriteExcel cpan
 Spreadsheet::XLSX cpan
 Text::CSV_XS cpan
@@ -52,9 +51,6 @@ mysql
 ncurses-devel
 net-tools
 nmap
-nspr-devel
-nss-devel
-nss-tools
 openssl
 openssl-devel
 perl
@@ -87,13 +83,11 @@ python-six
 qt-devel
 readline-devel
 rpm-build
-rpm-devel
 rrdtool
 rrdtool-perl
 sed
 selinux-policy
 selinux-policy-targeted
-setools
 setools-console
 smartmontools
 sqlite

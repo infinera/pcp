@@ -48,9 +48,9 @@ void
 do_meta(__pmFILE *f)
 {
     long	oheadbytes = __pmFtell(f);
-    long	bytes[5] = { 0, 0, 0, 0, 0 };
+    long	bytes[TYPE_MAX+1] = { 0 };
     long	sum_bytes;
-    int		nrec[5] = { 0, 0, 0, 0, 0 };
+    int		nrec[TYPE_MAX+1] = { 0 };
     __pmLogHdr	header;
     __pmPDU	trailer;
     int		need;
@@ -87,7 +87,7 @@ do_meta(__pmFILE *f)
 	    fprintf(stderr, "Error: metadata read failed: len %d not %d\n", sts, need);
 	    exit(1);
 	}
-	if (header.type < TYPE_DESC || header.type > TYPE_TEXT) {
+	if (header.type < TYPE_DESC || header.type > TYPE_MAX) {
 	    fprintf(stderr, "Error: bad metadata type: %d\n", header.type);
 	    exit(1);
 	}
@@ -120,6 +120,8 @@ do_meta(__pmFILE *f)
 		}
 		break;
 	    case TYPE_INDOM:
+	    case TYPE_INDOM_DELTA:
+	    case TYPE_INDOM_V2:
 		if (vflag || dflag || rflag) {
 		    pmInDom	indom;
 		    int		ninst;
@@ -128,11 +130,21 @@ do_meta(__pmFILE *f)
 		    char	*str;
 
 		    bufp = buf;
-		    bufp += sizeof(pmTimeval);
+		    if (header.type == TYPE_INDOM_V2)
+			bufp += 2*sizeof(__int32_t);
+		    else
+			bufp += 3*sizeof(__int32_t);
 		    indom = __ntohpmInDom(*((__pmPDU *)bufp));
 		    bufp += sizeof(pmInDom);
-		    if (vflag)
-			printf("INDOM: %s", pmInDomStr(indom));
+		    if (vflag) {
+			if (header.type == TYPE_INDOM)
+			    printf("INDOM: %s", pmInDomStr(indom));
+			else if (header.type == TYPE_INDOM_DELTA)
+			    printf("INDOM_DELTA: %s", pmInDomStr(indom));
+			else
+			    printf("INDOM_V2: %s", pmInDomStr(indom));
+
+		    }
 		    for (i = 0, indomp = indom_tab; i < nindom; i++, indomp++) {
 			if (indomp->indom == indom)
 			    break;
@@ -161,7 +173,10 @@ do_meta(__pmFILE *f)
 		    ninst = ntohl(*((__pmPDU *)bufp));
 		    bufp += sizeof(__pmPDU);
 		    /* record type, timestamp, indom, numinst */
-		    indomp->bytes += sizeof(__pmPDU) + sizeof(pmTimeval) + sizeof(pmInDom) + sizeof(__pmPDU);
+		    if (header.type == TYPE_INDOM_V2)
+			indomp->bytes += sizeof(__pmPDU) + 2*sizeof(__int32_t) + sizeof(pmInDom) + sizeof(__pmPDU);
+		    else
+			indomp->bytes += sizeof(__pmPDU) + 3*sizeof(__int32_t) + sizeof(pmInDom) + sizeof(__pmPDU);
 		    if (vflag) {
 			printf(" %d instance", ninst);
 			if (ninst > 1)
@@ -171,6 +186,12 @@ do_meta(__pmFILE *f)
 		    str = (char *)&bufp[2*ninst*sizeof(__pmPDU)];
 		    for (j = 0; j < ninst; j++) {
 			inst = ntohl(*((__pmPDU *)bufp));
+			if (inst < 0) {
+			    /* INDOM_DELTA and del instance */
+			    if (vflag && j == ninst-1)
+				printf(" ... ");
+			    continue;
+			}
 			bufp += sizeof(__pmPDU);
 			stridx[j] = ntohl(stridx[j]);
 			if (vflag) {
@@ -220,6 +241,13 @@ do_meta(__pmFILE *f)
 			printf("LABEL: TODO ... nothing reported as yet\n");
 		}
 		break;
+	    case TYPE_LABEL_V2:
+		if (dflag) {
+		    /* TODO */
+		    if (nrec[TYPE_LABEL_V2] == 1)
+			printf("LABEL: TODO ... nothing reported as yet\n");
+		}
+		break;
 	    case TYPE_TEXT:
 		if (dflag) {
 		    /* TODO */
@@ -227,11 +255,27 @@ do_meta(__pmFILE *f)
 			printf("TEXT: TODO ... nothing reported as yet\n");
 		}
 		break;
+	    default:
+		fprintf(stderr, "Metadata botch: record type = %d\n", header.type);
+		exit(1);
+		/*NOTREACHED*/
 	}
 
 	__pmFread(&trailer, 1, sizeof(trailer), f);
 	oheadbytes += sizeof(trailer);
     }
+
+    /*
+     * aggregate all the idom-type stats into *[TYPE_INDOM]
+     */
+    nrec[TYPE_INDOM] += nrec[TYPE_INDOM_DELTA] + nrec[TYPE_INDOM_V2];
+    bytes[TYPE_INDOM] += bytes[TYPE_INDOM_DELTA] + bytes[TYPE_INDOM_V2];
+
+    /*
+     * aggregate all the label-type stats into *[TYPE_LABEL]
+     */
+    nrec[TYPE_LABEL] += nrec[TYPE_LABEL_V2];
+    bytes[TYPE_LABEL] += bytes[TYPE_LABEL_V2];
 
     if (nrec[TYPE_DESC] > 0) {
 	printf("  metrics: %ld bytes [%.0f%%, %d records]\n",

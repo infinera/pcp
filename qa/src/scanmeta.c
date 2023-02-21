@@ -20,8 +20,9 @@
 /* from internal.h ... */
 #ifdef HAVE_NETWORK_BYTEORDER
 #define __ntohpmInDom(a)        (a)
-#define __ntohpmUnits(a)        (a)
 #define __ntohpmID(a)           (a)
+#define __ntohpmUnits(a)        (a)
+#define __ntohll(a)             /* noop */
 #else
 #define __ntohpmInDom(a)        ntohl(a)
 #define __ntohpmID(a)           ntohl(a)
@@ -41,13 +42,20 @@ __ntohpmUnits(pmUnits units)
 }
 #endif
 
-
 static int	hflag;
 static int	iflag;
 static int	lflag;
 static int	mflag;
+static int	oflag;
+static int	tflag;
 static int	wflag;
+static int	xflag;
 static int	nrec;
+static int	version;
+
+static off_t	offset;
+
+static __pmLogLabel	label;
 
 void
 usage(void)
@@ -60,8 +68,11 @@ usage(void)
     fprintf(stderr, " -i               report instance domain records\n");
     fprintf(stderr, " -l               report label records\n");
     fprintf(stderr, " -m               report metric records [default]\n");
+    fprintf(stderr, " -o               report byte offset to start of record\n");
+    fprintf(stderr, " -t               report metadata record types\n");
     fprintf(stderr, " -w               only warn about badness\n");
     fprintf(stderr, " -W               only warn verbosely about badness\n");
+    fprintf(stderr, " -x               dump record in hex\n");
     fprintf(stderr, " -z               set reporting timezone to pmcd from archive\n");
     fprintf(stderr, " -Z timezone      set reporting timezone\n");
 }
@@ -78,36 +89,40 @@ typedef struct elt {
 } elt_t;
 
 void
-unpack_indom(elt_t *ep, pmInDom indom, int numinst, uint32_t *buf)
+unpack_indom(elt_t *ep, __pmLogInDom *lidp)
 {
-    char	*str;
-    uint32_t	*index;
     int		j;
 
     if (ep->numinst > 0) {
-	str = (char *)&buf[numinst];
-	ep->inst = (int *)malloc(numinst * sizeof(int));
+	ep->inst = (int *)malloc(lidp->numinst * sizeof(int));
 	if (ep->inst == NULL) {
-	    fprintf(stderr, "Arrgh: inst[] malloc failed for indom %s\n", pmInDomStr(indom));
+	    fprintf(stderr, "Arrgh: inst[] malloc failed for indom %s\n", pmInDomStr(lidp->indom));
 	    exit(1);
 	}
-	ep->iname = (char **)malloc(numinst * sizeof(char *));
+	ep->iname = (char **)malloc(lidp->numinst * sizeof(char *));
 	if (ep->iname == NULL) {
-	    fprintf(stderr, "Arrgh: iname[] malloc failed for indom %s\n", pmInDomStr(indom));
+	    fprintf(stderr, "Arrgh: iname[] malloc failed for indom %s\n", pmInDomStr(lidp->indom));
 	    exit(1);
 	}
-	index = &buf[ep->numinst];
-	str = (char *)&buf[ep->numinst + ep->numinst];
-	for (j = 0; j < numinst; j++) {
-	    ep->inst[j] = ntohl(buf[j]);
-	    ep->iname[j] = strdup(&str[ntohl(index[j])]);
-	    if (ep->iname[j] == NULL) {
-		fprintf(stderr, "Arrgh: iname[%d] malloc failed for indom %s\n", j, pmInDomStr(indom));
-		exit(1);
+	for (j = 0; j < lidp->numinst; j++) {
+	    ep->inst[j] = lidp->instlist[j];
+	    if (lidp->namelist[j] != NULL) {
+		ep->iname[j] = strdup(lidp->namelist[j]);
+		if (ep->iname[j] == NULL) {
+		    fprintf(stderr, "Arrgh: iname[%d] malloc failed for indom %s\n", j, pmInDomStr(lidp->indom));
+		    exit(1);
+		}
+		if (pmDebugOptions.appl0) {
+		    fprintf(stderr, "unpack (%d) inst=%d iname=%s\n", j, ep->inst[j], ep->iname[j]);
+		}
 	    }
-#ifdef DEBUG
-printf("[%d] inst=%d iname=%s\n", j, ep->inst[j], ep->iname[j]);
-#endif
+	    else {
+		/* assume TYPE_INDOM_DELTA */
+		ep->iname[j] = NULL;
+		if (pmDebugOptions.appl0) {
+		    fprintf(stderr, "unpack (%d) inst=%d\n", j, ep->inst[j]);
+		}
+	    }
 	}
     }
 }
@@ -128,37 +143,46 @@ free_elt_fields(elt_t *ep)
 }
 
 void
-do_indom(uint32_t *buf)
+do_indom(__int32_t *buf, int type)
 {
-    static pmTimeval	prior_stamp = { 0, 0 };
-    static elt_t	*head = NULL;
-    static elt_t	dup = { NULL, 0, 0, NULL, NULL };
-    static int		ndup = 0;
-    pmTimeval		*tvp;
-    pmInDom		this_indom;
-    pmTimeval		this_stamp;
-    int			this_numinst;
-    int			warn;
-    elt_t		*ep = NULL;	/* pander to gcc */
-    elt_t		*tp;
-    elt_t		*dp = &dup;
+    int				sts;
+    static __pmTimestamp	prior_stamp = { 0, 0 };
+    static elt_t		*head = NULL;
+    static elt_t		dup = { NULL, 0, 0, NULL, NULL };
+    static int			ndup = 0;
+    __pmLogInDom		lid;
+    int				warn;
+    elt_t			*ep = NULL;	/* pander to gcc */
+    elt_t			*tp;
+    elt_t			*dp = &dup;
 
-    tvp = (pmTimeval *)buf;
-    this_stamp.tv_sec = ntohl(tvp->tv_sec);
-    this_stamp.tv_usec = ntohl(tvp->tv_usec);
-    this_indom = __ntohpmInDom(buf[2]);
-    this_numinst = ntohl(buf[3]);
+    if ((sts = __pmLogLoadInDom(NULL, 0, type, &lid, &buf)) < 0) {
+	fprintf(stderr, "__pmLoadLoadInDom: failed: %s\n", pmErrStr(sts));
+	return;
+    }
+
+    if (pmDebugOptions.appl0) {
+	int	i;
+	fprintf(stderr, "indom type=%s (%d) numinst=%d\n", __pmLogMetaTypeStr(type), type, lid.numinst);
+	for (i = 0; i < lid.numinst; i++) {
+	    if (lid.namelist[i] != NULL)
+		fprintf(stderr, "(%d) inst=%d name=\"%s\"\n", i, lid.instlist[i], lid.namelist[i]);
+	    else
+		fprintf(stderr, "(%d) inst=%d\n", i, lid.instlist[i]);
+	}
+    }
+
     warn = 0;
-    if (prior_stamp.tv_sec != 0) {
+    if (prior_stamp.sec != 0) {
 	/*
 	 * Not the first indom record, so check for duplicate timestamps
 	 * for the same indom.
 	 * Use a linked list of indoms previously seen.
 	 */
-	if (__pmTimevalSub(&this_stamp, &prior_stamp) == 0) {
+	if (__pmTimestampSub(&lid.stamp, &prior_stamp) == 0) {
 	    /* same timestamp as previous indom */
 	    for (ep = head; ep != NULL; ep = ep->next) {
-		if (ep->indom == this_indom) {
+		if (ep->indom == lid.indom) {
 		    /* indom match => duplicate */
 		    ndup++;
 		    warn++;
@@ -172,8 +196,8 @@ do_indom(uint32_t *buf)
 		 */
 		ep = (elt_t *)malloc(sizeof(elt_t));
 		if (ep == NULL) {
-		    fprintf(stderr, "Arrgh: elt malloc failed for indom %s @ ", pmInDomStr(this_indom));
-		    __pmPrintTimeval(stderr, &this_stamp);
+		    fprintf(stderr, "Arrgh: elt malloc failed for indom %s @ ", pmInDomStr(lid.indom));
+		    __pmPrintTimestamp(stderr, &lid.stamp);
 		    exit(1);
 		}
 		ep->next = head;
@@ -190,75 +214,94 @@ do_indom(uint32_t *buf)
 	    }
 	    ep = head = (elt_t *)malloc(sizeof(elt_t));
 	    if (head == NULL) {
-		fprintf(stderr, "Arrgh: head malloc failed for indom %s @ ", pmInDomStr(this_indom));
-		__pmPrintTimeval(stderr, &this_stamp);
+		fprintf(stderr, "Arrgh: head malloc failed for indom %s @ ", pmInDomStr(lid.indom));
+		__pmPrintTimestamp(stderr, &lid.stamp);
 		exit(1);
 	    }
 	    ep->next = NULL;
 	    ndup = 0;
 	}
-	ep->indom = this_indom;
-	ep->numinst = this_numinst;
+	ep->indom = lid.indom;
+	ep->numinst = lid.numinst;
 	ep->inst = NULL;
 	ep->iname = NULL;
-	if (wflag == 2) {
-	    /* -W, so unpack indom */
-	    unpack_indom(ep, this_indom, this_numinst, &buf[4]);
+	if (wflag > 0) {
+	    /* -w or -W, so unpack indom */
+	    unpack_indom(ep, &lid);
 	}
     }
     if (iflag || (warn && wflag > 0)) {
 	/* if warn is set, ep must have been assigned a value */
-	printf("[%d] @ ", nrec);
-	__pmPrintTimeval(stdout, &this_stamp);
-	printf(" indom %s numinst %d", pmInDomStr(this_indom), this_numinst);
-	if (warn) {
+	printf("[%d] ", nrec);
+	if (tflag)
+	    printf("<%s> ", __pmLogMetaTypeStr(type));
+	if (oflag)
+	    printf("+%ld ", (long)offset);
+	printf("@ ");
+	__pmPrintTimestamp(stdout, &lid.stamp);
+	if (type == TYPE_INDOM_DELTA)
+	    printf(" delta");
+	printf(" indom %s numinst %d", pmInDomStr(lid.indom), lid.numinst);
+	if (warn && wflag > 0) {
 	    int	o, d;
 	    int	diffs = 0;
 	    printf(" duplicate #%d\n", ndup);
-	    dp->indom = this_indom;
-	    dp->numinst = this_numinst;
+	    dp->indom = lid.indom;
+	    dp->numinst = lid.numinst;
 	    dp->inst = NULL;
-	    unpack_indom(dp, this_indom, this_numinst, &buf[4]);
-	    if (ep->numinst != dp->numinst)
-		printf("  numinst changed from %d to %d\n", ep->numinst, dp->numinst);
-	    for (o = 0; o < ep->numinst; o++) {
+	    unpack_indom(dp, &lid);
+	    if (type == TYPE_INDOM_DELTA) {
 		for (d = 0; d < dp->numinst; d++) {
-		    if (ep->inst[o] == dp->inst[d]) {
-			if (strcmp(ep->iname[o], dp->iname[d]) != 0) {
-			    printf("  inst %d: changed ext name from \"%s\" to \"%s\"\n", ep->inst[o], ep->iname[o], dp->iname[d]);
-			    diffs++;
-			}
+		    if (dp->iname[d] == NULL)
+			printf("  inst %d: delta dropped\n", -dp->inst[d]);
+		    else
+			printf("  inst %d: delta added (\"%s\")\n", dp->inst[d], dp->iname[d]);
+		}
+	    }
+	    else {
+		if (ep->numinst != dp->numinst)
+		    printf("  numinst changed from %d to %d\n", ep->numinst, dp->numinst);
+		for (o = 0; o < ep->numinst; o++) {
+		    for (d = 0; d < dp->numinst; d++) {
+			if (ep->inst[o] == dp->inst[d]) {
+			    if (strcmp(ep->iname[o], dp->iname[d]) != 0) {
+				printf("  inst %d: changed ext name from \"%s\" to \"%s\"\n", ep->inst[o], ep->iname[o], dp->iname[d]);
+				diffs++;
+			    }
 #ifdef DEBUG
-			else
-			    printf("  inst %d: same\n", ep->inst[o]);
+			    else
+				printf("  inst %d: same\n", ep->inst[o]);
 #endif
-			dp->inst[d] = -1;
-			break;
+			    dp->inst[d] = -1;
+			    break;
+			}
+		    }
+		    if (d == dp->numinst) {
+			printf("  inst %d: dropped (\"%s\")\n", ep->inst[o], ep->iname[o]);
+			diffs++;
 		    }
 		}
-		if (d == dp->numinst) {
-		    printf("  inst %d: dropped (\"%s\")\n", ep->inst[o], ep->iname[o]);
-		    diffs++;
+		for (d = 0; d < dp->numinst; d++) {
+		    if (dp->inst[d] != -1) {
+			printf("  inst %d: added (\"%s\")\n", dp->inst[d], dp->iname[d]);
+			diffs++;
+		    }
 		}
+		if (diffs == 0)
+		    printf(" no differences\n");
 	    }
-	    for (d = 0; d < dp->numinst; d++) {
-		if (dp->inst[d] != -1) {
-		    printf("  inst %d: added (\"%s\")\n", dp->inst[d], dp->iname[d]);
-		    diffs++;
-		}
-	    }
-	    if (diffs == 0)
-		printf(" no differences\n");
 	    free_elt_fields(dp);
 	}
 	else
 	    putchar('\n');
     }
-    prior_stamp = this_stamp;
+    prior_stamp = lid.stamp;
+
+    __pmFreeLogInDom(&lid);
 }
 
 void
-do_desc(uint32_t *buf)
+do_desc(__int32_t *buf)
 {
     pmDesc	*dp;
     int		numnames;
@@ -274,7 +317,12 @@ do_desc(uint32_t *buf)
     dp->indom = __ntohpmInDom(dp->indom);
     dp->units = __ntohpmUnits(dp->units);
     dp->pmid = __ntohpmID(dp->pmid);
-    printf("[%d] metric %s (", nrec, pmIDStr(dp->pmid));
+    printf("[%d] ", nrec);
+    if (tflag)
+	printf("<%s> ", __pmLogMetaTypeStr(TYPE_DESC));
+    if (oflag)
+	printf("+%ld ", (long)offset);
+    printf("metric %s (",  pmIDStr(dp->pmid));
     numnames = ntohl(buf[sizeof(pmDesc)/sizeof(int)]);
     names = (char **)malloc(numnames*sizeof(char *));
     if (names == NULL) {
@@ -308,41 +356,34 @@ do_desc(uint32_t *buf)
 }
 
 void
-do_label(uint32_t *buf)
+do_help(__int32_t *buf)
 {
     int		type;
-    int		ident;
-    pmTimeval	*tvp;
-
-    tvp = (pmTimeval *)buf;
-    tvp->tv_sec = ntohl(tvp->tv_sec);
-    tvp->tv_usec = ntohl(tvp->tv_usec);
-    type = ntohl(buf[2]);
-    ident = ntohl(buf[3]);
-    printf("[%d] label @ ", nrec);
-    __pmPrintTimeval(stdout, tvp);
-    printf(" type %d ident %d", type, ident);
-    printf(" TODO");
-    putchar('\n');
-}
-
-void
-do_help(uint32_t *buf)
-{
-    int		type;
+    char	*verbosity;
     pmID	pmid;
     pmInDom	indom;
     char	*p;
 
-    printf("[%d] text ", nrec);
+    printf("[%d] ", nrec);
+    if (tflag)
+	printf("<%s> ", __pmLogMetaTypeStr(TYPE_TEXT));
+    if (oflag)
+	printf("+%ld ", (long)offset);
     type = ntohl(buf[0]);
-    if (type & PM_TEXT_INDOM) {
-	pmid = __ntohpmInDom(buf[1]);
-	printf("pmid %s ", pmIDStr(pmid));
+    if ((type & PM_TEXT_ONELINE) == PM_TEXT_ONELINE)
+	verbosity = "oneline";
+    else if ((type & PM_TEXT_HELP) == PM_TEXT_HELP)
+	verbosity = "help";
+    else
+	verbosity = "unknown";
+    printf("%s text ", verbosity);
+    if ((type & PM_TEXT_INDOM) == PM_TEXT_INDOM) {
+	indom = __ntohpmInDom(buf[1]);
+	printf("indom %s ", pmInDomStr(indom));
     }
     else {
-	indom = __ntohpmID(buf[1]);
-	printf("indom %s ", pmInDomStr(indom));
+	pmid = __ntohpmID(buf[1]);
+	printf("pmid %s ", pmIDStr(pmid));
     }
     printf("\n    ");
     for (p = (char *)&buf[2]; *p; p++) {
@@ -353,12 +394,68 @@ do_help(uint32_t *buf)
     putchar('\n');
 }
 
+void
+do_metric_label(__int32_t *buf, int type)
+{
+    __pmTimestamp	stamp;
+    int			i;
+    int			k;
+    struct {
+	int	type;
+	char	*type_str;
+    } type_map[] = {
+	{ PM_LABEL_CONTEXT,	"context" },
+	{ PM_LABEL_DOMAIN,	"domain" },
+	{ PM_LABEL_INDOM,	"indom" },
+	{ PM_LABEL_CLUSTER,	"cluster" },
+	{ PM_LABEL_ITEM,	"item" },
+	{ PM_LABEL_INSTANCES,	"instances" },
+	{ -1,			NULL }
+    };
+    printf("[%d] ", nrec);
+    if (tflag)
+	printf("<%s> ", __pmLogMetaTypeStr(type));
+    if (oflag)
+	printf("+%ld ", (long)offset);
+    printf("metric label @ ");
+    if (type == TYPE_LABEL) {
+	__pmLoadTimestamp(&buf[0], &stamp);
+	k = 3; 
+    }
+    else {
+	__pmLoadTimeval(&buf[0], &stamp);
+	k = 2; 
+    }
+    __pmPrintTimestamp(stdout, &stamp);
+    for (i = 0; type_map[i].type != -1; i++) {
+	if (ntohl(buf[k]) == type_map[i].type)
+	    break;
+    }
+    if (type_map[i].type != -1)
+	printf(" type=%s", type_map[i].type_str);
+    else
+	printf(" type=%d (unknown)", ntohl(buf[k]));
+    printf(" ident=%d nsets=%d", ntohl(buf[k+1]), ntohl(buf[k+2]));
+    putchar('\n');
+}
+
+void
+do_archive_label(int archversion)
+{
+    printf("[%d] ", nrec);
+    if (tflag)
+	printf("<V%d> ", archversion);
+    printf("archive label @ ");
+    __pmPrintTimestamp(stdout, &label.start);
+    putchar('\n');
+}
+
 int
 main(int argc, char *argv[])
 {
     int		len;
     int		buflen;
-    uint32_t	*buf ;
+    __int32_t	*buf ;
     int		in;
     int		nb;
     int		c;
@@ -367,14 +464,14 @@ main(int argc, char *argv[])
     int		tzh;				/* initial timezone handle */
     int		zflag = 0;			/* for -z */
     char 	*tz = NULL;			/* for -Z timezone */
-    off_t	offset;
+    __pmFILE	*f;
     __pmLogHdr	hdr;
 
     pmSetProgname(argv[0]);
     setlinebuf(stdout);
     setlinebuf(stderr);
 
-    while ((c = getopt(argc, argv, "aD:hilmwWzZ:")) != EOF) {
+    while ((c = getopt(argc, argv, "aD:hilmotwWxzZ:")) != EOF) {
 	switch (c) {
 
 	case 'a':	/* report all */
@@ -406,12 +503,24 @@ main(int argc, char *argv[])
 	    mflag = 1;
 	    break;
 
+	case 'o':	/* report byte offsets */
+	    oflag = 1;
+	    break;
+
+	case 't':	/* report metadata record types */
+	    tflag = 1;
+	    break;
+
 	case 'w':	/* report warnings */
 	    wflag = 1;
 	    break;
 
 	case 'W':	/* verbosely report warnings */
 	    wflag = 2;
+	    break;
+
+	case 'x':	/* dump records in hex */
+	    xflag = 1;
 	    break;
 
 	case 'z':	/* timezone from archive */
@@ -480,11 +589,22 @@ main(int argc, char *argv[])
 	exit(1);
     }
     buflen = 0;
-    buf = (uint32_t *)malloc(buflen);
+    buf = (__int32_t *)malloc(buflen);
     if (buf == NULL) {
 	fprintf(stderr, "Arrgh: buf malloc failed\n");
 	exit(1);
     }
+
+    if ((f = __pmFopen(argv[optind], "r")) == NULL) {
+	fprintf(stderr, "Failed to __pmFopen %s: %s\n", argv[optind], strerror(errno));
+	exit(1);
+    }
+    memset((void *)&label, 0, sizeof(label));
+    if ((sts = __pmLogLoadLabel(f, &label)) < 0) {
+	fprintf(stderr, "error: %s does not start with label record, not a PCP archive file?\n", argv[optind]);
+	exit(1);
+    }
+    __pmFclose(f);
 
     for (nrec = 0; ; nrec++) {
 	offset = lseek(in, 0, SEEK_CUR);
@@ -494,8 +614,12 @@ main(int argc, char *argv[])
 		    fprintf(stderr, "error: %s is empty file\n", argv[optind]);
 		break;
 	    }
-	    if (nb < 0)
-		fprintf(stderr, "[%d] hdr read error: %s\n", nrec, strerror(errno));
+	    if (nb < 0) {
+		fprintf(stderr, "[%d] ", nrec);
+		if (oflag)
+		    fprintf(stderr, "+%ld ", (long)offset);
+		fprintf(stderr, "hdr read error: %s\n", strerror(errno));
+	    }
 	    else {
 		/* Strange eof logic here ... from __pmLogLoadMeta(), a short
 		 * read is treated as end-of-file
@@ -506,47 +630,79 @@ main(int argc, char *argv[])
 	}
 	hdr.len = ntohl(hdr.len);
 	hdr.type = ntohl(hdr.type);
-	if (pmDebugOptions.log)
-	    fprintf(stderr, "read: len=%d type=%d @ offset=%ld\n", hdr.len, hdr.type, (long)offset);
-	if (nrec == 0 && hdr.len != (int)sizeof(__pmLogLabel)+2*(int)sizeof(int)) {
-	    fprintf(stderr, "error: %s does not start with label record (hdr len=%d not %d), not a PCP archive file?\n", argv[optind], hdr.len, (int)sizeof(pmLogLabel)+2*(int)sizeof(int));
-	    exit(1);
+	if (nrec == 0)
+	    version = hdr.type & 0xff;
+	if (pmDebugOptions.log) {
+	    if (nrec == 0)
+		fprintf(stderr, "read: len=%d magic=0x%x (version=%d) @ offset=%lld\n", hdr.len, hdr.type, version, (long long)offset);
+	    else
+		fprintf(stderr, "read: len=%d type=%s (%d) @ offset=%lld\n", hdr.len, __pmLogMetaTypeStr(hdr.type), hdr.type, (long long)offset);
 	}
 	len = hdr.len - sizeof(hdr);
 	if (len > buflen) {
 	    buflen = len;
-	    buf = (uint32_t *)realloc(buf, buflen);
+	    buf = (__int32_t *)realloc(buf, buflen);
 	    if (buf == NULL) {
 		fprintf(stderr, "Arrgh: buf realloc failed\n");
 		exit(1);
 	    }
 	}
 	if ((nb = read(in, buf, len)) != len) {
+	    fprintf(stderr, "[%d] " , nrec);
+	    if (oflag)
+		fprintf(stderr, "+%ld ", (long)offset);
 	    if (nb == 0)
-		fprintf(stderr, "[%d] body read error: end of file\n", nrec);
+		fprintf(stderr, "body read error: end of file\n");
 	    else if (nb < 0)
-		fprintf(stderr, "[%d] body read error: %s\n", nrec, strerror(errno));
+		fprintf(stderr, "body read error: %s\n", strerror(errno));
 	    else
-		fprintf(stderr, "[%d] body read error: expected %d bytes, got %d\n",
-			nrec, len, nb);
+		fprintf(stderr, "body read error: expected %d bytes, got %d\n",
+			len, nb);
 	    exit(1);
+	}
+	
+	if (xflag) {
+	    int		i;
+	    if (nrec == 0)
+		printf("[%d] len=%d magic=0x%x (version=%d) @ offset=%lld\n", nrec, hdr.len, hdr.type, version, (long long)offset);
+	    else
+		printf("[%d] len=%d type=%s (%d) @ offset=%lld\n", nrec, hdr.len, __pmLogMetaTypeStr(hdr.type), hdr.type, (long long)offset);
+	    for (i = 0; i < len; i++) {
+		if ((i % 8) == 0) {
+		    if (i > 0)
+			putchar('\n');
+		    printf("%4d", i);
+		}
+		printf(" %8x", buf[i]);
+	    }
+	    putchar('\n');
 	}
 
 	switch (hdr.type) {
+	    case PM_LOG_MAGIC|PM_LOG_VERS03:
+	    case PM_LOG_MAGIC|PM_LOG_VERS02:
+		do_archive_label(hdr.type & 0xf);
+		break;
+
 	    case TYPE_INDOM:
-		do_indom(buf);
+	    case TYPE_INDOM_DELTA:
+	    case TYPE_INDOM_V2:
+		if (!iflag)
+		    break;
+		do_indom(buf, hdr.type);
+		break;
+
+	    case TYPE_LABEL:
+	    case TYPE_LABEL_V2:
+		if (!lflag)
+		    break;
+		do_metric_label(buf, hdr.type);
 		break;
 
 	    case TYPE_DESC:
 		if (!mflag)
 		    break;
 		do_desc(buf);
-		break;
-
-	    case TYPE_LABEL:
-		if (!lflag)
-		    break;
-		do_label(buf);
 		break;
 
 	    case TYPE_TEXT:
@@ -556,16 +712,14 @@ main(int argc, char *argv[])
 		break;
 
 	    default:
-		if (nrec != 0) {
-		    fprintf(stderr, "[%d] error bad type %d\n", nrec, hdr.type);
-		    exit(1);
-		}
-		if (hdr.type == (PM_LOG_MAGIC | PM_LOG_VERS02))
-		    continue;
-		fprintf(stderr, "[%d] error bad magic %x != %x\n", nrec, hdr.type, (PM_LOG_MAGIC | PM_LOG_VERS02));
+		fprintf(stderr, "[%d] ", nrec);
+		if (oflag)
+		    fprintf(stderr, "+%ld ", (long)offset);
+		fprintf(stderr, "error bad type %d\n", hdr.type);
 		exit(1);
-
 	}
     }
+
+    __pmLogFreeLabel(&label);
     return 0;
 }

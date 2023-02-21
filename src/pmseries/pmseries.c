@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2017-2019 Red Hat.
+ * Copyright (c) 2017-2022 Red Hat.
  *
  * This program is free software; you can redistribute it and/or modify it
  * under the terms of the GNU General Public License as published by the
@@ -13,6 +13,9 @@
  */
 
 #include "pmwebapi.h"
+#include "libpcp.h"
+#include "dict.h"
+#include <ctype.h>
 #include <uv.h>
 
 typedef enum series_flags {
@@ -28,7 +31,8 @@ typedef enum series_flags {
     PMSERIES_NEED_DESCS	= (1<<9),	/* output requires descs lookup */
     PMSERIES_NEED_INSTS	= (1<<10),	/* output requires insts lookup */
     PMSERIES_NEED_RESET	= (1<<11),	/* need to reset for next series */
-    PMSERIES_TIMES	= (1<<12),	/* report numeric time stamps */
+    PMSERIES_NEED_CLOSE	= (1<<12),	/* currently closing connections */
+    PMSERIES_TIMES	= (1<<13),	/* report numeric time stamps */
 
     PMSERIES_OPT_ALL	= (1<<16),	/* -a, --all option */
     PMSERIES_OPT_SOURCE = (1<<17),	/* -S, --source option */
@@ -39,6 +43,7 @@ typedef enum series_flags {
     PMSERIES_OPT_METRIC	= (1<<22),	/* -m, --metric option */
     PMSERIES_OPT_QUERY	= (1<<23),	/* -q, --query option (default) */
     PMSERIES_OPT_VALUES = (1<<24),	/* -v, --values option */
+    PMSERIES_OPT_WINDOW = (1<<25),	/* -w, --window option */
 } series_flags;
 
 #define PMSERIES_META_OPTS	(PMSERIES_OPT_DESC | PMSERIES_OPT_INSTS | \
@@ -76,6 +81,8 @@ typedef struct series_inst {
 
 typedef struct series_data {
     sds			query;
+    sds			window;
+    dict		*config;
     uv_loop_t		*loop;
     pmSeriesSettings	settings;
     series_command	args;		/* detailed command line arguments */
@@ -192,8 +199,8 @@ static void
 series_free(int nseries, pmSID *series)
 {
     if (nseries) {
-	while (--nseries)
-	    sdsfree(series[nseries]);
+	while (nseries)
+	    sdsfree(series[--nseries]);
 	free(series);
     }
 }
@@ -216,18 +223,34 @@ series_data_reset(series_data *dp)
 static void
 series_data_free(series_data *dp)
 {
+    series_entry	*tail, *entry;
+    int			exit_status = dp->status;
+
     if (dp->args.nsource)
 	series_free(dp->args.nsource, dp->args.source);
     if (dp->args.nseries)
 	series_free(dp->args.nseries, dp->args.series);
     if (dp->args.pattern)
 	sdsfree(dp->args.pattern);
+    if (dp->config)
+	pmIniFileFree(dp->config);
 
     series_data_reset(dp);
 
     sdsfree(dp->series);
     sdsfree(dp->source);
+    sdsfree(dp->window);
     sdsfree(dp->query);
+
+    entry = dp->head;
+    while (entry != NULL) {
+	tail = entry->next;
+	free(entry);
+	entry = tail;
+    }
+
+    memset(dp, 0, sizeof(series_data));
+    dp->status = exit_status;
 }
 
 static int
@@ -405,6 +428,46 @@ series_query(series_data *dp)
     int			sts;
 
     if ((sts = pmSeriesQuery(&dp->settings, dp->query, meta, dp)) < 0)
+	on_series_done(sts, dp);
+}
+
+static void
+series_free_window(pmSeriesTimeWindow *timing)
+{
+    sdsfree(timing->delta);
+    sdsfree(timing->align);
+    sdsfree(timing->start);
+    sdsfree(timing->end);
+    sdsfree(timing->range);
+    sdsfree(timing->count);
+    sdsfree(timing->offset);
+    sdsfree(timing->zone);
+}
+
+static void
+series_values(series_data *dp)
+{
+    int			nseries, sts;
+    char		msg[PM_MAXERRMSGLEN];
+    pmSID		*series = NULL;
+    pmSeriesTimeWindow	timing = { 0 };
+
+    if ((nseries = sts = comma_split(dp->query, &series)) <= 0) {
+	fprintf(stderr, "%s: no series identifiers in string '%s': %s\n",
+		pmGetProgname(), dp->query, pmErrStr_r(sts, msg, sizeof(msg)));
+    } else {
+	dp->args.nseries = nseries;
+	dp->args.series = series;
+
+	if ((sts = pmSeriesWindow(&dp->settings, dp->window, &timing, dp)) < 0)
+	    fprintf(stderr, "%s: invalid time specification '%s': %s\n",
+		pmGetProgname(), dp->window, pmErrStr_r(sts, msg, sizeof(msg)));
+	else
+	    sts = pmSeriesValues(&dp->settings, &timing, nseries, series, dp);
+    }
+    series_free_window(&timing);
+
+    if (sts < 0)
 	on_series_done(sts, dp);
 }
 
@@ -745,6 +808,37 @@ series_source(series_data *dp)
     }
 }
 
+static void
+on_timer_close_complete(uv_handle_t *handle)
+{
+    free(handle);
+}
+
+static void
+pmseries_close(uv_timer_t *timer)
+{
+    series_data		*dp = (series_data *)timer->data;
+
+    if (dp) {
+	pmSeriesClose(&dp->settings.module);
+	series_data_free(dp);
+	timer->data = NULL;
+    }
+    uv_close((uv_handle_t*)timer, on_timer_close_complete);
+}
+
+static void
+pmseries_schedule_close(series_data *dp)
+{
+    uv_loop_t		*loop = dp->loop;
+    uv_timer_t		*timer;
+
+    timer = calloc(1, sizeof(uv_timer_t));
+    timer->data = dp;
+    uv_timer_init(loop, timer);
+    uv_timer_start(timer, pmseries_close, 0, 0);
+}
+
 /*
  * Finishing up interacting with the library via callbacks
  */
@@ -777,8 +871,12 @@ on_series_done(int sts, void *arg)
 	arg = entry->arg;
 	func(dp, arg);
     } else {
-	pmSeriesClose(&dp->settings.module);
-	series_data_free(dp);
+	/* we're in the middle of an Redis async callback,
+	   schedule freeing the Redis context for later */
+	if (!(dp->flags & PMSERIES_NEED_CLOSE)) {
+	    dp->flags |= PMSERIES_NEED_CLOSE;
+	    pmseries_schedule_close(dp);
+	}
     }
 }
 
@@ -1023,6 +1121,8 @@ on_series_setup(void *arg)
 	series_load(dp);
     else if (flags & PMSERIES_OPT_QUERY)
 	series_query(dp);
+    else if (flags & PMSERIES_OPT_WINDOW)
+	series_values(dp);
     else if (flags & PMSERIES_OPT_VALUES)
 	series_label_values(dp);
     else if ((flags & PMSERIES_OPT_SOURCE) && !(flags & PMSERIES_META_OPTS))
@@ -1046,13 +1146,17 @@ pmseries_execute(series_data *dp)
     uv_loop_t		*loop = dp->loop;
     uv_timer_t		request;
     uv_handle_t		*handle = (uv_handle_t *)&request;
+    int			status;	/* exit code */
 
     handle->data = (void *)dp;
     uv_timer_init(loop, &request);
     uv_timer_start(&request, pmseries_request, 0, 0);
     uv_run(loop, UV_RUN_DEFAULT);
     uv_loop_close(loop);
-    return dp->status;
+    status = dp->status;
+    free(dp);
+
+    return status;
 }
 
 /*
@@ -1077,6 +1181,22 @@ heuristic_archive_query(sds query)
     return query;
 }
 
+/*
+ * If the time window query string isn't bound by [...]
+ * we add brackets now (as a convenience for the user).
+ */
+sds
+heuristic_time_query(sds window)
+{
+    sds		expr;
+
+    if (window[0] == '[')
+	return window;
+    expr = sdscatfmt(sdsempty(), "[%S]", window);
+    sdsfree(window);
+    return expr;
+}
+
 static int
 pmseries_overrides(int opt, pmOptions *opts)
 {
@@ -1088,6 +1208,22 @@ pmseries_overrides(int opt, pmOptions *opts)
     return 0;
 }
 
+static int
+issid(const char *string)
+{
+    const char *s;
+
+    if (strlen(string) != 40)
+	return 0;
+
+    for (s = string; *s != '\0'; s++) {
+	if (isdigit(*s) || (*s >= 'a' && *s <= 'f'))
+	    continue;
+	return 0;
+    }
+    return 1;
+}
+
 static pmLongOptions longopts[] = {
     PMAPI_OPTIONS_HEADER("Connection Options"),
     { "config", 1, 'c', "FILE", "configuration file path"},
@@ -1096,7 +1232,7 @@ static pmLongOptions longopts[] = {
     PMAPI_OPTIONS_HEADER("General Options"),
     { "load", 0, 'L', 0, "load time series values and metadata" },
     { "query", 0, 'q', 0, "perform a time series query (default)" },
-    { "values", 0, 'v', 0, "all known values for given label name(s)" },
+    { "values", 0, 'v', 0, "extract values for given series or label(s)" },
     PMOPT_DEBUG,
     PMAPI_OPTIONS_HEADER("Reporting Options"),
     { "all", 0, 'a', 0, "report all metadata (-dilms) for time series" },
@@ -1112,6 +1248,7 @@ static pmLongOptions longopts[] = {
     { "sources", 0, 'S', 0, "report names for time series sources" },
     { "series", 0, 's', 0, "print series ID for metrics, instances and sources" },
     { "times", 0, 't', 0, "print numeric time stamps (in milliseconds)" },
+    { "window", 1, 'w', "TIMESPEC", "restrict --values report to a time window" },
     PMOPT_TIMEZONE,
     PMOPT_VERSION,
     PMOPT_HELP,
@@ -1120,7 +1257,7 @@ static pmLongOptions longopts[] = {
 
 static pmOptions opts = {
     .flags = PM_OPTFLAG_BOUNDARIES,
-    .short_options = "ac:dD:eFg:h:iIlLmMnqp:sStvVZ:?",
+    .short_options = "ac:dD:eFg:h:iIlLmMnqp:sStvVw:Z:?",
     .long_options = longopts,
     .short_usage = "[options] [query ... | labels ... | series ... | source ...]",
     .override = pmseries_overrides,
@@ -1129,7 +1266,7 @@ static pmOptions opts = {
 int
 main(int argc, char *argv[])
 {
-    sds			option, query, match = NULL;
+    sds			option, query, window = NULL, match = NULL;
     int			c, sts;
     const char		*split = ",";
     const char		*space = " ";
@@ -1140,6 +1277,15 @@ main(int argc, char *argv[])
     struct dict		*config;
     series_flags	flags = 0;
     series_data		*dp;
+#ifdef HAVE___EXECUTABLE_START
+    extern char		__executable_start;
+
+    /*
+     * optionally set address for start of my text segment, to be used
+     * in __pmDumpStack() if it is called later
+     */
+    __pmDumpStackInit((void *)&__executable_start);
+#endif
 
     while ((c = pmGetOptions(argc, argv, &opts)) != EOF) {
 	switch (c) {
@@ -1218,8 +1364,13 @@ main(int argc, char *argv[])
 	    flags |= PMSERIES_TIMES;
 	    break;
 
-	case 'v':	/* command line contains label name(s) */
-	    flags |= PMSERIES_OPT_VALUES;
+	case 'v':	/* command line contains series identifiers */
+	    flags |= PMSERIES_OPT_VALUES;	/* - or label names */
+	    break;
+
+	case 'w':	/* command line contains series identifiers */
+	    window = sdsnew(opts.optarg);
+	    flags |= PMSERIES_OPT_WINDOW;
 	    break;
 
 	case 'Z':	/* timezone for reporting time stamps */
@@ -1250,19 +1401,20 @@ main(int argc, char *argv[])
 	 * Push command line options into the configuration, and ensure
 	 * we have some default for attemping Redis server connections.
 	 */
-	if ((option = pmIniFileLookup(config, "pmseries", "servers")) == NULL ||
-	    (redis_host != NULL || redis_port != 6379)) {
+	if ((option = pmIniFileLookup(config, "redis", "servers")) == NULL)
+	    option = pmIniFileLookup(config, "pmseries", "servers");
+	if (option == NULL || redis_host != NULL || redis_port != 6379) {
 	    option = sdscatfmt(sdsempty(), "%s:%u",
 			redis_host? redis_host : "localhost", redis_port);
-	    pmIniFileUpdate(config, "pmseries", "servers", option);
+	    pmIniFileUpdate(config, "redis", "servers", option);
 	}
     }
 
     if (flags & PMSERIES_OPT_ALL)
 	flags |= PMSERIES_META_OPTS;
 
-    if ((flags & PMSERIES_OPT_LOAD) && (flags &
-	    (PMSERIES_META_OPTS | PMSERIES_OPT_SOURCE | PMSERIES_OPT_VALUES))) {
+    if ((flags & PMSERIES_OPT_LOAD) && (flags & (PMSERIES_META_OPTS |
+	    PMSERIES_OPT_SOURCE | PMSERIES_OPT_VALUES | PMSERIES_OPT_WINDOW))) {
 	pmprintf("%s: error - cannot use load and reporting options together\n",
 			pmGetProgname());
 	opts.errors++;
@@ -1275,6 +1427,11 @@ main(int argc, char *argv[])
     else if ((flags & PMSERIES_OPT_QUERY) && (flags &
 	    (PMSERIES_META_OPTS | PMSERIES_OPT_SOURCE | PMSERIES_OPT_VALUES))) {
 	pmprintf("%s: error - cannot use query and metadata options together\n",
+			pmGetProgname());
+	opts.errors++;
+    }
+    else if ((flags & PMSERIES_OPT_QUERY) && (flags & PMSERIES_OPT_WINDOW)) {
+	pmprintf("%s: error - cannot use query and time window options together\n",
 			pmGetProgname());
 	opts.errors++;
     }
@@ -1296,7 +1453,7 @@ main(int argc, char *argv[])
         !(flags & (PMSERIES_OPT_SOURCE | PMSERIES_OPT_VALUES)) &&
 	!(flags & (PMSERIES_NEED_DESCS | PMSERIES_NEED_INSTS))) {
 	for (c = opts.optind; c < argc; c++) {
-	    if (strlen(argv[c]) != 40)
+	    if (!issid(argv[c]))
 		break;
 	}
 	if (c != argc || opts.optind == argc)
@@ -1339,12 +1496,16 @@ main(int argc, char *argv[])
     else
 	query = sdsjoin(&argv[opts.optind], argc - opts.optind, (char *)split);
 
-    if (flags & PMSERIES_OPT_LOAD)
+    if ((flags & PMSERIES_OPT_LOAD))
 	query = heuristic_archive_query(query);
+    if ((flags & PMSERIES_OPT_WINDOW))
+	window = heuristic_time_query(window);
 
     dp = series_data_init(flags, query);
     dp->loop = uv_default_loop();
     dp->args.pattern = match;
+    dp->window = window;
+    dp->config = config;
 
     dp->settings.callbacks.on_match = on_series_match;
     dp->settings.callbacks.on_desc = on_series_desc;
@@ -1361,7 +1522,7 @@ main(int argc, char *argv[])
     dp->settings.module.on_setup = on_series_setup;
 
     pmSeriesSetEventLoop(&dp->settings.module, dp->loop);
-    pmSeriesSetConfiguration(&dp->settings.module, config);
+    pmSeriesSetConfiguration(&dp->settings.module, dp->config);
 
     return pmseries_execute(dp);
 }

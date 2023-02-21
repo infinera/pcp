@@ -30,6 +30,10 @@
 #
 # blank lines before the @ line are ignored
 #
+# for snmp-related metrics, help text can be sourced from
+#   https://www.kernel.org/doc/html/latest/networking/snmp_counter.html
+# and
+#   https://datatracker.ietf.org/doc/html/rfc1213
 
 @ 60.0 set of all processors
 @ 60.1 set of all disks
@@ -68,7 +72,7 @@ devices all share the same statistics in the kernel as the st devices.
 @ 60.39 fibre channel host bus adapters
 @ 60.40 per-processor IRQs
 @ 60.41 per-processor soft IRQs
-
+@ 60.42 scsi devices identified by unique WWID
 
 @ kernel.uname.release release level of the running kernel
 Release level of the running kernel as reported via the release[]
@@ -197,6 +201,15 @@ I/O submission patterns using various techniques (typically, sorting
 and merging adjacent requests into larger ones to reduce seek activity,
 but certainly not limited to that).
 
+@ hinv.map.scsi_id scsi disk physical device unique identifier
+The unique identifier (e.g World Wide Id) of a scsi device. SCSI path
+aliases to the same physical device share the same ID string, e.g.
+for multipath scsi path names. This can be used to aggregate traffic
+statistics to each physical device and to determine the proportion
+of traffic over different paths. See also multipathd(1), where the
+same ID strings (WWID) are used to identify different paths to each
+physical device.
+
 @ disk.dev.avactive per-disk count of active time
 Counts the number of milliseconds for which at least one I/O is in
 progress for each device.
@@ -292,6 +305,11 @@ It is suitable mainly for use in calculations with other metrics,
 e.g. mirroring the results from existing performance tools:
 
  iostat.dev.f_await = delta(disk.dev.flush_rawactive) / delta(disk.dev.flush)
+
+@ disk.dev.inflight number of I/Os currently in flight
+This value counts the number of I/O requests that have been issued to
+the device driver but have not yet completed.  It does not include I/O
+requests that are in the queue but not yet issued to the device driver.
 
 @ disk.dm.read per-device-mapper device read operations
 @ disk.dm.write per-device-mapper device write operations
@@ -401,6 +419,11 @@ It is suitable mainly for use in calculations with other metrics,
 e.g. mirroring the results from existing performance tools:
 
  iostat.dm.f_await = delta(disk.dm.flush_rawactive) / delta(disk.dm.flush)
+
+@ disk.dm.inflight number of device-mapper I/Os currently in flight
+This value counts the number of I/O requests that have been issued to
+the device driver but have not yet completed.  It does not include I/O
+requests that are in the queue but not yet issued to the device driver.
 
 @ hinv.map.dmname per-device-mapper device persistent name mapping to dm-[0-9]*
 
@@ -513,6 +536,11 @@ It is suitable mainly for use in calculations with other metrics,
 e.g. mirroring the results from existing performance tools:
 
  iostat.md.f_await = delta(disk.md.flush_rawactive) / delta(disk.md.flush)
+
+@ disk.md.inflight number of multi-device I/Os currently in flight
+This value counts the number of I/O requests that have been issued to
+the device driver but have not yet completed.  It does not include I/O
+requests that are in the queue but not yet issued to the device driver.
 
 @ hinv.map.mdname per-multi-device device persistent name mapping to md[0-9]*
 
@@ -637,6 +665,11 @@ It is suitable mainly for use in calculations with other metrics,
 e.g. mirroring the results from existing performance tools:
 
  iostat.all.f_await = delta(disk.all.flush_rawactive) / delta(disk.all.flush)
+
+@ disk.all.inflight aggregate number of I/Os currently in flight
+This value counts the number of I/O requests that have been issued to
+all device drivers but have not yet completed.  It does not include I/O
+requests that are in the queue but not yet issued to device drivers.
 
 @ disk.partitions.read read operations metric for storage partitions
 Cumulative number of disk read operations since system boot time
@@ -781,6 +814,11 @@ e.g. mirroring the results from existing performance tools:
 
  iostat.partitions.f_await = delta(disk.partitions.flush_rawactive) /
                              delta(disk.partitions.flush)
+
+@ disk.partitions.inflight number of I/Os currently in flight
+This value counts the number of I/O requests that have been issued to
+the device driver but have not yet completed.  It does not include I/O
+requests that are in the queue but not yet issued to the device driver.
 
 @ swap.pagesin pages read from swap devices due to demand for physical memory
 @ swap.pagesout pages written to swap devices due to demand for physical memory
@@ -1324,7 +1362,29 @@ each NUMA node.
 @ mem.zoneinfo.workingset_activate count of page activations to form the working set in each zone for each NUMA node
 @ mem.zoneinfo.workingset_nodereclaim count of NUMA node working set page reclaims in each zone for each NUMA node
 @ mem.zoneinfo.nr_anon_transparent_hugepages number of anonymous transparent huge pages in each zone for each NUMA node
-@ mem.zoneinfo.nr_free_cma count of free Contiguous Memory Allocator pages in each zone for each NUMA node.
+@ mem.zoneinfo.nr_free_cma count of free Contiguous Memory Allocator pages in each zone for each NUMA node
+@ mem.zoneinfo.cma count of Contiguous Memory Allocator pages in each zone for each NUMA node
+@ mem.zoneinfo.nr_swapcached swap cache pages in each zone for each NUMA node
+@ mem.zoneinfo.nr_shmem_hugepages shared memory huge pages in each zone for each NUMA node
+@ mem.zoneinfo.nr_shmem_pmdmapped shared memory PMD mappings in each zone for each NUMA node
+@ mem.zoneinfo.nr_file_hugepages file-backed huge pages in each zone for each NUMA node
+@ mem.zoneinfo.nr_file_pmdmapped file-backed PMD mappings in each zone for each NUMA node
+@ mem.zoneinfo.nr_kernel_misc_reclaimable miscellaneous reclaimable kernel pages in each zone for each NUMA node
+@ mem.zoneinfo.nr_foll_pin_acquired foll pin acquired pages for each zone for each NUMA node
+@ mem.zoneinfo.nr_foll_pin_released count of foll pin released pages for each zone for each NUMA node
+@ mem.zoneinfo.workingset_refault_anon anonymous refault working set pages for each zone for each NUMA node
+@ mem.zoneinfo.workingset_refault_file file-backed refault working set pages for each zone for each NUMA node
+@ mem.zoneinfo.workingset_active_anon active anonymous working set pages for each zone for each NUMA node
+@ mem.zoneinfo.workingset_active_file active file-backed working set pages for each zone for each NUMA node
+@ mem.zoneinfo.workingset_restore_anon restored anonymous working set pages for each zone for each NUMA node
+@ mem.zoneinfo.workingset_restore_file file-backed restored anonymous working set pages for each zone for each NUMA node
+@ mem.zoneinfo.nr_zspages count of zsmalloc memory allocator pages for each zone for each NUMA node
+@ mem.zoneinfo.nr_zone_inactive_file zone inactive file-backed pages for each zone for each NUMA node
+@ mem.zoneinfo.nr_zone_active_file zone active file-backed pages for each zone for each NUMA node
+@ mem.zoneinfo.nr_zone_inactive_anon zone inactive anonymous pages for each zone for each NUMA node
+@ mem.zoneinfo.nr_zone_active_anon zone active anonymous pages for each zone for each NUMA node
+@ mem.zoneinfo.nr_zone_unevictable zone unevictable pages for each zone for each NUMA node
+@ mem.zoneinfo.nr_zone_write_pending zone write-pending pages for each zone for each NUMA node
 @ mem.zoneinfo.protection protection space in each zone for each NUMA node
 @ mem.ksm.full_scans Number of times that KSM has scanned for duplicated content
 @ mem.ksm.merge_across_nodes Kernel allows merging across NUMA nodes
@@ -1461,6 +1521,7 @@ See also network.interface.speed for the Megabytes/second value.
 @ network.interface.running boolean for whether interface has resources allocated
 @ network.interface.wireless boolean for whether interface is wireless
 @ network.interface.type sysfs interface name assignment type value
+@ network.interface.virtual boolean for whether interface is virtual or physical
 @ network.interface.inet_addr string INET interface address (ifconfig style)
 @ network.interface.ipv6_addr string IPv6 interface address (ifconfig style)
 @ network.interface.ipv6_scope string IPv6 interface scope (ifconfig style)
@@ -1516,7 +1577,13 @@ to maintain capacity for other less active flows.
 @ network.ip6.reasmtimeout count of ip6 reasmtimeout
 @ network.ip6.reasmreqds count of ip6 reassembly requireds
 @ network.ip6.reasmoks count of ip6 reassembly oks
+
 @ network.ip6.reasmfails count of ip6 reassembly failures
+The number of failures detected by the IPv6 re-assembly algorithm (for
+whatever reason: timed out, errors, etc).  Note that this is not necessarily
+a count of discarded IPv6 fragments since some algorithms can lose track
+of the number of fragments by combining them as they are received.
+
 @ network.ip6.fragoks count of ip6 fragmentation oks
 @ network.ip6.fragfails count of ip6 fragmentation failures
 @ network.ip6.fragcreates count of ip6 fragmentation creations
@@ -1720,7 +1787,13 @@ tools running on IRIX.
 @ network.ip.reasmtimeout count of ip reasmtimeout
 @ network.ip.reasmreqds count of ip reasmreqds
 @ network.ip.reasmoks count of ip reasmoks
+
 @ network.ip.reasmfails count of ip reasmfails
+The number of failures detected by the IP re-assembly algorithm (for whatever
+reason: timed out, errors, etc).  Note that this is not necessarily a
+count of discarded IP fragments since some algorithms can lose track of
+the number of fragments by combining them as they are received.
+
 @ network.ip.fragoks count of ip fragoks
 @ network.ip.fragfails count of ip fragfails
 @ network.ip.fragcreates count of ip fragcreates
@@ -1963,6 +2036,10 @@ See also the kernel.uname.* metrics
 @ hinv.cpu.thermal_throttle.core.time CPU core throttle time from /sys/devices/system/cpu/*/thermal_throttle
 @ hinv.cpu.thermal_throttle.package.count CPU package throttles from /sys/devices/system/cpu/*/thermal_throttle
 @ hinv.cpu.thermal_throttle.package.time CPU package throttle time from /sys/devices/system/cpu/*/thermal_throttle
+@ hinv.cpu.frequency_scaling.count CPU frequency scaled count from /sys/devices/system/cpu/*/cpufreq
+@ hinv.cpu.frequency_scaling.time CPU frequency scaled time from /sys/devices/system/cpu/*/cpufreq
+@ hinv.cpu.frequency_scaling.max Minimum scaled CPU frequency from /sys/devices/system/cpu/*/cpufreq
+@ hinv.cpu.frequency_scaling.min Maximum scaled CPU frequency from /sys/devices/system/cpu/*/cpufreq
 @ kernel.all.hz value of HZ (jiffies/second) for the currently running kernel
 @ kernel.all.uptime time the current kernel has been running
 @ kernel.all.idletime time the current kernel has been idle since boot
@@ -2055,6 +2132,11 @@ segment marked for destruction on last detach) and "locked" or the empty string.
 @ vfs.locks.lease.count number of file lease structures
 
 @ sysfs.kernel.uevent_seqnum counter of the number of uevents processed by the udev subsystem
+@ sysfs.kernel.debug.extfrag_unusable debug info from which NUMA memory fragmentation deduced
+When kernel CONFIG_COMPACTION compile option is active in the running kernel
+this metric exports the fraction of Normal zone memory that is unusuable for
+all NUMA nodes. Note that it is extracted using the sysfs debug namespace so
+it may not persist in future kernel versions.
 
 @ hinv.ntape number of Linux scsi tape devices
 @ tape.dev.in_flight number of I/Os currently outstanding to this tape device
@@ -2125,6 +2207,15 @@ Pressure stall information (PSI) from /proc/pressure/io.
 @ kernel.all.pressure.io.full.total Total time when all tasks stall on IO resources
 The CPU time in which all tasks stalled on IO resources.
 Pressure stall information (PSI) from /proc/pressure/io.
+
+@ kernel.all.pressure.irq.full.avg Percentage of time all work is delayed from IRQ pressure
+Indicates the time in which all tasks stalled on IRQ resources.
+The ratios are tracked as recent trends over ten second, one minute,
+and five minute windows.
+Pressure stall information (PSI) from /proc/pressure/irq.
+@ kernel.all.pressure.irq.full.total Total time when all tasks stall on IRQ processing
+The CPU time in which all tasks stalled on IRQ resources.
+Pressure stall information (PSI) from /proc/pressure/irq.
 
 @ zram.read read operations metric for compressed memory
 Cumulative number of disk read operations since system boot time
@@ -2259,6 +2350,11 @@ e.g. mirroring the results from existing performance tools:
 
  iostat.zram.f_await = delta(zram.flush_rawactive) / delta(zram.flush)
 
+@ zram.inflight number of compressed memory I/Os currently in flight
+This value counts the number of I/O requests that have been issued to
+the device driver but have not yet completed.  It does not include I/O
+requests that are in the queue but not yet issued to the device driver.
+
 @ zram.io_stat.failed.reads number of failed reads
 @ zram.io_stat.failed.writes number of failed writes
 @ zram.io_stat.invalid number of non-page-size-aligned I/O requests
@@ -2388,3 +2484,162 @@ FC link level if this is happening (one guess as to why dumped frames
 could occur).
 
 @ hinv.nfchost Number of fibre channel host bus adapters from /sys/class/fc_host/host*
+
+@ network.mptcp.mpcapablesynackrx Received SYN/ACK with MP_CAPABLE flag
+The MPCapableSYNACKRX field of the MPTcp line from /proc/net/netstat
+
+@ network.mptcp.mpcapablesyntx Sent SYN with MP_CAPABLE flag
+The MPCapableSYNTX field of the MPTcp line from /proc/net/netstat
+
+@ network.mptcp.mpfallbacktokeninit Could not init/allocate token
+The MPFallbackTokenInit field of the MPTcp line from /proc/net/netstat
+
+@ network.tcp.pfmemallocdrop Dropped skb allocated from pfmemalloc
+Just counts the cases for packets which did not have the SOCK_MEMALLOC flag
+set.
+
+The PFMemallocDrop field of the Tcp line from /proc/net/netstat
+
+@ network.tcp.tcpbacklogcoalesce Number of coalesced packets that were in the backlog queue
+The TCPBacklogCoalesce field of the Tcp line from /proc/net/netstat
+
+@ network.tcp.tcpfastopenactivefail Fast Open attempts (SYN/data) failed
+Failure because the remote does not accept it or the attempts timed out.
+
+The TCPFastOpenActiveFail field of the Tcp line from /proc/net/netstat
+
+@ network.tcp.tcpfastopenblackhole Number of times the TFO blackhole has been enabled
+The TCPFastOpenBlackhole field of the Tcp line from /proc/net/netstat
+
+@ network.tcp.tcpmd5failure Counter for drops caused by md5 mismatches
+The TCPMD5Failure field of the Tcp line from /proc/net/netstat
+
+@ network.tcp.tcpmemorypressureschrono Cumulative counter tracking duration of memory pressure events
+the Z field of the Tcp line from /proc/net/netstat
+
+@ network.udp.ignoredmulti the IgnoredMulti field of the Udp line from /proc/net/netstat
+@ network.udp.memerrors the MemErrors field of the Udp line from /proc/net/netstat
+@ network.udplite.ignoredmulti the IgnoredMulti field of the UdpLite line from /proc/net/netstat
+@ network.udplite.memerrors the MemErrors field of the UdpLite line from /proc/net/netstat
+@ network.tcp.tcphystarttraindetect the TCPHystartTrainDetect field of the Tcp line from /proc/net/netstat
+@ network.tcp.tcphystarttraincwnd the TCPHystartTrainCwnd field of the Tcp line from /proc/net/netstat
+@ network.tcp.tcphystartdelaydetect the TCPHystartDelayDetect field of the Tcp line from /proc/net/netstat
+@ network.tcp.tcphystartdelaycwnd the TCPHystartDelayCwnd field of the Tcp line from /proc/net/netstat
+@ network.tcp.tcpackskippedsynrecv the TCPACKSkippedSynRecv field of the Tcp line from /proc/net/netstat
+@ network.tcp.tcpackskippedpaws the TCPACKSkippedPAWS field of the Tcp line from /proc/net/netstat
+@ network.tcp.tcpackskippedseq the TCPACKSkippedSeq field of the Tcp line from /proc/net/netstat
+@ network.tcp.tcpackskippedfinwait2 the TCPACKSkippedFinWait2 field of the Tcp line from /proc/net/netstat
+@ network.tcp.tcpackskippedtimewait the TCPACKSkippedTimeWait field of the Tcp line from /proc/net/netstat
+@ network.tcp.tcpackskippedchallenge the TCPACKSkippedChallenge field of the Tcp line from /proc/net/netstat
+@ network.tcp.tcpwinprobe the TCPWinProbe field of the Tcp line from /proc/net/netstat
+@ network.tcp.tcpkeepalive the TCPKeepAlive field of the Tcp line from /proc/net/netstat
+@ network.tcp.tcpmtupfail the TCPMTUPFail field of the Tcp line from /proc/net/netstat
+@ network.tcp.tcpmtupsuccess the TCPMTUPSuccess field of the Tcp line from /proc/net/netstat
+@ network.tcp.tcpdelivered the TCPDelivered field of the Tcp line from /proc/net/netstat
+@ network.tcp.tcpdeliveredce the TCPDeliveredCE field of the Tcp line from /proc/net/netstat
+@ network.tcp.tcpackcompressed the TCPAckCompressed field of the Tcp line from /proc/net/netstat
+@ network.tcp.tcpzerowindowdrop the TCPZeroWindowDrop field of the Tcp line from /proc/net/netstat
+@ network.tcp.tcprcvqdrop the TCPRcvQDrop field of the Tcp line from /proc/net/netstat
+@ network.tcp.tcpwqueuetoobig the TCPWqueueTooBig field of the Tcp line from /proc/net/netstat
+@ network.tcp.tcpfastopenpassivealtkey the TCPFastOpenPassiveAltKey field of the Tcp line from /proc/net/netstat
+@ network.tcp.tcptimeoutrehash the TcpTimeoutRehash field of the Tcp line from /proc/net/netstat
+@ network.tcp.tcpduplicatedatarehash the TcpDuplicateDataRehash field of the Tcp line from /proc/net/netstat
+@ network.tcp.tcpdsackrecvsegs the TCPDSACKRecvSegs field of the Tcp line from /proc/net/netstat
+@ network.tcp.tcpdsackignoreddubious the TCPDSACKIgnoredDubious field of the Tcp line from /proc/net/netstat
+@ network.tcp.tcpmigratereqsuccess the TCPMigrateReqSuccess field of the Tcp line from /proc/net/netstat
+@ network.tcp.tcpmigratereqfailure the TCPMigrateReqFailure field of the Tcp line from /proc/net/netstat
+@ network.ip.reasmoverlaps the ReasmOverlaps field of the Ip line from /proc/net/netstat
+@ network.mptcp.dssnomatchtcp the DSSNoMatchTCP field of the MPTcp line from /proc/net/netstat
+Multipath TCP DSS-mapping did not map with TCP's sequence numbers.
+@ network.mptcp.datacsumerr the DataCsumErr field of the MPTcp line from /proc/net/netstat
+Multipath TCP data checksum failures.
+@ network.mptcp.ofoqueuetail the OFOQueueTail field of the MPTcp line from /proc/net/netstat
+Multipath TCP segments inserted into OoO queue tail.
+@ network.mptcp.ofoqueue the OFOQueue field of the MPTcp line from /proc/net/netstat
+Multipath TCP segments inserted into OoO queue.
+@ network.mptcp.ofomerge the OFOMerge field of the MPTcp line from /proc/net/netstat
+Multipath TCP segments merged in OoO queue.
+@ network.mptcp.nodssinwindow the NoDSSInWindow field of the MPTcp line from /proc/net/netstat
+Multipath TCP segments not in MPTCP windows.
+@ network.mptcp.duplicatedata the DuplicateData field of the MPTcp line from /proc/net/netstat
+Multipath TCP segments discarded due to duplicate DSS.
+@ network.mptcp.addaddr the AddAddr field of the MPTcp line from /proc/net/netstat
+Multipath TCP received ADD_ADDR with echo-flag=0.
+@ network.mptcp.echoadd the EchoAdd field of the MPTcp line from /proc/net/netstat
+Multipath TCP received ADD_ADDR with echo-flag=1.
+@ network.mptcp.portadd the PortAdd field of the MPTcp line from /proc/net/netstat
+Multipath TCP received ADD_ADDR with a port-number.
+@ network.mptcp.mpjoinportsynrx the MPJoinPortSynRx field of the MPTcp line from /proc/net/netstat
+Multipath TCP received a SYN MP_JOIN with a different port-number.
+@ network.mptcp.mpjoinportsynackrx the MPJoinPortSynAckRx field of the MPTcp line from /proc/net/netstat
+Multipath TCP received a SYNACK MP_JOIN with a different port-number.
+@ network.mptcp.mpjoinportackrx the MPJoinPortAckRx field of the MPTcp line from /proc/net/netstat
+Multipath TCP received an ACK MP_JOIN with a different port-number.
+@ network.mptcp.mismatchportsynrx the MismatchPortSynRx field of the MPTcp line from /proc/net/netstat
+Multipath TCP received a SYN MP_JOIN with a mismatched port-number.
+@ network.mptcp.mismatchportackrx the MismatchPortAckRx field of the MPTcp line from /proc/net/netstat
+Multipath TCP received an ACK MP_JOIN with a mismatched port-number.
+@ network.mptcp.rmaddr the RmAddr field of the MPTcp line from /proc/net/netstat
+Multipath TCP RM_ADDR receives.
+@ network.mptcp.rmsubflow the RmSubflow field of the MPTcp line from /proc/net/netstat
+Multipath TCP subflows removed.
+@ network.mptcp.mppriotx the MPPrioTx field of the MPTcp line from /proc/net/netstat
+Multipath TCP MP_PRIO transmits.
+@ network.mptcp.mppriorx the MPPrioRx field of the MPTcp line from /proc/net/netstat
+Multipath TCP MP_PRIO receives.
+@ network.mptcp.rcvpruned the RcvPruned field of the MPTcp line from /proc/net/netstat
+Incoming multipath packet dropped due to memory limit.
+@ network.tcp.tcploss the TCPLOSS field of the Tcp line from /proc/net/netstat
+@ network.mptcp.mpfailtx the MPFailTx field of the MPTcp line from /proc/net/netstat
+Multipath TCP MP_FAIL transmits.
+@ network.mptcp.mpfailrx the MPFailRx field of the MPTcp line from /proc/net/netstat
+Multipath TCP MP_FAIL receives.
+@ network.mptcp.subflowstale the SubflowStale field of the MPTcp line from /proc/net/netstat
+Multipath TCP subflows entered 'stale' status.
+@ network.mptcp.subflowrecover the SubflowRecover field of the MPTcp line from /proc/net/netstat
+Multipath TCP subflows returned to active status after being stale.
+@ network.mptcp.addaddrdrop the AddAddrDrop field of the MPTcp line from /proc/net/netstat
+Multipath TCP incoming ADD_ADDR drops.
+@ network.mptcp.rmaddrdrop the RmAddrDrop field of the MPTcp line from /proc/net/netstat
+Multipath TCP incoming RM_ADDR drops.
+@ network.mptcp.mpfastclosetx the MPFastcloseTx field of the MPTcp line from /proc/net/netstat
+@ network.mptcp.mpfastcloserx the MPFastcloseRx field of the MPTcp line from /proc/net/netstat
+@ network.mptcp.mprsttx the MPRstTx field of the MPTcp line from /proc/net/netstat
+@ network.mptcp.mprstrx the MPRstRx field of the MPTcp line from /proc/net/netstat
+@ network.mptcp.infinitemaptx the InfiniteMapTx field of the MPTcp line from /proc/net/netstat
+@ network.mptcp.sndwndshared the SndWndShared field of the MPTcp line from /proc/net/netstat
+@ network.mptcp.rcvwndshared the RcvWndShared field of the MPTcp line from /proc/net/netstat
+@ network.mptcp.rcvwndconflictupdate the RcvWndConflictUpdate field of the MPTcp line from /proc/net/netstat
+@ network.mptcp.rcvwndconflict the RcvWndConflict field of the MPTcp line from /proc/net/netstat
+
+@ disk.wwid.scsi_paths per-device/wwid scsi paths to same physical device
+The value of this string typed metric is the sd paths to the same physical
+device identified by it's WWID. Non-multipath devices will have only one
+such path. Multipath devices can have more than one scsi device path, e.g
+via multiple HBAs to the same physical LUN via an FC switch.
+@ disk.wwid.read per-device read operations aggregated for all scsi paths
+@ disk.wwid.write per-device write operations aggregated for all scsi paths
+@ disk.wwid.total per-device total (read+write) operations aggregated for all scsi paths
+@ disk.wwid.blkread per-device block read operations aggregated for all scsi paths
+@ disk.wwid.blkwrite per-device block write operations aggregated for all scsi paths
+@ disk.wwid.blktotal per-device total (read+write) block operations aggregated for all scsi paths
+@ disk.wwid.read_bytes per-device count of bytes read aggregated for all scsi paths
+@ disk.wwid.write_bytes per-device count of bytes written aggregated for all scsi paths
+@ disk.wwid.total_bytes per-device count of total bytes read and written aggregated for all scsi paths
+@ disk.wwid.scheduler per-device I/O scheduler aggregated for all scsi paths
+@ disk.wwid.avactive per-device count of active time aggregated for all scsi paths
+@ disk.wwid.read_rawactive per-device raw count of read response time aggregated for all scsi paths
+@ disk.wwid.write_rawactive per-device raw count of write response time aggregated for all scsi paths
+@ disk.wwid.total_rawactive per-device raw count of I/O response time aggregated for all scsi paths
+@ disk.wwid.aveq per-device time averaged count of request queue length aggregated for all scsi paths
+@ disk.wwid.read_merge per-device count of merged read requests aggregated for all scsi paths
+@ disk.wwid.write_merge per-device count of merged write requests aggregated for all scsi paths
+@ disk.wwid.capacity per-device physical device capacity aggregated for all scsi paths
+@ disk.wwid.discard per-device discard operations aggregated for all scsi paths
+@ disk.wwid.blkdiscard per-device block discard operations aggregated for all scsi paths
+@ disk.wwid.discard_bytes per-device count of bytes discard'ed aggregated for all scsi paths
+@ disk.wwid.discard_merge per-device count of merged discard requests aggregated for all scsi paths
+@ disk.wwid.discard_rawactive per-device raw count of discard response time aggregated for all scsi paths
+@ disk.wwid.flush per-device flush operations aggregated for all scsi paths
+@ disk.wwid.flush_rawactive per-device raw count of flush response time aggregated for all scsi paths
+@ disk.wwid.inflight per-device number of I/Os currently in flight aggregated for all scsi paths

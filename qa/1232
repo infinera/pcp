@@ -48,9 +48,15 @@ _filter()
 	-e "s;$PCP_TMP_DIR/;PCP_TMP_DIR/;g" \
 	-e "s;$PCP_TMPFILE_DIR/pmlogctl\.[^/]*;PCP_TMPFILE_DIR/pmlogctl.XXXXX;g" \
 	-e "s;$PCP_ETC_DIR/;PCP_ETC_DIR/;g" \
+	-e "/migrate_pid_service/d" \
     # end
 }
 
+# usual stuff, but then need to deal with different implementations
+# of fmt(1) that wrap the unfiltered list of processed archives in
+# different places ... the final sed stanze undoes the fmt line
+# breaks
+#
 _filter_log()
 {
     cat \
@@ -65,6 +71,7 @@ _filter_log()
 	-e '/^\.\.\. logging for /d' \
 	-e '/no pmlogger instance running /d' \
 	-e '/skipping log rotation/d' \
+	-e '/^Skip sending SIGUSR2 to /d' \
 	-e '/[0-9][0-9]* identified/s//PID identified/' \
 	-e '/current [0-9][0-9.-]* archive/s//current DATE archive/' \
 	-e 's/ [0-9][0-9.-]*.index/ DATE.index/g' \
@@ -78,8 +85,13 @@ s/\.bz//g
 s/\.gz//g
 s/\.Z//g
 s/\.z//g
+}' \
+    | sed -e '/^    DATE/{
+:loop
+$!N
+s/\n    DATE/ DATE/
+t loop
 }'
-    # done
 }
 
 # get our pmlogger running

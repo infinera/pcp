@@ -14,13 +14,19 @@
 #ifndef SLOTS_H
 #define SLOTS_H
 
+#include <hiredis-cluster/hircluster.h>
+#include <mmv_stats.h>
 #include "batons.h"
 #include "redis.h"
 #include "maps.h"
 
 #define MAXSLOTS	(1 << 14)
 #define SLOTMASK	(MAXSLOTS-1)
-#define SLOTS_PHASES	6
+#define SLOTS_PHASES	5
+
+/* Unfortunately there is no error code for these errors to match */
+#define REDIS_ELOADING		"LOADING Redis is loading the dataset in memory"
+#define REDIS_ENOCLUSTER	"ERR This instance has cluster support disabled"
 
 typedef enum redisSlotsFlags {
     SLOTS_NONE		= 0,
@@ -29,53 +35,70 @@ typedef enum redisSlotsFlags {
     SLOTS_SEARCH	= (1 << 2),
 } redisSlotsFlags;
 
-typedef struct redisSlotServer {
-    sds			hostspec;	/* hostname:port or unix socket file */
-    redisAsyncContext	*redis;
-} redisSlotServer;
+enum {
+    SLOT_REQUESTS_TOTAL,
+    SLOT_REQUESTS_ERROR,
+    SLOT_RESPONSES_TOTAL,
+    SLOT_RESPONSES_ERROR,
+    SLOT_RESPONSES_TIME,
+    SLOT_REQUESTS_INFLIGHT_TOTAL,
+    SLOT_REQUESTS_INFLIGHT_BYTES,
+    SLOT_REQUESTS_TOTAL_BYTES,
+    SLOT_RESPONSES_TOTAL_BYTES,
+    NUM_SLOT_METRICS
+};
 
-typedef struct redisSlotRange {
-    unsigned int	start;
-    unsigned int	end;
-    redisSlotServer	primary;
-    unsigned int	counter;
-    unsigned int	nreplicas;
-    redisSlotServer	*replicas;
-} redisSlotRange;
+typedef enum redisSlotsState {
+    SLOTS_DISCONNECTED,
+    SLOTS_CONNECTING,
+    SLOTS_CONNECTED,
+    SLOTS_READY		/* Redis version check done, keymap loaded, search schema setup completed */,
+    SLOTS_ERR_FATAL	/* fatal error, do not try to reconnect */
+} redisSlotsState;
 
+/* note: this struct persists for reconnects */
 typedef struct redisSlots {
-    unsigned int	counter;
-    unsigned int	nslots;
-    unsigned int	setup;		/* slots info all successfully setup */
-    unsigned int	refresh;	/* do slot refresh whenever possible */
-    redisSlotRange	*slots;		/* all instances; e.g. CLUSTER SLOTS */
+    redisClusterAsyncContext *acc;	/* cluster context */
+    redisSlotsState	state;		/* connection state */
+    unsigned int	conn_seq;	/* connection sequence (incremented for every connection) */
+    unsigned int	search : 1;	/* RediSearch use enabled */
+    unsigned int	cluster : 1;	/* Redis cluster mode enabled */
     redisMap		*keymap;	/* map command names to key position */
-    dict		*contexts;	/* async contexts access by hostspec */
-    void		*events;
-    int			search;
+    void		*events;	/* libuv event loop */
+    mmv_registry_t	*registry;	/* MMV metrics for instrumentation */
+    void		*map;		/* MMV mapped metric values handle */
+    pmAtomValue		*metrics[NUM_SLOT_METRICS]; /* direct handle lookup */
 } redisSlots;
+
+/* wraps the actual Redis callback and data */
+typedef struct redisSlotsReplyData {
+    redisSlots			*slots;
+    uint64_t			start;		/* time of the request (usec) */
+    unsigned int		conn_seq;	/* connection sequence when this request was issued */
+    size_t			req_size;	/* size of request */
+
+    redisClusterCallbackFn	*callback;	/* actual callback */
+    void			*arg;		/* actual callback args */
+} redisSlotsReplyData;
 
 typedef void (*redisPhase)(redisSlots *, void *);	/* phased operations */
 
+extern void redisSlotsSetupMetrics(redisSlots *);
+extern int redisSlotsSetMetricRegistry(redisSlots *, mmv_registry_t *);
 extern redisSlots *redisSlotsInit(dict *, void *);
-extern redisAsyncContext *redisGetSlotContext(redisSlots *, unsigned int, const char *);
-extern redisAsyncContext *redisGetAsyncContextBySlot(redisSlots *, unsigned int);
-extern redisAsyncContext *redisGetAsyncContextByHost(redisSlots *, sds);
-
 extern redisSlots *redisSlotsConnect(dict *, redisSlotsFlags,
 		redisInfoCallBack, redisDoneCallBack, void *, void *, void *);
-extern int redisSlotRangeInsert(redisSlots *, redisSlotRange *);
-extern int redisSlotsRequest(redisSlots *, const char *, sds, sds,
-		redisAsyncCallBack *, void *);
-extern void redisSlotsClear(redisSlots *);
+extern void redisSlotsReconnect(redisSlots *, redisSlotsFlags,
+		redisInfoCallBack, redisDoneCallBack, void *, void *, void *);
+extern uint64_t redisSlotsInflightRequests(redisSlots *);
+extern int redisSlotsRequest(redisSlots *, sds, redisClusterCallbackFn *, void *);
+extern int redisSlotsRequestFirstNode(redisSlots *slots, const sds cmd,
+		redisClusterCallbackFn *callback, void *arg);
 extern void redisSlotsFree(redisSlots *);
-
-extern int redisSlotsRedirect(redisSlots *, redisReply *, void *,
-		redisInfoCallBack, const sds, redisAsyncCallBack, void *);
 
 extern int redisSlotsProxyConnect(redisSlots *,
 		redisInfoCallBack, redisReader **, const char *, ssize_t,
-		redisAsyncCallBack *, void *);
+		redisClusterCallbackFn *, void *);
 extern void redisSlotsProxyFree(redisReader *);
 
 typedef struct {
@@ -95,11 +118,17 @@ extern void redis_slots_end_phase(void *);
 
 /* Redis reply helper routines */
 extern int testReplyError(redisReply *, const char *);
-extern void reportReplyError(redisInfoCallBack, void *, redisReply *, const char *, va_list);
-extern int checkStatusReplyOK(redisInfoCallBack, void *, redisReply *, const char *, ...);
-extern int checkStreamReplyString(redisInfoCallBack, void *, redisReply *, sds, const char *, ...);
-extern int checkArrayReply(redisInfoCallBack, void *, redisReply *, const char *, ...);
-extern long long checkIntegerReply(redisInfoCallBack, void *, redisReply *, const char *, ...);
-extern sds checkStringReply(redisInfoCallBack, void *, redisReply *, const char *, ...);
+extern void reportReplyError(redisInfoCallBack, void *,
+	redisClusterAsyncContext *, redisReply *, const char *, va_list);
+extern int checkStatusReplyOK(redisInfoCallBack, void *,
+	redisClusterAsyncContext *, redisReply *, const char *, ...);
+extern int checkStreamReplyString(redisInfoCallBack, void *,
+	redisClusterAsyncContext *, redisReply *, sds, const char *, ...);
+extern int checkArrayReply(redisInfoCallBack, void *,
+	redisClusterAsyncContext *, redisReply *, const char *, ...);
+extern long long checkIntegerReply(redisInfoCallBack, void *,
+	redisClusterAsyncContext *, redisReply *, const char *, ...);
+extern sds checkStringReply(redisInfoCallBack, void *,
+	redisClusterAsyncContext *, redisReply *, const char *, ...);
 
 #endif	/* SLOTS_H */

@@ -749,6 +749,7 @@ pmlc> log mandatory on 25 msec sample.long.one
 pmlc> 
 Log for pmlogger on HOST started DATE
 
+[DATE] pmlogger(PID) Info: Start
 Config parsed
 Starting logger for host "HOST"
 Archive basename: ARCHIVE
@@ -1306,7 +1307,7 @@ pmlc request from HOST: advisory off
 DATE
 pmlc request from HOST: mandatory on 0.0 sec
   metric: sample.long.one
-pmlogger: Sample limit reached, exiting
+[DATE] pmlogger(PID) Info: pmlogger: Sample limit reached, exiting
 
 Log finished DATE
 

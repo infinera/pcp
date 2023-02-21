@@ -1,0 +1,78 @@
+#!/bin/sh
+# PCP QA Test No. 1426
+# __pmDumpStack()
+#
+# Copyright (c) 2022 Ken McDonell.  All Rights Reserved.
+#
+
+if [ $# -eq 0 ]
+then
+    seq=`basename $0`
+    echo "QA output created by $seq"
+else
+    # use $seq from caller, unless not set
+    [ -n "$seq" ] || seq=`basename $0`
+    echo "QA output created by `basename $0` $*"
+fi
+
+# get standard environment, filters and checks
+. ./common.product
+. ./common.filter
+. ./common.check
+
+_cleanup()
+{
+    cd $here
+    $sudo rm -rf $tmp $tmp.*
+}
+
+status=0	# success is the default!
+$sudo rm -rf $tmp $tmp.* $seq.full
+trap "_cleanup; exit \$status" 0 1 2 3 15
+
+# awk fluff is because the callstack from exec begin down to
+# main() is non-deterministic ... also the OpenBSD reporting
+# style is:
+#	0x16a15bc9 <bar+0x19> at src/dumpstack
+#	0x88d6c13 <__pmDumpStack+0x83> at /usr/lib/libpcp.so.3
+# compared to the Linux style:
+#	src/dumpstack(bar+0xd)[0x556c0dbbc226] (0x1226)
+#	/lib/libpcp.so.3(__pmDumpStack+0x8e)[0x7fae47dd5fee] (0x2a423a21afee)
+#
+_filter()
+{
+    tee -a $seq.full \
+    | sed \
+	-e '/executable text segment/d' \
+	-e 's/  *0x[0-9a-f]* </(/' \
+	-e 's/ *\[0x[0-9a-f]*]//' \
+	-e 's/ *(0x[0-9a-f]*)//' \
+	-e 's/> at/) at/' \
+	-e 's@\(.*\) at src/dumpstack@dumpstack\1@' \
+	-e 's@\(.*\) at .*libpcp\.so.*@libpcp\1@' \
+	-e 's@src/dumpstack(@dumpstack(@' \
+	-e 's/^[ 	]*//' \
+	-e 's@^[/a-z0-9]*libpcp@libpcp@' \
+	-e 's/libpcp\.so\.[0-9]*/libpcp/' \
+	-e 's/+0x.*)/...)/' \
+    | $PCP_AWK_PROG '
+$1 == "Procedure"	{ skip = 0 }
+skip == 1		{ next }
+			{ print }
+/dumpstack[(]main/	{ skip = 1 }'
+}
+
+# real QA test starts here
+src/dumpstack >$tmp.out 2>&1
+
+if grep 'returns 0, nothing to report' $tmp.out >/dev/null
+then
+    # for vm33 (OpenBSD 7.0) et al
+    #
+    _notrun "backtrace() not functional here"
+else
+    _filter <$tmp.out
+fi
+
+# success, all done
+exit

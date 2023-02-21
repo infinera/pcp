@@ -16,7 +16,9 @@ echo "QA output created by $seq"
 rem_host=`./getpmcdhosts -L -n 1 -P -a sample 2>$tmp.tmp`
 if [ -z "$rem_host" ]
 then
-    _notrun `cat $tmp.tmp`
+    msg=`cat $tmp.tmp`
+    rm -f $tmp.tmp
+    _notrun "$msg"
     # NOTREACHED
 fi
 rm -f $tmp.tmp $seq.full
@@ -87,12 +89,12 @@ _ping()
     echo "Remote host: $rem_host [pid: $rem_pid port: $rem_port]" >>$here/$seq.full
     pminfo -f -h $rem_host pmcd.pmlogger.port >>$here/$seq.full 2>&1
     ssh $rem_host '. /etc/pcp.env; $PCP_PS_PROG $PCP_PS_ALL_FLAGS' 2>&1 \
-    | egrep "PID|pmlogger" >>$here/$seq.full
+    | grep -E "PID|pmlogger" >>$here/$seq.full
     echo >>$here/$seq.full
     echo "Local host: $myhost [pid: $pid port: $port]" >>$here/$seq.full
     pminfo -f -h $myhost pmcd.pmlogger.port >>$here/$seq.full 2>&1
     $PCP_PS_PROG $PCP_PS_ALL_FLAGS \
-    | egrep "PID|pmlogger" \
+    | grep -E "PID|pmlogger" \
     | grep -v grep >>$here/$seq.full
 }
 

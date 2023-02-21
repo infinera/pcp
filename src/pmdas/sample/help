@@ -65,6 +65,27 @@ calls, and sometimes (probability 0.33) some instances are missing.
 @ SAMPLE.10 Instance domain "events" for sample PMDA.
 Instances "fungus" and "bogus" for testing event metrics indoms.
 
+@ SAMPLE.11 Instance domain "ghosts" for sample PMDA.
+Instances are the names of some famous ghosts.
+
+@ SAMPLE.12 Instance domain "procs" for sample PMDA
+Simulated and small instance domain that mimics the behaviour of the
+process instance domain from the proc PMDA.
+
+The first 5 instances are fixed.  Then next 15 instances are variable
+such that each time an associated metric is fetched:
+- if an instance is currently defined, it may disappear with
+  probability 0.075
+- for each instance that is not defined, a new instance may
+  appear with probability 0.075
+
+The internal instance identifiers mimic PIDs and are monotonically
+increasing up to 1000, when they wrap (duplicates are obviously
+avoided).
+
+The external instance names are the instance number, space, then
+a random "executable" name.
+
 @ sample.control A control variable for the "sample" PMDA
 This control variable may be modified using pmStore().
 The allowed values are
@@ -255,6 +276,12 @@ See /usr/include/sys/sysinfo.h for the definition of the sysinfo struct.
 For testing, only.  This metric is known, but no value is ever available
 
 @ sample.long.one 1 as a 32-bit integer
+The sample.long.* metrics provide a group of 32-bit integer metrics
+some with fixed values and one with a value that can be changed via
+pmstore(1).
+
+This one has the constant value 1.
+
 @ sample.long.ten 10 as a 32-bit integer
 @ sample.long.hundred 100 as a 32-bit integer
 @ sample.long.million 1000000 as a 32-bit integer
@@ -263,6 +290,12 @@ For testing, only.  This metric is known, but no value is ever available
 @ sample.long.bin_ctr like sample.bin but type 32, SEM_COUNTER and SPACE_KBYTE
 
 @ sample.ulong.one 1 as a 32-bit unsigned integer
+The sample.ulong.* metrics provide a group of 32-bit unsigned integer
+metrics some with fixed values and one with a value that can be changed
+via pmstore(1).
+
+This one has the constant value 1.
+
 @ sample.ulong.ten 10 as a 32-bit unsigned integer
 @ sample.ulong.hundred 100 as a 32-bit unsigned integer
 @ sample.ulong.million 1000000 as a 32-bit unsigned integer
@@ -285,14 +318,31 @@ For testing, only.  This metric is known, but no value is ever available
 @ sample.longlong.bin_ctr like sample.bin but type 64, SEM_COUNTER and SPACE_KBYTE
 
 @ sample.ulonglong.one 1 as a 64-bit unsigned integer
+The sample.ulonglong.* metrics provide a group of 64-bit integer metrics
+some with fixed values and one with a value that can be changed via
+pmstore(1).
+
+This one has the constant value 1.
+
 @ sample.ulonglong.ten 10 as a 64-bit unsigned integer
 @ sample.ulonglong.hundred 100 as a 64-bit unsigned integer
 @ sample.ulonglong.million 1000000 as a 64-bit unsigned integer
 @ sample.ulonglong.write_me a 64-bit unsigned integer that can be modified
-@ sample.ulonglong.bin like sample.bin but type U64
-@ sample.ulonglong.bin_ctr like sample.bin but type U64, SEM_COUNTER and SPACE_KBYTE
+@ sample.ulonglong.bin similar to sample.bin but type U64 and values increment
+Values are the base value of the associated sample.bin instances plus
+sample.seconds.
+
+@ sample.ulonglong.bin_ctr similar sample.bin but type U64, SEM_COUNTER and SPACE_KBYTE and values increment
+Values are the base value of the associated sample.bin instances plus
+sample.seconds.
 
 @ sample.float.one 1 as a 32-bit floating point value
+The sample.float.* metrics provide a group of floating point metrics
+some with fixed values and one with a value that can be changed via
+pmstore(1).
+
+This one has the constant value 1.
+
 @ sample.float.ten 10 as a 32-bit floating point value
 @ sample.float.hundred 100 as a 32-bit floating point value
 @ sample.float.million 1000000 as a 32-bit floating point value
@@ -301,6 +351,12 @@ For testing, only.  This metric is known, but no value is ever available
 @ sample.float.bin_ctr like sample.bin but type FLOAT, SEM_COUNTER and SPACE_KBYTE
 
 @ sample.double.one 1 as a 64-bit floating point value
+The sample.double.* metrics provide a group of double precision floating
+point metrics some with fixed values and one with a value that can be
+changed via pmstore(1).
+
+This one has the constant value 1.
+
 @ sample.double.ten 10 as a 64-bit floating point value
 @ sample.double.hundred 100 as a 64-bit floating point value
 @ sample.double.million 1000000 as a 64-bit floating point value
@@ -353,6 +409,22 @@ every time it is fetched.
 @ sample.wrap.ulonglong unsigned long long counter that wraps
 The metric value increments by ULONGLONG_MAX / 2 - 1 (from <limits.h>)
 every time it is fetched.
+
+@ sample.slow_wrap.long long counter that wraps more slowly
+The metric value increments by INT_MAX / 10 - 1 (from <limits.h>) every
+time it is fetched, so wraps once every 20th fetch.
+
+@ sample.slow_wrap.ulong unsigned long counter that wraps more slowly
+The metric value increments by INT_MAX / 10 - 1 (from <limits.h>) every
+time it is fetched, so wraps once every 20th fetch.
+
+@ sample.slow_wrap.longlong long long counter that wraps more slowly
+The metric value increments by LONGLONG_MAX / 10 - 1 (from <limits.h>)
+every time it is fetched, so wraps once every 20th fetch.
+
+@ sample.slow_wrap.ulonglong unsigned long long counter that wraps more slowly
+The metric value increments by LONGLONG_MAX / 10 - 1 (from <limits.h>)
+every time it is fetched, so wraps once every 20th fetch.
 
 @ sample.dodgey.value 5 unreliable instances
 The metric is a set of 5 instantaneous values, drawn at random from the
@@ -635,8 +707,8 @@ Dummy event records are generated in a fixed pattern to help QA.
 
 Once all setups have been returned, the cycle is repeated.
 
-See event.reset to exert explicit control over the next batch of event
-records to be returned.
+See sample.event.reset to exert explicit control over the next batch of
+event records to be returned.
 
 @ sample.event.no_indom_records More dummy event records
 Like sample.event.records but without the instance domain.
@@ -651,8 +723,8 @@ Dummy high resolution event records generated in a fixed pattern to help QA.
 
 Once all setups have been returned, the cycle is repeated.
 
-See event.reset_highres to exert explicit control over the next batch of event
-records to be returned.
+See sample.event.reset_highres to exert explicit control over the next
+batch of event records to be returned.
 
 @ sample.event.reset_highres reset highres event record state
 Used for QA, should take one of the values 0, 1, 2 or 3
@@ -789,3 +861,48 @@ counter).
 @ sample.controller.mirage time control for sample.mirage instance changes
 Milliseconds before sample.mirage has a new instance domain configuration.
 Default value is 10000 (10 seconds), but this can be changed with pmstore.
+
+@ sample.proc.ordinal sequence number for each "process"
+A global counter starts at 1 and increases each time a new fake "process"
+is created.
+
+@ sample.proc.exec "executable" name
+Path to an imaginary executable for the fake "process", randomly
+constructed from 3 sets of make believe directory names.
+
+@ sample.proc.time time since the fake "process" was created
+
+@ sample.proc.reset reset the "procs" instance domain to a known state
+pmstore(1) may be used to trigger the reset.
+
+@ sample.updown.obs metric with a values that form a step function
+Values range between sample.updown.control.min and 
+sample.updown.control.max and the value stays the same for
+sample.updown.control.repeat fetches, then increases or decreases
+by sample.updown.control.step to produce a step function that goes
+up and down.
+
+@ sample.updown.control.repeat repetition count for values of sample.updown.obs
+Consecutive fetches of sample.updown.obs produce the same value until
+sample.updown.control.repeat values have been returned, then the value
+is incremented or decremented.
+
+Defaults to 5, but maybe changed with pmstore(1).
+
+@ sample.updown.control.min minumum value for sample.updown.obs
+When sample.updown.obs is being decremented, this is the smallest
+value that us returned before the metric starts to be incremented.
+
+Defaults to 0, but maybe changed with pmstore(1).
+
+@ sample.updown.control.max maximum value for sample.updown.obs
+When sample.updown.obs is being incremented, this is the largest
+value that us returned before the metric starts to be decremented.
+
+Defaults to 200, but maybe changed with pmstore(1).
+
+@ sample.updown.control.step increment or decrement value for sample.updown.obs
+When sample.updown.obs is being incremented or decremented, this is
+the amount that is added or subtracted.
+
+Defaults to 10, but maybe changed with pmstore(1).

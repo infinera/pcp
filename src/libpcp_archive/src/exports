@@ -1,0 +1,14 @@
+PCP_ARCHIVE_1.0 {
+  global:
+	pmaGetLog;
+	pmaPutLog;
+	pmaRewriteData;
+	pmaRewriteMeta;
+	pmaSortInDom;
+	pmaSameInDom;
+	pmaDeltaInDom;
+	pmaTryDeltaInDom;
+	pmaUndeltaInDom;
+
+  local: *;
+};

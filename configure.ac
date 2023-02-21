@@ -1,5 +1,5 @@
 dnl
-dnl Copyright (c) 2012-2021 Red Hat.
+dnl Copyright (c) 2012-2022 Red Hat.
 dnl Copyright (c) 2008 Aconex.  All Rights Reserved.
 dnl Copyright (c) 2000-2004,2008 Silicon Graphics, Inc.  All Rights Reserved.
 dnl
@@ -30,6 +30,18 @@ AC_ARG_WITH([optimization],
 		    [enable optimization for C/C++ code (default is yes)])],
     [use_optimization=$withval; PACKAGE_CONFIGURE="$PACKAGE_CONFIGURE --with-optimization=$withval"],
     [use_optimizaton=yes])
+
+AC_ARG_WITH([gperftools],
+    [AS_HELP_STRING([--with-gperftools],
+		    [enable gperftools for CPU and heap profiling (default is no)])],
+    [use_gperftools=$withval; PACKAGE_CONFIGURE="$PACKAGE_CONFIGURE --with-gperftools=$withval"],
+    [use_gperftools=no])
+
+AC_ARG_WITH([sanitizer],
+    [AS_HELP_STRING([--with-sanitizer],
+		    [enable sanitizers (default is no, common values are 'address', 'thread' or 'leak')])],
+    [use_sanitizer=$withval; PACKAGE_CONFIGURE="$PACKAGE_CONFIGURE --with-sanitizer=$withval"],
+    [use_sanitizer=no])
 
 AC_ARG_WITH([threads],
     [AC_HELP_STRING([--with-threads],
@@ -81,6 +93,12 @@ AC_ARG_WITH([systemd],
     [do_systemd=$withval; PACKAGE_CONFIGURE="$PACKAGE_CONFIGURE --with-systemd=$withval"],
     [do_systemd=check])
 
+AC_ARG_WITH([selinux],
+    [AC_HELP_STRING([--with-selinux],
+                    [enable support for selinux (default is check)])],
+    [do_selinux=$withval; PACKAGE_CONFIGURE="$PACKAGE_CONFIGURE --with-selinux=$withval"],
+    [do_selinux=check])
+
 AC_ARG_WITH([qt],
     [AC_HELP_STRING([--with-qt],
                     [enable support for tools requiring Qt (default is on)])],
@@ -129,17 +147,17 @@ AC_ARG_WITH([pmdastatsd],
     [do_pmdastatsd=$withval; PACKAGE_CONFIGURE="$PACKAGE_CONFIGURE --with-pmdastatsd=$withval"],
     [do_pmdastatsd=check])
 
-AC_ARG_WITH([pmdapodman],
-    [AC_HELP_STRING([--with-pmdapodman],
-		   [enable podman pmda (default is on)])],
-    [do_pmdapodman=$withval; PACKAGE_CONFIGURE="$PACKAGE_CONFIGURE --with-pmdapodman=$withval"],
-    [do_pmdapodman=check])
-
 AC_ARG_WITH([pmdabcc],
     [AC_HELP_STRING([--with-pmdabcc],
 		   [enable BCC pmda (default is on)])],
     [do_pmdabcc=$withval; PACKAGE_CONFIGURE="$PACKAGE_CONFIGURE --with-pmdabcc=$withval"],
     [do_pmdabcc=check])
+
+AC_ARG_WITH([pmdabpf],
+    [AC_HELP_STRING([--with-pmdabpf],
+		   [enable BPF pmda (default is on)])],
+    [do_pmdabpf=$withval; PACKAGE_CONFIGURE="$PACKAGE_CONFIGURE --with-pmdabpf=$withval"],
+    [do_pmdabpf=check])
 
 AC_ARG_WITH([pmdabpftrace],
     [AC_HELP_STRING([--with-pmdabpftrace],
@@ -153,6 +171,12 @@ AC_ARG_WITH([pmdajson],
     [do_pmdajson=$withval; PACKAGE_CONFIGURE="$PACKAGE_CONFIGURE --with-pmdajson=$withval"],
     [do_pmdajson=check])
 
+AC_ARG_WITH([pmdamongodb],
+    [AC_HELP_STRING([--with-pmdamongodb],
+		   [enable MongoDB pmda (default is on)])],
+    [do_pmdamongodb=$withval; PACKAGE_CONFIGURE="$PACKAGE_CONFIGURE --with-pmdamongodb=$withval"],
+    [do_pmdamongodb=check])
+
 AC_ARG_WITH([pmdanutcracker],
     [AC_HELP_STRING([--with-pmdanutcracker],
 		   [enable nutcracker pmda (default is on)])],
@@ -165,11 +189,6 @@ AC_ARG_WITH([pmdasnmp],
     [do_pmdasnmp=$withval; PACKAGE_CONFIGURE="$PACKAGE_CONFIGURE --with-pmdasnmp=$withval"],
     [do_pmdasnmp=check])
 
-AC_ARG_WITH([selinux],
-    [AC_HELP_STRING([--with-selinux],
-                    [enable building of selinux package (default is on)])],
-    [do_selinux=$withval; PACKAGE_CONFIGURE="$PACKAGE_CONFIGURE --with-selinux=$withval"],
-    [do_selinux=check])
 dnl things set in the environment by Makepkgs never make it into an RPM
 dnl build where the environment is stripped ... use a --with-foo=path
 dnl construct to workaround this
@@ -247,6 +266,7 @@ AC_SUBST(cross_compiling)
 dnl CFLAGS setting is a co-dependency between here and PCFLAGS in
 dnl src/include/builddefs.in ... need to be the same in both places
 
+gcc_debug=true
 target_distro=$target_os
 if test $target_os = linux
 then
@@ -272,25 +292,10 @@ elif test $target_os = darwin
 then
     AC_DEFINE(IS_DARWIN, [1], [Platform is Darwin (Mac OS X)])
     target_distro=macosx
-    version=`sw_vers -productVersion`
-    CFLAGS="-fPIC -no-cpp-precomp -fno-strict-aliasing"
-    case "$version"
-    in
-	10.[0-5].*)
-	    dnl no knowledge before this ...
-	    ;;
-	10.[6-9].*|10.1[0-3].*)
-	    target_distro=cocoa
-	    CFLAGS="$CFLAGS -arch i386 -arch x86_64"
-	    ;;
-	*)
-	    dnl at least 10.14 (Mojave) ...
-	    target_distro=cocoa
-	    CFLAGS="$CFLAGS -arch x86_64"
-	    ;;
-    esac
+    target_machine=`uname -m`
+    CFLAGS="-fPIC -no-cpp-precomp -fno-strict-aliasing -arch $target_machine"
     export CFLAGS
-    pcp_platform_paths='/usr/local/bin'
+    pcp_platform_paths='/usr/local/bin:/opt/homebrew/bin'
     pcp_ps_all_flags="-axw -o user,pid,ppid,cpu,stime,tty,time,command"
 elif test $target_os = mingw
 then
@@ -345,7 +350,12 @@ then
     AC_DEFINE(IS_OPENBSD, [1], [Platform is OpenBSD])
     export CFLAGS="-fPIC -fno-strict-aliasing -D_GNU_SOURCE"
     pcp_platform_paths='/usr/local/bin'
-    pcp_ps_all_flags=auxww
+    pcp_ps_all_flags="-axw -o user,pid,ppid,%cpu,start,tty,time,args"
+    if test "$target_cpu" = "i386" -a "$host_os" = "openbsd6.8"
+    then
+	dnl build with -g are broken here due to a gcc bug
+	gcc_debug=false
+    fi
 else
     echo
     echo "FATAL ERROR: need platform-specific customization for \"$target_os\""
@@ -355,12 +365,14 @@ fi
 AC_SUBST(pcp_platform_paths)
 AC_SUBST(pcp_ps_all_flags)
 
-dnl default C and C++ compiler optimization to -O2 -g
+dnl default C and C++ compiler optimization to -O2 -g (latter depends on $gcc_debug)
 if test "$use_optimization" = no
 then
-    optimization="-O0 -g"
+    optimization="-O0"
+    $gcc_debug && optimization="$optimization -g"
 else
-    optimization="-O2 -g"
+    optimization="-O2"
+    $gcc_debug && optimization="$optimization -g"
 fi
 AC_SUBST(optimization)
 
@@ -442,6 +454,27 @@ else
 	   CFLAGS="$save_CFLAGS"
        ])
     ])
+fi
+dnl Add other non-default gcc static checking flags
+if ! echo "$CFLAGS" | grep -- -Wshadow >/dev/null
+then
+    AS_IF([test "x$cc_is_gcc" = xyes ],[PCFLAGS="$PCFLAGS -Wshadow"])
+fi
+dnl and we need to worry about off_t ... we need it to be 64-bits for V3 archives
+AC_MSG_CHECKING([sizeof off_t])
+cat <<End-of-File >conftest.c
+#include <stdio.h>
+#include <sys/types.h>
+int main() { printf("%d", (int)sizeof(off_t)); return 0; }
+End-of-File
+(eval $ac_compile) 2>&5
+(eval $ac_link) 2>&5
+ans=`./conftest`
+echo "./conftest -> \"$ans\"" >&5
+rm -rf conftest conftest.*
+AC_MSG_RESULT($ans)
+if test "$ans" = 4; then
+    PCFLAGS="$PCFLAGS -D_FILE_OFFSET_BITS=64"
 fi
 AC_SUBST(PCFLAGS)
 AC_SUBST(PLDFLAGS)
@@ -719,6 +752,18 @@ End-of-File
     AC_SUBST(DTRACE)
 fi
 
+dnl Check for gperftools
+AS_IF([test "x$use_gperftools" != "xno"], [
+    PKG_CHECK_MODULES([gperftools], [libprofiler, libtcmalloc])
+])
+
+dnl Check for sanitizers
+sanitizer=""
+if test "x$use_sanitizer" != "xno"; then
+    sanitizer="-fsanitize=$use_sanitizer"
+fi
+AC_SUBST(sanitizer)
+
 dnl Check for service discovery mechanisms (DNS-SD, Avahi)
 AS_IF([test "x$do_discovery" != "xno"], [
     # on Mac OS X, dns_sd.h
@@ -763,6 +808,10 @@ AS_IF([test "x$do_systemd" != "xno"], [
 	[pcp_systemdtmpfiles_dir=$SYSTEMD_TMPFILESDIR],
 	[pcp_systemdtmpfiles_dir=$pcp_lib32_dir/tmpfiles.d])
     AC_SUBST(pcp_systemdtmpfiles_dir)
+    PKG_CHECK_VAR([SYSTEMD_SYSUSERSDIR], [systemd], [sysusersdir],
+	[pcp_systemdsysusers_dir=$SYSTEMD_SYSUSERSDIR],
+	[pcp_systemdsysusers_dir=$pcp_lib32_dir/sysusers.d])
+    AC_SUBST(pcp_systemdsysusers_dir)
     PKG_CHECK_VAR([SYSTEMD_SYSTEMUNITDIR], [systemd], [systemdsystemunitdir],
 	[pcp_systemdunit_dir=$SYSTEMD_SYSTEMUNITDIR], [enable_systemd=false])
     AC_SUBST(pcp_systemdunit_dir)
@@ -789,7 +838,21 @@ then
     dnl is being used
     AC_CHECK_HEADERS([systemd/sd-daemon.h], [have_sd_daemon=true], [have_sd_daemon=false])
     $have_sd_daemon || echo WARNING: using systemd, but header systemd/sd-daemon.h not installed
+
 fi
+
+sd_service_type="simple"
+if $enable_systemd
+then
+    dnl if systemd version is 239 or newer, use type=exec for logutil scripts
+    dnl else fallback to type=simple (e.g. on centos7 and some other platforms)
+    systemd_version=`systemd-analyze --version | $AWK '/^systemd/ {print $2}'`
+    if test "$systemd_version" -ge 239
+    then
+    	sd_service_type="exec"
+    fi
+fi
+AC_SUBST(sd_service_type)
 
 dnl NB: No AC_PREFIX_DEFAULT is needed, as the default configure invocation
 dnl targets a build for non-system directories such as /usr/local.
@@ -858,70 +921,6 @@ AC_DEFUN([PCP_CHECK_PYTHON_HEADER],
     CFLAGS="$saved_CFLAGS"
   ])
 
-dnl check if python tools/packages wanted (need python >= 2.6)
-enable_python2=false
-AS_IF([test "x$do_python" != "xno"], [
-    enable_python2=true
-
-    if test "$do_python" = "check" -a -f /etc/os-release
-    then
-    (
-	. /etc/os-release
-	case "$ID"
-	in
-	    debian)
-		if test -z "$VERSION_ID" -o "$VERSION_ID" -ge 11; then
-		    touch config.python2_eol
-		fi
-		;;
-	    ubuntu)
-		VERSION_NO=`echo "$VERSION_ID" | sed 's/[[^0-9]]//'`
-		if test "$VERSION_NO" -ge 2004; then
-		    touch config.python2_eol
-		fi
-		;;
-	esac
-    )
-    fi
-
-    if test -f config.python2_eol
-    then
-	rm config.python2_eol
-	echo "WARNING: Python 2 is not supported anymore (EOL since 2020), please use Python 3 instead."
-	enable_python2=false
-    fi
-
-    if test "$enable_python2" = "true" -a -z "$PYTHON"
-    then
-	enable_python2=false
-    fi
-
-    if $enable_python2
-    then
-	AC_MSG_CHECKING([Python2 version])
-	eval `$PYTHON -V 2>&1 | awk '/^Python/ { ver=2; print $ver }' | awk -F. '{ major=1; minor=2; point=3; printf "export PY_MAJOR=%d PY_MINOR=%d PY_POINT=%d\n",$major,$minor,$point }'`
-	AC_MSG_RESULT([$PY_MAJOR.$PY_MINOR.$PY_POINT])
-	if test "$PY_MAJOR" -lt 2; then
-	    echo WARNING: Python version 2.6 or later does not seem to be installed.
-	    enable_python2=false
-	else
-	    if test "$PY_MAJOR" -eq 2 -a "$PY_MINOR" -lt 6 ; then
-		echo WARNING: Python version 2.$PY_MINOR is too old.
-		echo Python version 2.6 or later is required for Python builds.
-		enable_python2=false
-	    else
-		PCP_CHECK_PYTHON_HEADER([$PY_MAJOR], [$PY_MINOR])
-	    fi
-	fi
-    fi
-
-    if test "$do_python" != "check" -a "$enable_python2" != "true"
-    then
-	AC_MSG_ERROR([cannot enable Python - no supported version found])
-    fi
-])
-AC_SUBST(enable_python2)
-
 dnl check if python3 tools/packages wanted (need python >= 3.3)
 enable_python3=false
 AS_IF([test "x$do_python3" != "xno"], [
@@ -953,6 +952,101 @@ AS_IF([test "x$do_python3" != "xno"], [
     fi
 ])
 AC_SUBST(enable_python3)
+
+dnl check if python tools/packages wanted (need python >= 2.7)
+enable_python2=false
+AS_IF([test "x$do_python" != "xno"], [
+    enable_python2=true
+
+    if test "$do_python" = "check" -a -f /etc/os-release
+    then
+    (
+	dnl just don't bother with Python2 for more recent distros
+
+	. /etc/os-release
+	case "$ID"
+	in
+	    debian)
+		if test -z "$VERSION_ID" -o "$VERSION_ID" -ge 11; then
+		    touch config.python2_eol
+		fi
+		;;
+	    ubuntu)
+		VERSION_NO=`echo "$VERSION_ID" | sed 's/[[^0-9]]//'`
+		dnl debug echo "VERSION_ID=$VERSION_ID VERSION_NO=$VERSION_NO"
+		if test "$VERSION_NO" -ge 2004; then
+		    touch config.python2_eol
+		fi
+		;;
+	    fedora)
+		if test -z "$VERSION_ID" -o "$VERSION_ID" -ge 35; then
+		    touch config.python2_eol
+		fi
+		;;
+	    rhel)
+		VERSION_NO=`echo "$VERSION_ID" | sed 's/[[^0-9]]//'`
+		dnl debug echo "VERSION_ID=$VERSION_ID VERSION_NO=$VERSION_NO"
+		if test "$VERSION_NO" -ge 90; then
+		    touch config.python2_eol
+		fi
+		;;
+	    opensuse-leap)
+		dnl map leap version 15.4 => 1504, for example
+		VERSION_NO=`echo "$VERSION_ID" | sed -e '[s/\.\([0-9]\)$]/[\.0\1]/' -e '[s/\.//]'`
+		dnl debug echo "VERSION_ID=$VERSION_ID VERSION_NO=$VERSION_NO"
+		if test "$VERSION_NO" -ge 1504; then
+		    touch config.python2_eol
+		fi
+		;;
+	    centos)
+		if test "$VERSION_ID" -ge 9; then
+		    touch config.python2_eol
+		fi
+		;;
+	esac
+    )
+    fi
+
+    if test -f config.python2_eol
+    then
+	rm config.python2_eol
+	if test $enable_python3 = false; then
+	    dnl be silent if python3 is already enabled
+	    echo "WARNING: Python 2 is not supported anymore (EOL since 2020), please use Python 3 instead."
+	fi
+	enable_python2=false
+    fi
+
+    if test "$enable_python2" = "true" -a -z "$PYTHON"
+    then
+	enable_python2=false
+    fi
+
+    if $enable_python2
+    then
+	AC_MSG_CHECKING([Python2 version])
+	eval `$PYTHON -V 2>&1 | awk '/^Python/ { ver=2; print $ver }' | awk -F. '{ major=1; minor=2; point=3; printf "export PY_MAJOR=%d PY_MINOR=%d PY_POINT=%d\n",$major,$minor,$point }'`
+	AC_MSG_RESULT([$PY_MAJOR.$PY_MINOR.$PY_POINT])
+	if test "$PY_MAJOR" -lt 2; then
+	    echo WARNING: Python version 2.7 or later does not seem to be installed.
+	    enable_python2=false
+	else
+	    if test "$PY_MAJOR" -eq 2 -a "$PY_MINOR" -lt 7 ; then
+		echo WARNING: Python version 2.$PY_MINOR is too old.
+		echo Python version 2.7 or later is required for Python builds.
+		enable_python2=false
+	    else
+		PCP_CHECK_PYTHON_HEADER([$PY_MAJOR], [$PY_MINOR])
+	    fi
+	fi
+    fi
+
+    if test "$do_python" != "check" -a "$enable_python2" != "true"
+    then
+	AC_MSG_ERROR([cannot enable Python - no supported version found])
+    fi
+])
+AC_SUBST(enable_python2)
 
 dnl convenience macro to determine if either python is available
 AC_MSG_CHECKING([for any python version])
@@ -1069,6 +1163,82 @@ AS_IF([test "x$do_pmdabcc" = "xcheck"], [
 AC_SUBST(PMDA_BCC, $pmda_bcc)
 if $pmda_bcc; then AC_MSG_RESULT(yes); else AC_MSG_RESULT(no); fi
 
+PKG_CHECK_MODULES([libbpf], [libbpf >= 0.8.0], [have_libbpf=true], [have_libbpf=false])
+AC_SUBST(HAVE_LIBBPF, [$have_libbpf])
+AS_IF([$have_libbpf], [
+    AC_MSG_CHECKING([libbpf version])
+    libbpf_version=`$PKG_CONFIG --modversion libbpf`
+    AC_SUBST(libbpf_version)
+    AC_MSG_RESULT($libbpf_version)
+])
+
+PKG_CHECK_MODULES([libelf], [libelf], [have_libelf=true], [have_libelf=false])
+AC_SUBST(HAVE_LIBELF, [$have_libelf])
+
+test -z "$CLANG" && AC_PATH_PROG(CLANG, clang)
+clang=$CLANG
+AC_SUBST(clang)
+
+AC_MSG_CHECKING([clang major version installed])
+if which $CLANG >/dev/null 2>&1
+then
+    clang_major_version=`$CLANG --version | sed -n -e 's/.*clang version \([[0-9]][[0-9]]*\).*/\1/p'`
+else
+    dnl version=0 => not installed
+    clang_major_version=0
+fi
+AC_MSG_RESULT($clang_major_version)
+AC_SUBST(CLANG_MAJOR_VERSION, [$clang_major_version])
+
+test -z "$LLVM_STRIP" && AC_PATH_PROG(LLVM_STRIP, llvm-strip)
+llvm_strip=$LLVM_STRIP
+AC_SUBST(llvm_strip)
+
+dnl Get BPF CO-RE arch identifier
+AC_MSG_CHECKING([BPF CO-RE architecture identifier])
+pmdabpf_arch=`uname -m | sed 's/x86_64/x86/' | sed 's/aarch64/arm64/' | sed 's/ppc64le/powerpc/' | sed 's/mips.*/mips/'`
+AC_SUBST(pmdabpf_arch)
+AC_MSG_RESULT($pmdabpf_arch)
+
+AC_MSG_CHECKING([for libbpf-tools vmlinux.h])
+pmdabpf_vmlinuxh="`pwd`/vendor/github.com/iovisor/bcc/libbpf-tools/$pmdabpf_arch/vmlinux.h"
+if test -f "$pmdabpf_vmlinuxh"; then
+    AC_MSG_RESULT($pmdabpf_vmlinuxh)
+else
+    AC_MSG_RESULT(not found for arch $pmdabpf_arch);
+    pmdabpf_vmlinuxh=""
+fi
+AC_SUBST(pmdabpf_vmlinuxh)
+
+AC_MSG_CHECKING([if the bpf PMDA should be included])
+pmda_bpf=false
+AS_IF([test "x$do_pmdabpf" = "xyes"], [pmda_bpf=true])
+AS_IF([test "x$do_pmdabpf" = "xcheck"], [
+    dnl pmdabpf requires libbpf, libelf, clang 10+ and a bpftool-generated arch-specific vmlinux.h
+    $have_libbpf && $have_libelf && \
+	test $clang_major_version -ge 10 -a -f "$pmdabpf_vmlinuxh" && pmda_bpf=true
+])
+AC_SUBST(PMDA_BPF, $pmda_bpf)
+if $pmda_bpf; then AC_MSG_RESULT(yes); else AC_MSG_RESULT(no); fi
+
+if $pmda_bpf; then
+    libbpf_version_major=`echo $libbpf_version | cut -d. -f1`
+    libbpf_version_minor=`echo $libbpf_version | cut -d. -f2`
+    pmdabpf_modules="biolatency.so runqlat.so"
+
+    AC_MSG_CHECKING([if bpf PMDA modules using bpf_buffer__new should be included])
+    if test "$libbpf_version_major" -eq 0; then
+       AC_MSG_RESULT([no (libbpf version required: 1.0.0, installed: $libbpf_version)])
+    else
+       pmdabpf_modules="${pmdabpf_modules} mountsnoop.so oomkill.so"
+       AC_MSG_RESULT(yes)
+    fi
+    pmdabpf_modules="${pmdabpf_modules} bashreadline.so biolatency.so execsnoop.so exitsnoop.so fsslower.so opensnoop.so runqlat.so statsnoop.so tcpconnect.so tcpconnlat.so vfsstat.so biosnoop.so"
+    AC_SUBST(pmdabpf_modules)
+    AC_MSG_CHECKING([which bpf PMDA modules should be included])
+    AC_MSG_RESULT($pmdabpf_modules)
+fi
+
 AC_MSG_CHECKING([if the bpftrace PMDA should be included])
 pmda_bpftrace=false
 AS_IF([test "x$do_pmdabpftrace" = "xyes"], [pmda_bpftrace=true])
@@ -1092,9 +1262,7 @@ dnl check if perl available for the build and runtime
 AC_CHECK_PROGS(PERL, perl)
 AC_SUBST(PERL)
 
-enable_perl=false
 AS_IF([test "x$do_perl" != "xno"], [
-    enable_perl=true
     AC_MSG_CHECKING([for any perl version])
     if test "$cross_compiling" = "yes"; then
         ans=$have_perl
@@ -1108,9 +1276,22 @@ AS_IF([test "x$do_perl" != "xno"], [
         have_perl=false
     fi
     AC_MSG_RESULT($pcp_perl_prog)
+
+    dnl extra check for the Perl MakeMaker package for building modules
+    if test "$have_perl" = true
+    then
+        AC_MSG_CHECKING([if ExtUtils::MakeMaker is installed])
+        $pcp_perl_prog -e "use ExtUtils::MakeMaker" 2>/dev/null
+        if test $? -eq 0
+        then
+	    AC_MSG_RESULT([ yes])
+        else
+	    AC_MSG_RESULT([ no])
+	    have_perl=false
+        fi
+    fi
 ], [have_perl=false])
 AC_SUBST(pcp_perl_prog)
-AC_SUBST(enable_perl)
 AC_SUBST(have_perl)
 
 AC_MSG_CHECKING([if the SNMP PMDA should be included])
@@ -1144,6 +1325,22 @@ then
 fi
 AC_SUBST(PMDA_MYSQL, $pmda_mysql)
 if $pmda_mysql; then AC_MSG_RESULT(yes); else AC_MSG_RESULT(no); fi
+
+AC_MSG_CHECKING([if the mongodb PMDA should be included])
+pmda_mongodb=false
+AS_IF([test "x$do_pmdamongodb" = "xyes"], [pmda_mongodb=true])
+AS_IF([test "x$do_pmdamongodb" = "xcheck"], [
+    if test "$have_python" = true
+    then
+        dnl rpm build for mongodb PMDA needs python pymongo module
+        if $pcp_python_prog -c "import pymongo" >/dev/null 2>&1
+        then
+            pmda_mongodb=true
+        fi
+    fi
+])
+AC_SUBST(PMDA_MONGODB, $pmda_mongodb)
+if $pmda_mongodb; then AC_MSG_RESULT(yes); else AC_MSG_RESULT(no); fi
 
 AC_MSG_CHECKING([if the postgresql PMDA should be included])
 pmda_postgresql=false
@@ -1317,8 +1514,14 @@ AS_IF([test "x$do_qt" != "xno"], [
 	dnl ... unfortunately this is not always correct, as when more
 	dnl than one Qt version is installed, the default may not be our
 	dnl preferred version, which is Qt5
-	AC_PATH_PROGS(QTCHOOSER, [qtchooser],, [$QTDIR/bin:/usr/lib/qtchooser:/usr/bin:/usr/lib64/qt5/bin:/usr/lib/qt5/bin:/usr/lib64/qt4/bin:/usr/lib/qt4/bin:/usr/local/bin])
-	AC_PATH_PROGS(QMAKE, [qmake qmake-qt5 qmake-qt4],, [$QTDIR/bin:/usr/lib/qtchooser:/usr/bin:/usr/lib64/qt5/bin:/usr/lib/qt5/bin:/usr/lib64/qt4/bin:/usr/lib/qt4/bin:/usr/local/bin])
+	if test -n "$QTDIR"
+	then
+	    AC_PATH_PROGS(QTCHOOSER, [qtchooser],,             [$QTDIR/bin:/usr/lib/qtchooser:/usr/bin:/usr/lib64/qt5/bin:/usr/lib/qt5/bin:/usr/lib64/qt4/bin:/usr/lib/qt4/bin:/usr/local/bin])
+	    AC_PATH_PROGS(QMAKE, [qmake qmake-qt5 qmake-qt4],, [$QTDIR/bin:/usr/lib/qtchooser:/usr/bin:/usr/lib64/qt5/bin:/usr/lib/qt5/bin:/usr/lib64/qt4/bin:/usr/lib/qt4/bin:/usr/local/bin])
+	else
+	    AC_PATH_PROGS(QTCHOOSER, [qtchooser],, [/usr/lib/qtchooser:/usr/bin:/usr/lib64/qt5/bin:/usr/lib/qt5/bin:/usr/lib64/qt4/bin:/usr/lib/qt4/bin:/usr/local/bin])
+	    AC_PATH_PROGS(QMAKE, [qmake qmake-qt5 qmake-qt4],, [/usr/lib/qtchooser:/usr/bin:/usr/lib64/qt5/bin:/usr/lib/qt5/bin:/usr/lib64/qt4/bin:/usr/lib/qt4/bin:/usr/local/bin])
+	fi
 	test "x$cc_is_gcc" = xyes -a $target_os = solaris && QMAKE="$QMAKE -spec solaris-g++"
     fi
     qmake=$QMAKE
@@ -1338,7 +1541,7 @@ AS_IF([test "x$do_qt" != "xno"], [
 	    fi
 	else
 	    dnl QT_SELECT not set, if we have qtchooser use that to see
-	    dnl if Qt5 is available, otherwise we fallthrough to the 
+	    dnl if Qt5 is available, otherwise we fallthrough to the
 	    dnl qmake default version
 	    if test -n "$QTCHOOSER"
 	    then
@@ -1363,14 +1566,14 @@ AS_IF([test "x$do_qt" != "xno"], [
 	    echo Cannot include the Qt components in the build.
 	    enable_qt=false
 	    qt_version=0
-	elif test "$QT_MAJOR" -lt 4; then
-	    echo WARNING: Qt version 4.4 or later does not seem to be installed.
+	elif test "$QT_MAJOR" -lt 5; then
+	    echo WARNING: Qt version 5.6 or later does not seem to be installed.
 	    echo Cannot proceed with the Qt $QT_MAJOR installation found.
 	    enable_qt=false
 	    qt_version=0
-	elif test "$QT_MAJOR" -eq 4 -a "$QT_MINOR" -lt 4 ; then
-	    echo WARNING: Qt version 4.$QT_MINOR is too old.
-	    echo Qt version 4.4 or later is required for Qt builds.
+	elif test "$QT_MAJOR" -eq 5 -a "$QT_MINOR" -lt 6 ; then
+	    echo WARNING: Qt version 5.$QT_MINOR is too old.
+	    echo Qt version 5.6 or later is required for Qt builds.
 	    enable_qt=false
 	    qt_version=0
 	else
@@ -1604,24 +1807,6 @@ fi
 pod2man=$POD2MAN
 AC_SUBST(pod2man)
 
-dnl extra check for the Perl MakeMaker package
-AS_IF([test "$enable_perl" != "false"], [
-    AC_MSG_CHECKING([if ExtUtils::MakeMaker is installed])
-    perl -e "use ExtUtils::MakeMaker" 2>/dev/null
-    if test $? -eq 0
-    then
-	AC_MSG_RESULT([ yes])
-    else
-	AC_MSG_RESULT([ no])
-	echo
-	echo "FATAL ERROR: Perl ExtUtils::MakeMaker module missing."
-	echo "You can either install this from your distribution, or"
-	echo "download from CPAN (Comprehensive Perl Archive Network)."
-	rm -rf conftest conftest.*
-	exit 1
-    fi
-])
-
 AC_PATH_PROG(TRUEPROG, true)
 
 dnl check if the makedepend program is available
@@ -1642,7 +1827,7 @@ dnl check if the Debian dpkg program is available
 if test -z "$DPKG"; then
    AC_PATH_PROG(DPKG, dpkg)
 fi
-dpkg=$DKPG
+dpkg=$DPKG
 AC_SUBST(dpkg)
 
 dnl check for the Slackware makepkg packaging tool
@@ -1772,19 +1957,35 @@ fi
 AC_SUBST(lib_for_regex)
 
 PKG_CHECK_MODULES([openssl], [openssl >= 1.1.1], [have_openssl=true], [have_openssl=false])
-if $have_openssl
+if test $have_openssl = true
 then
-    AC_MSG_CHECKING([for SSL_read_ex])
-    savedLIBS=$LIBS
-    LIBS="$openssl_LIBS"
-    AC_TRY_LINK_FUNC(SSL_read_ex,
-	have_openssl=true
-	AC_MSG_RESULT(yes),
-	have_openssl=false
-	AC_MSG_RESULT(no))
-    LIBS=$savedLIBS
+    dnl for OpenBSD, libcrypto does not include a BIO_write_ex(),
+    dnl so we can't use libssl with pmproxy in particular
+    AC_CHECK_LIB(crypto, BIO_write_ex, , have_openssl=false)
 fi
 AC_SUBST(HAVE_OPENSSL, [$have_openssl])
+
+PKG_CHECK_MODULES([libsasl2], [libsasl2 >= 2], [have_sasl=true], [have_sasl=false])
+AC_SUBST(HAVE_SASL, [$have_sasl])
+
+dnl Secure sockets: combination of OpenSSL and SASL
+enable_secure=false
+if test "$do_secure" = "check" -o "$do_secure" = "yes"
+then
+    if test "$have_sasl" = "true" -a "$have_openssl" = "true"
+    then
+	AC_DEFINE(HAVE_SECURE_SOCKETS, [1], [Encrypted sockets])
+	enable_secure=true
+    else
+	if test "$do_secure" = "yes" -a "$have_sasl" = "true"
+	then
+	    AC_MSG_RESULT([cannot enable secure sockets, missing OpenSSL])
+	else
+	    AC_MSG_RESULT([cannot enable secure sockets, missing SASL])
+	fi
+    fi
+fi
+AC_SUBST(enable_secure)
 
 PKG_CHECK_MODULES([libuv], [libuv >= 1.0], [have_libuv=true], [have_libuv=false])
 AC_SUBST(HAVE_LIBUV, [$have_libuv])
@@ -1793,14 +1994,16 @@ AC_CHECK_LIB(uv, uv_pipe_chmod,
 	     have_uv_pipe_chmod=true,
 	     have_uv_pipe_chmod=false)
 
-PKG_CHECK_MODULES([libvarlink], [libvarlink], [have_libvarlink=true], [have_libvarlink=false])
-AC_SUBST(HAVE_LIBVARLINK, [$have_libvarlink])
-
 PKG_CHECK_MODULES([ncurses], [ncurses], [have_ncurses=true], [have_ncurses=false])
 AC_SUBST(HAVE_NCURSES, [$have_ncurses])
 
 PKG_CHECK_MODULES([ncursesw], [ncursesw], [have_ncursesw=true], [have_ncursesw=false])
 AC_SUBST(HAVE_NCURSESW, [$have_ncursesw])
+if $have_ncursesw
+then
+    AC_DEFINE(HAVE_GETMOUSE, [1], [ncursesw getmouse])
+    AC_DEFINE(HAVE_SET_ESCDELAY, [1], [ncursesw set_escdelay])
+fi
 
 PKG_CHECK_MODULES([DEVMAPPER], [devmapper], [have_devmapper=true], [have_devmapper=false])
 if $have_devmapper
@@ -1917,30 +2120,6 @@ AS_IF([test "x$do_pmdastatsd" = "xcheck"], [
 AC_SUBST(PMDA_STATSD, $pmda_statsd)
 if $pmda_statsd; then AC_MSG_RESULT(yes); else AC_MSG_RESULT(no); fi
 
-dnl Do you have varlink libraries for pmdapodman?
-AC_MSG_CHECKING([if the podman PMDA should be included])
-pmda_podman=false
-AS_IF([test "x$do_pmdapodman" = "xyes"], [pmda_podman=true])
-AS_IF([test "x$do_pmdapodman" = "xcheck"], [$have_libvarlink && pmda_podman=true])
-AC_SUBST(PMDA_PODMAN, $pmda_podman)
-if $pmda_podman; then AC_MSG_RESULT(yes); else AC_MSG_RESULT(no); fi
-
-dnl Do you have RPM Package Manager libraries for pmdarpm?
-pmda_rpm=false
-savedLIBS=$LIBS
-AC_MSG_CHECKING([for rpmlib > 4.4.2])
-AC_COMPILE_IFELSE(
-   [AC_LANG_PROGRAM([[#include <rpm/header.h>]],
-                    [[(void)HEADERGET_EXT;]])],
-   [AC_MSG_RESULT([yes])
-    pmda_rpm=true],
-   [AC_MSG_RESULT([no])])
-AC_CHECK_HEADER([sys/inotify.h], [],[pmda_rpm=false])
-AC_MSG_CHECKING([if the rpm PMDA should be included])
-AC_SUBST(PMDA_RPM,$pmda_rpm)
-if $pmda_rpm; then AC_MSG_RESULT(yes); else AC_MSG_RESULT(no); fi
-LIBS=$savedLIBS
-
 dnl Do you have the required qshape script for the postfix PMDA
 dnl The logic here is copied from the PMDA's Install script
 pmda_postfix=false
@@ -1962,307 +2141,121 @@ fi
 AC_SUBST(PMDA_POSTFIX,$pmda_postfix)
 if $pmda_postfix; then AC_MSG_RESULT(yes); else AC_MSG_RESULT(no); fi
 
-AC_CHECK_PROGS(SEINFO, seinfo)
-AC_SUBST(SEINFO)
 AC_MSG_CHECKING([if selinux policy should be included])
 enable_selinux=false
-if test $target_os = mingw
-then
-    :
-else
-    AS_IF([test "x$do_selinux" != "xno"], [
-    for makefile in /usr/share/selinux/devel/Makefile
-    do
-	if test -f "$makefile" -a "x$SEINFO" != "x"
-	then
-	    enable_selinux=true
-	    AC_MSG_RESULT(yes)
-	fi
-    done
-
-    ])
-fi
+AS_IF([test "x$do_selinux" != "xno"], [
+    if test -f /usr/share/selinux/devel/Makefile
+    then
+	enable_selinux=true
+	AC_MSG_RESULT(yes)
+    fi
+])
 test "$enable_selinux" = "false" && AC_MSG_RESULT(no)
 AC_SUBST(enable_selinux)
-AC_SUBST(pcp_selinux_dir)
-
-pcp_selinux_cap_userns_ptrace=false
-pcp_selinux_container_runtime=false
-pcp_selinux_nsfs=false
-pcp_selinux_docker_var_lib=false
-pcp_selinux_unreserved_port=false
-pcp_selinux_tracefs=false
-pcp_selinux_hostname_exec_map=false
-pcp_selinux_unconfined=false
-pcp_selinux_numad=false
-pcp_selinux_bpf=false
-pcp_selinux_files_list_non_auth_dirs=false
-pcp_selinux_rpm_var_lib=false
-pcp_selinux_virt_var_run=false
-pcp_selinux_proc_security=false
-pcp_selinux_sbd_exec=false
-pcp_selinux_cap2_syslog=false
-pcp_selinux_icmp_socket_class=false
-
-pcp_selinux_initrc_tmp=false
-pcp_selinux_sudo_exec=false
-pcp_selinux_security=false
-pcp_selinux_chkpwd_exec=false
-pcp_selinux_initrc=false
-pcp_selinux_var_log=false
-pcp_selinux_lastlog=false
-pcp_selinux_xauth_exec=false
-pcp_selinux_logrotate=false
-pcp_selinux_faillog=false
-
-pcp_selinux_netlink_selinux_socket_class=false
-pcp_selinux_netlink_audit_socket_class=false
-pcp_selinux_sock_file_class=false
-pcp_selinux_security_class=false
-pcp_selinux_dir_class=false
-pcp_selinux_rawip_socket_class=false
-pcp_selinux_netlink_generic_socket_class=false
-pcp_selinux_netlink_tcpdiag_socket_class=false
-
-AS_IF([test "x$enable_selinux" != "xfalse"], [
-
-    dnl new-style optional type tests ... seinfo once, then grep
-    dnl note [[...]] needed to escape m4 handling of [...]
-    dnl for type xyz_t we set pcp_selinux_xyz (note no trailing _t)
-
-    seinfo -t >conftest.out
-
-    dnl these ones are for pcpupstream.te
-
-    grep '^[[ 	]][[ 	]]*container_runtime_t$' <conftest.out >/dev/null \
-	&& pcp_selinux_container_runtime=true
-    grep '^[[ 	]][[ 	]]*nsfs_t$' <conftest.out >/dev/null \
-	&& pcp_selinux_nsfs=true
-    grep '^[[ 	]][[ 	]]*docker_var_lib_t$' <conftest.out >/dev/null \
-	&& pcp_selinux_docker_var_lib=true
-    grep '^[[ 	]][[ 	]]*unreserved_port_t$' <conftest.out >/dev/null \
-	&& pcp_selinux_unreserved_port=true
-    grep '^[[ 	]][[ 	]]*tracefs_t$' <conftest.out >/dev/null \
-	&& pcp_selinux_tracefs=true
-    grep '^[[ 	]][[ 	]]*unconfined_service_t$' <conftest.out >/dev/null \
-	&& pcp_selinux_unconfined=true
-    grep '^[[ 	]][[ 	]]*numad_t$' <conftest.out >/dev/null \
-	&& pcp_selinux_numad=true
-    grep '^[[ 	]][[ 	]]*rpm_var_lib_t$' <conftest.out >/dev/null \
-	&& pcp_selinux_rpm_var_lib=true
-    grep '^[[ 	]][[ 	]]*virt_var_run_t$' <conftest.out >/dev/null \
-	&& pcp_selinux_virt_var_run=true
-    grep '^[[ 	]][[ 	]]*proc_security_t$' <conftest.out >/dev/null \
-	&& pcp_selinux_proc_security=true
-    grep '^[[ 	]][[ 	]]*sbd_exec_t$' <conftest.out >/dev/null \
-	&& pcp_selinux_sbd_exec=true
-
-    dnl these ones are for pcpqa.te
-
-    grep '^[[ 	]][[ 	]]*initrc_tmp_t$' <conftest.out >/dev/null \
-	&& pcp_selinux_initrc_tmp=true
-    grep '^[[ 	]][[ 	]]*sudo_exec_t$' <conftest.out >/dev/null \
-	&& pcp_selinux_sudo_exec=true
-    grep '^[[ 	]][[ 	]]*security_t$' <conftest.out >/dev/null \
-	&& pcp_selinux_security=true
-    grep '^[[ 	]][[ 	]]*chkpwd_exec_t$' <conftest.out >/dev/null \
-	&& pcp_selinux_chkpwd_exec=true
-    grep '^[[ 	]][[ 	]]*initrc_t$' <conftest.out >/dev/null \
-	&& pcp_selinux_initrc=true
-    grep '^[[ 	]][[ 	]]*var_log_t$' <conftest.out >/dev/null \
-	&& pcp_selinux_var_log=true
-    grep '^[[ 	]][[ 	]]*lastlog_t$' <conftest.out >/dev/null \
-	&& pcp_selinux_lastlog=true
-    grep '^[[ 	]][[ 	]]*xauth_exec_t$' <conftest.out >/dev/null \
-	&& pcp_selinux_xauth_exec=true
-    grep '^[[ 	]][[ 	]]*logrotate_t$' <conftest.out >/dev/null \
-	&& pcp_selinux_logrotate=true
-    grep '^[[ 	]][[ 	]]*faillog_t$' <conftest.out >/dev/null \
-	&& pcp_selinux_faillog=true
-
-    rm -f conftest.out
-
-    seinfo --common >/dev/null 2>&1
-    if test $? -eq 0
-    then
-        seinfo_common_flag="--common"
-    else
-        seinfo_common_flag=""
-    fi
-
-    dnl classes need to be done one at a time
-    dnl
-    dnl If we're just looking for the class xyz we only need to
-    dnl look at the first line of output from seinfo -x --class=xyz,
-    dnl then we set pcp_selinux_xyz or pcp_selinux_xyz_class.
-    dnl But if we're looking for a particular permission within a
-    dnl class we need to look further into the seinfo output and
-    dnl we set a variable name that is constructed from (possibly part
-    dnl of) the class name _and_ the permission name
-
-    dnl pcpupstream.te first
-
-    seinfo -x --class=cap_userns $seinfo_common_flag 2>/dev/null \
-    | grep '^[[ 	]][[ 	]]*sys_ptrace$' >/dev/null \
-    && pcp_selinux_cap_userns_ptrace=true
-
-    dnl need to look in two places for this one?
-    dnl kenj- second one looks bad because --common is not always allowed,
-    dnl       which is what $seinfo_common is all about
-    seinfo -x --class=file $seinfo_common_flag 2>/dev/null \
-    | grep '^[[ 	]][[ 	]]*map$' >/dev/null \
-    && pcp_selinux_hostname_exec_map=true
-    seinfo -x --common file 2>/dev/null \
-    | grep '^[[ 	]][[ 	]]*map$' >/dev/null \
-    && pcp_selinux_hostname_exec_map=true
-
-    seinfo -x --class=bpf $seinfo_common_flag 2>/dev/null \
-    | egrep '^[[ 	]][[ 	]]*(class |)bpf$' >/dev/null \
-    && pcp_selinux_bpf=true
-
-    seinfo -a 2>/dev/null \
-    | grep '^[[ 	]][[ 	]]*non_auth_file_type$' >/dev/null \
-    && pcp_selinux_files_list_non_auth_dirs=true
-
-    seinfo -x --class=capability2 $seinfo_common_flag 2>/dev/null \
-    | grep '^[[ 	]][[ 	]]*syslog$' >/dev/null \
-    && pcp_selinux_cap2_syslog=true
-
-    seinfo -x --class=icmp_socket $seinfo_common_flag 2>/dev/null \
-    | egrep '^[[ 	]][[ 	]]*(class |)icmp_socket$' >/dev/null \
-    && pcp_selinux_icmp_socket_class=true
-
-    dnl these ones are for pcpqa.te
-
-    seinfo -x --class=netlink_selinux_socket $seinfo_common_flag 2>/dev/null \
-    | egrep '^[[ 	]][[ 	]]*(class |)netlink_selinux_socket$' >/dev/null \
-    && pcp_selinux_netlink_selinux_socket_class=true
-
-    seinfo -x --class=netlink_audit_socket $seinfo_common_flag 2>/dev/null \
-    | egrep '^[[ 	]][[ 	]]*(class |)netlink_audit_socket$' >/dev/null \
-    && pcp_selinux_netlink_audit_socket_class=true
-
-    seinfo -x --class=sock_file $seinfo_common_flag 2>/dev/null \
-    | egrep '^[[ 	]][[ 	]]*(class |)sock_file$' >/dev/null \
-    && pcp_selinux_sock_file_class=true
-
-    seinfo -x --class=security $seinfo_common_flag 2>/dev/null \
-    | egrep '^[[ 	]][[ 	]]*(class |)security$' >/dev/null \
-    && pcp_selinux_security_class=true
-
-    seinfo -x --class=lockdown $seinfo_common_flag 2>/dev/null \
-    | egrep '^[[ 	]][[ 	]]*(class |)lockdown$' >/dev/null \
-    && pcp_selinux_lockdown_class=true
-
-    dnl pcp_selinux_dir already used for something else, so name to
-    dnl set is pcp_selinux_dir_class
-    seinfo -x --class=dir $seinfo_common_flag 2>/dev/null \
-    | egrep '^[[ 	]][[ 	]]*(class |)dir$' >/dev/null \
-    && pcp_selinux_dir_class=true
-
-    seinfo -x --class=rawip_socket $seinfo_common_flag 2>/dev/null \
-    | egrep '^[[ 	]][[ 	]]*(class |)rawip_socket$' >/dev/null \
-    && pcp_selinux_rawip_socket_class=true
-
-    seinfo -x --class=netlink_generic_socket $seinfo_common_flag 2>/dev/null \
-    | egrep '^[[ 	]][[ 	]]*(class |)netlink_generic_socket$' >/dev/null \
-    && pcp_selinux_netlink_generic_socket_class=true
-
-    seinfo -x --class=netlink_tcpdiag_socket $seinfo_common_flag 2>/dev/null \
-    | egrep '^[[ 	]][[ 	]]*(class |)netlink_tcpdiag_socket$' >/dev/null \
-    && pcp_selinux_netlink_tcpdiag_socket_class=true
-
-])
-
-dnl for pcpupstream.te
-AC_SUBST(pcp_selinux_cap_userns_ptrace)
-AC_SUBST(pcp_selinux_container_runtime)
-AC_SUBST(pcp_selinux_nsfs)
-AC_SUBST(pcp_selinux_docker_var_lib)
-AC_SUBST(pcp_selinux_unreserved_port)
-AC_SUBST(pcp_selinux_tracefs)
-AC_SUBST(pcp_selinux_hostname_exec_map)
-AC_SUBST(pcp_selinux_unconfined)
-AC_SUBST(pcp_selinux_numad)
-AC_SUBST(pcp_selinux_bpf)
-AC_SUBST(pcp_selinux_files_list_non_auth_dirs)
-AC_SUBST(pcp_selinux_rpm_var_lib)
-AC_SUBST(pcp_selinux_virt_var_run)
-AC_SUBST(pcp_selinux_proc_security)
-AC_SUBST(pcp_selinux_sbd_exec)
-AC_SUBST(pcp_selinux_cap2_syslog)
-AC_SUBST(pcp_selinux_icmp_socket_class)
-
-dnl for pcpqa.te
-AC_SUBST(pcp_selinux_initrc_tmp)
-AC_SUBST(pcp_selinux_sudo_exec)
-AC_SUBST(pcp_selinux_security)
-AC_SUBST(pcp_selinux_chkpwd_exec)
-AC_SUBST(pcp_selinux_initrc)
-AC_SUBST(pcp_selinux_var_log)
-AC_SUBST(pcp_selinux_lastlog)
-AC_SUBST(pcp_selinux_xauth_exec)
-AC_SUBST(pcp_selinux_logrotate)
-AC_SUBST(pcp_selinux_faillog)
-
-AC_SUBST(pcp_selinux_netlink_selinux_socket_class)
-AC_SUBST(pcp_selinux_netlink_audit_socket_class)
-AC_SUBST(pcp_selinux_sock_file_class)
-AC_SUBST(pcp_selinux_security_class)
-AC_SUBST(pcp_selinux_dir_class)
-AC_SUBST(pcp_selinux_rawip_socket_class)
-AC_SUBST(pcp_selinux_netlink_generic_socket_class)
-AC_SUBST(pcp_selinux_netlink_tcpdiag_socket_class)
-
-pcp_selinux_files_mmap_all_files=false
-if test "x$enable_selinux" != "xfalse"
-then
-    dnl more work to do, files_mmap_all_files() macro is not always
-    dnl supported
-    AC_MSG_CHECKING([for selinux files_mmap_all_files() macro])
-    cat <<End-of-File >conftest.te
-module conftest 1.0;
-require {
-	attribute file_type;
-	attribute pcp_domain;
-	class file { append create execute open read write unlink map };
-}
-files_mmap_all_files(pcp_domain);
-End-of-File
-    if make -f /usr/share/selinux/devel/Makefile conftest.pp >/dev/null 2>&1
-    then
-	pcp_selinux_files_mmap_all_files=true
-	AC_MSG_RESULT(yes)
-    else
-	AC_MSG_RESULT(no)
-    fi
-    dnl cleanup turds from selinux Makefile
-    rm -f tmp/all_interfaces.conf tmp/conftest.* tmp/iferror.m4
-fi
-AC_SUBST(pcp_selinux_files_mmap_all_files)
 
 dnl Checks for library functions.
 AC_TYPE_SIGNAL
 AC_FUNC_WAIT3
 AC_FUNC_VPRINTF
-AC_CHECK_FUNCS(mktime nanosleep usleep unsetenv)
+AC_CHECK_FUNCS(mktime nanosleep usleep unsetenv getrusage)
 AC_CHECK_FUNCS(select socket syslog sendmsg recvmsg setns)
 AC_CHECK_FUNCS(getuid getgid getpeerucred getpeereid)
 AC_CHECK_FUNCS(uname gethostname getdomainname getmachineid)
 AC_CHECK_FUNCS(__clone pipe2 fcntl ioctl)
 AC_CHECK_FUNCS(prctl setlinebuf waitpid atexit kill)
-AC_CHECK_FUNCS(chown fchmod getcwd scandir mkstemp)
+AC_CHECK_FUNCS(chown fchmod fchown getcwd scandir mkstemp)
 AC_CHECK_FUNCS(brk sbrk posix_memalign memalign valloc)
 AC_CHECK_FUNCS(signal sighold sigrelse tcgetattr)
 AC_CHECK_FUNCS(regex regcmp regexec regcomp)
 AC_CHECK_FUNCS(strtod strtol strtoll strtoull strndup strchrnul)
 AC_CHECK_FUNCS(getgrent getgrent_r getgrnam getgrnam_r getgrgid getgrgid_r)
 AC_CHECK_FUNCS(getpwent getpwent_r getpwnam getpwnam_r getpwuid getpwuid_r)
-AC_CHECK_FUNCS(sysinfo trace_back_stack backtrace)
+AC_CHECK_FUNCS(sysinfo trace_back_stack)
 
-dnl only define readdir64 on non-linux platforms that support it
-if test $target_os != linux -a $target_os != freebsd -a $target_os != kfreebsd -a $target_os != netbsd; then
-    AC_CHECK_FUNCS(readdir64)
+dnl checking for backtrace() needs a little more care ..
+dnl check if backtrace functions come from libexeinfo (OpenBSD 7.0)
+AC_CHECK_LIB(execinfo, backtrace)
+lib_for_backtrace=""
+if test $ac_cv_lib_execinfo_backtrace = yes
+then
+    lib_for_backtrace="-lexecinfo"
+fi
+AC_SUBST(lib_for_backtrace)
+dnl now we can check for backtrace()
+savedLIBS=$LIBS
+LIBS="$LIBS $lib_for_backtrace"
+AC_CHECK_FUNCS(backtrace)
+LIBS=$savedLIBS
+
+dnl symbols needed for backtracing
+if test "x$cc_is_gcc" = xyes
+then
+    dnl if using gcc, some platforms make __executable_start go away when
+    dnl compiled -fPIE -pie, e.g. CentOS 6, RHEL/CentOS 7 ... so need to
+    dnl check for that here before declaring __executable_start is available
+    savedCFLAGS="$CFLAGS"
+    CFLAGS="$CFLAGS -fPIE -pie"
+fi
+AC_MSG_CHECKING([if __executable_start defined by ld])
+AC_LINK_IFELSE([AC_LANG_SOURCE([
+#include <stdio.h>
+extern char __executable_start;
+int main()
+{
+    printf("%p\n", &__executable_start);
+    return 0;
+}
+])],
+[
+AC_DEFINE(HAVE___EXECUTABLE_START, [1], [__executable_start defined])
+AC_MSG_RESULT(yes)
+], AC_MSG_RESULT(no))
+AC_MSG_CHECKING([if __etext defined by ld])
+AC_LINK_IFELSE([AC_LANG_SOURCE([
+#include <stdio.h>
+extern char __etext;
+int main()
+{
+    printf("%p\n", &__etext);
+    return 0;
+}
+])],
+[
+AC_DEFINE(HAVE___ETEXT, [1], [__etext defined])
+AC_MSG_RESULT(yes)
+], AC_MSG_RESULT(no))
+AC_MSG_CHECKING([if _etext defined by ld])
+AC_LINK_IFELSE([AC_LANG_SOURCE([
+#include <stdio.h>
+extern char _etext;
+int main()
+{
+    printf("%p\n", &_etext);
+    return 0;
+}
+])],
+[
+AC_DEFINE(HAVE__ETEXT, [1], [_etext defined])
+AC_MSG_RESULT(yes)
+], AC_MSG_RESULT(no))
+AC_MSG_CHECKING([if etext defined by ld])
+AC_LINK_IFELSE([AC_LANG_SOURCE([
+#include <stdio.h>
+extern char etext;
+int main()
+{
+    printf("%p\n", &etext);
+    return 0;
+}
+])],
+[
+AC_DEFINE(HAVE_ETEXT, [1], [etext defined])
+AC_MSG_RESULT(yes)
+], AC_MSG_RESULT(no))
+if test "x$cc_is_gcc" = xyes
+then
+    dnl see above
+    CFLAGS="$savedCFLAGS"
 fi
 
 dnl typedefs missing from sys/types.h, stdlib.h or stddef.h
@@ -2715,20 +2708,20 @@ else
     cat <<End-of-File >conftest.c
 #include <stdio.h>
 #include <stdlib.h>
-main()
+int main()
 {
     long long int	value = -1;
     value = strtol("1234567812345678", NULL, 16);
     if (value == 0x1234567812345678LL) {
 	printf("strotol\n");
-	exit(0);
+	return 0;
     }
     value = strtoll("1234567812345678", NULL, 16);
     if (value == 0x1234567812345678LL) {
 	printf("strtoll\n");
-	exit(0);
+	return 0;
     }
-    exit(1);
+    return 1;
 }
 End-of-File
     (eval $ac_compile) 2>&5
@@ -2858,8 +2851,9 @@ if test "$cross_compiling" = "yes"; then
     echo "cross-compile -> \"$ans\"" >&5
 else
     cat <<End-of-File >conftest.c
+#include <stdio.h>
 #include <sys/time.h>
-main() { printf("%d", (int)sizeof(suseconds_t)); }
+int main() { printf("%d", (int)sizeof(suseconds_t)); return 0; }
 End-of-File
     (eval $ac_compile) 2>&5
     (eval $ac_link) 2>&5
@@ -2878,8 +2872,9 @@ if test "$cross_compiling" = "yes"; then
     echo "cross-compile -> \"$ans\"" >&5
 else
     cat <<End-of-File >conftest.c
+#include <stdio.h>
 #include <sys/time.h>
-main() { printf("%d", (int)sizeof(time_t)); }
+int main() { printf("%d", (int)sizeof(time_t)); return 0; }
 End-of-File
     (eval $ac_compile) 2>&5
     (eval $ac_link) 2>&5
@@ -2900,7 +2895,7 @@ if test "$cross_compiling" = "yes"; then
 else
     cat <<End-of-File >conftest.c
 #include <stdio.h>
-main() { printf("%d", (int)sizeof(long)); }
+int main() { printf("%d", (int)sizeof(long)); return 0; }
 End-of-File
     (eval $ac_compile) 2>&5
     (eval $ac_link) 2>&5
@@ -2929,7 +2924,7 @@ if test "$cross_compiling" = "yes"; then
 else
     cat <<End-of-File >conftest.c
 #include <stdio.h>
-main() { printf("%d", (int)sizeof(char *)); }
+int main() { printf("%d", (int)sizeof(char *)); return 0; }
 End-of-File
     (eval $ac_compile) 2>&5
     (eval $ac_link) 2>&5
@@ -2960,7 +2955,7 @@ if test "$cross_compiling" = "yes"; then
 else
     cat <<End-of-File >conftest.c
 #include <stdio.h>
-main() { printf("%d", (int)sizeof(int)); }
+int main() { printf("%d", (int)sizeof(int)); return 0; }
 End-of-File
     (eval $ac_compile) 2>&5
     (eval $ac_link) 2>&5
@@ -2986,8 +2981,9 @@ if test "$cross_compiling" = "yes"; then
     echo "cross-compile -> \"$ans\"" >&5
 else
     cat <<End-of-File >conftest.c
+#include <stdio.h>
 union { struct { unsigned int b:4; unsigned int c:4; } a; int p; } u;
-main() { u.a.b = 1; u.a.c = 2; printf("%0*x", 2*sizeof(int), u.p); }
+int main() { u.a.b = 1; u.a.c = 2; printf("%0*x", 2*sizeof(int), u.p); return 0; }
 End-of-File
     (eval $ac_compile) 2>&5
     (eval $ac_link) 2>&5
@@ -3111,7 +3107,7 @@ AC_TRY_LINK(
 ],
 [
     double x = 123.456;
-    if (fpclassify(x) == FP_NAN) exit(1);
+    if (fpclassify(x) == FP_NAN) return 1;
 ], ac_cv_func_fpclassify=yes)
 AC_MSG_RESULT($ac_cv_func_fpclassify)
 if test $ac_cv_func_fpclassify = no
@@ -3126,7 +3122,7 @@ then
 ],
 [
     double x = 123.456;
-    if (fpclassify(x) == FP_NAN) exit(1);
+    if (fpclassify(x) == FP_NAN) return 1;
 ], ac_cv_func_fpclassify=yes)
     AC_MSG_RESULT($ac_cv_func_fpclassify)
     if test $ac_cv_func_fpclassify = yes
@@ -3297,6 +3293,11 @@ pcp_share_dir=`eval echo $datarootdir/pcp`
 pcp_share_dir=`eval echo $pcp_share_dir`
 AC_SUBST(pcp_share_dir)
 
+dnl security-enhanced-linux policy files
+pcp_selinux_dir=`eval echo $datarootdir/selinux`
+pcp_selinux_dir=`eval echo $pcp_selinux_dir`
+AC_SUBST(pcp_selinux_dir)
+
 dnl shared bash command completions
 pcp_bashshare_dir=`eval echo $datarootdir/bash-completion`
 pcp_bashshare_dir=`eval echo $pcp_bashshare_dir`
@@ -3328,12 +3329,6 @@ AC_SUBST(pcp_pmdas_dir)
 pcp_pmdasadm_dir=`eval echo $libexecdir/pcp/pmdas`
 pcp_pmdasadm_dir=`eval echo $pcp_pmdasadm_dir`
 AC_SUBST(pcp_pmdasadm_dir)
-
-pcp_selinux_dir=$pcp_var_dir/selinux
-AC_SUBST(pcp_selinux_dir)
-pcp_selinuxadm_dir=`eval echo $libexecdir/pcp/selinux`
-pcp_selinuxadm_dir=`eval echo $pcp_selinuxadm_dir`
-AC_SUBST(pcp_selinuxadm_dir)
 
 dnl runtime shared libraries
 pcp_lib_dir=`eval echo $libdir`
@@ -3447,7 +3442,7 @@ then
 else
     dnl We can get here ($have_manpages == false) for container-based
     dnl builds.
-    dnl For Debian packaging, we _must_ include the man pages, so 
+    dnl For Debian packaging, we _must_ include the man pages, so
     dnl take the known and good settings ...
     dnl
     if test $target_distro = debian
@@ -3554,7 +3549,12 @@ AC_SUBST(pcp_archive_dir)
 pcp_sa_dir=$pcp_log_dir/sa
 AC_SUBST(pcp_sa_dir)
 
-pcp_pacct_system_path="$localstatedir/account/pacct"
+if test -d /var/log/account
+then
+    pcp_pacct_system_path="$localstatedir/log/account/pacct"
+else
+    pcp_pacct_system_path="$localstatedir/account/pacct"
+fi
 AC_SUBST(pcp_pacct_system_path)
 
 AC_ARG_WITH(rundir,[AC_HELP_STRING([--with-rundir],[run directory [LOCALSTATEDIR/run/pcp]])],
@@ -3659,102 +3659,6 @@ then
 	AC_MSG_RESULT(yes), AC_MSG_RESULT(no))
 fi
 
-dnl Check for Network Security Services (NSS) and
-dnl Simple Authentication and Security Layer (SASL)
-if test "$do_secure" = "check" -o "$do_secure" = "yes"
-then
-    enable_secure=true
-
-    saved_CFLAGS="$CFLAGS"
-    saved_CPPFLAGS="$CPPFLAGS"
-    NSS_INC_DIRS="-I/usr/include/nss -I/usr/include/nss3"
-    NSPR_INC_DIRS="-I/usr/include/nspr -I/usr/include/nspr4"
-    CFLAGS="$CFLAGS $NSS_INC_DIRS $NSPR_INC_DIRS"
-    CPPFLAGS="$CPPFLAGS $NSS_INC_DIRS $NSPR_INC_DIRS"
-
-    AC_CHECK_HEADERS([nss/nss.h], [NSSCFLAGS=-I/usr/include/nss], [
-	AC_CHECK_HEADERS([nss3/nss.h], [NSSCFLAGS=-I/usr/include/nss3], [
-	    enable_secure=false
-	    if test "$do_secure" = "yes"
-	    then
-		AC_MSG_ERROR([cannot enable secure sockets mode - no NSS header])
-	    fi
-	])
-    ])
-    AC_SUBST(NSSCFLAGS)
-
-    AC_CHECK_HEADERS([nspr/nspr.h], [NSPRCFLAGS=-I/usr/include/nspr], [
-	AC_CHECK_HEADERS([nspr4/nspr.h], [NSPRCFLAGS=-I/usr/include/nspr4], [
-	    enable_secure=false
-	    if test "$do_secure" = "yes"
-	    then
-		AC_MSG_ERROR([cannot enable secure sockets mode - no NSPR header])
-	    fi
-	])
-    ])
-    AC_SUBST(NSPRCFLAGS)
-
-    AC_CHECK_HEADERS([sasl/sasl.h], [SASLCFLAGS=-I/usr/include/sasl], [
-	enable_secure=false
-	if test "$do_secure" = "yes"
-	then
-	    AC_MSG_ERROR([cannot enable secure sockets mode - no SASL header])
-	fi
-    ])
-    AC_SUBST(SASLCFLAGS)
-
-    AC_CHECK_LIB(sasl2, sasl_server_init, [lib_for_sasl="-lsasl2"], [
-	enable_secure=false
-	if test "$do_secure" = "yes"
-	then
-	    AC_MSG_ERROR([cannot enable secure sockets mode - no SASL library])
-	fi
-    ])
-    AC_SUBST(lib_for_sasl)
-
-    AC_CHECK_LIB(ssl, SSL_ImportFD, [lib_for_ssl="-lssl"], [
-	AC_CHECK_LIB(ssl3, SSL_ImportFD, [lib_for_ssl="-lssl3"], [
-	    enable_secure=false
-	    if test "$do_secure" = "yes"
-	    then
-		AC_MSG_ERROR([cannot enable secure sockets mode - no SSL library])
-	    fi
-	])
-    ])
-    AC_SUBST(lib_for_ssl)
-
-    AC_CHECK_LIB(nss, NSS_Init, [lib_for_nss="-lnss"], [
-	AC_CHECK_LIB(nss3, NSS_Init, [lib_for_nss="-lnss3"], [
-	    enable_secure=false
-	    if test "$do_secure" = "yes"
-	    then
-		AC_MSG_ERROR([cannot enable secure sockets mode - no NSS library])
-	    fi
-	])
-    ])
-    AC_SUBST(lib_for_nss)
-
-    AC_CHECK_LIB(nspr, PR_Init, [lib_for_nspr="-lnspr"], [
-	AC_CHECK_LIB(nspr4, PR_Init, [lib_for_nspr="-lnspr4"], [
-	    enable_secure=false
-	    if test "$do_secure" = "yes"
-	    then
-		AC_MSG_ERROR([cannot enable secure sockets mode - no NSPR library])
-	    fi
-	])
-    ])
-    AC_SUBST(lib_for_nspr)
-
-    if test "$enable_secure" = "true"
-    then
-	AC_DEFINE(HAVE_SECURE_SOCKETS, [1], [Encrypted sockets])
-    fi
-    AC_SUBST(enable_secure)
-
-    CPPFLAGS="$saved_CPPFLAGS"
-    CFLAGS="$saved_CFLAGS"
-fi
-
 dnl check for -latomic, needed for some -march=i386 builds with i686 c++ distro headers
 AC_CHECK_LIB(atomic, __atomic_fetch_add_4, [lib_for_atomic="-latomic"])
 AC_SUBST(lib_for_atomic)
@@ -3848,6 +3752,7 @@ AC_MSG_CHECKING([if strftime knows about %z])
 AC_TRY_RUN(
 [
 #include <time.h>
+#include <string.h>
 int main () {
     char b[32]="";
     time_t t = time(NULL);
@@ -3901,6 +3806,10 @@ LIBS=$savedLIBS
 dnl Look for zlib
 PKG_CHECK_MODULES([zlib], [zlib >= 1.0.0], [have_zlib=true], [have_zlib=false])
 AC_SUBST(HAVE_ZLIB, [$have_zlib])
+
+dnl Look for cmocka
+PKG_CHECK_MODULES([cmocka], [cmocka], [have_cmocka=true], [have_cmocka=false])
+AC_SUBST(HAVE_CMOCKA, [$have_cmocka])
 
 dnl Check if we have AI_ADDRCONFIG
 AC_MSG_CHECKING([for AI_ADDRCONFIG])

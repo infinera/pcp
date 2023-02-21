@@ -37,19 +37,20 @@ typedef struct {
     uint32_t	mtu;
     uint32_t	speed;
     uint32_t	type;
-    uint8_t	duplex;
-    uint8_t	linkup;
-    uint8_t	running;
-    uint8_t	wireless;
+    unsigned	duplex : 2;
+    unsigned	linkup : 1;
+    unsigned	running : 1;
+    uint8_t	wireless : 1;
+    uint8_t	virtuali : 1;
 } net_dev_t;
 
 #define HWADDRSTRLEN 64
 
 typedef struct {
-    int		has_inet : 1;
-    int		has_ipv6 : 1;
-    int		has_hw   : 1;
-    int		padding : 13;
+    unsigned	has_inet : 1;
+    unsigned	has_ipv6 : 1;
+    unsigned	has_hw   : 1;
+    unsigned	padding : 13;
     uint16_t	ipv6scope;
     char	inet[INET_ADDRSTRLEN];
     char	ipv6[INET6_ADDRSTRLEN+16];	/* extra for /plen */
@@ -142,12 +143,12 @@ struct iwreq {
 #define IPV6_ADDR_COMPATv4      0x0080U
 
 struct linux_container;
-extern int refresh_proc_net_dev(pmInDom, struct linux_container *);
+extern void refresh_proc_net_dev(pmInDom, struct linux_container *);
 extern void refresh_net_addr_ioctl(pmInDom, struct linux_container *, int *);
-extern int refresh_net_ioctl(pmInDom, struct linux_container *, int *);
+extern void refresh_net_ioctl(pmInDom, struct linux_container *, int *);
 extern void refresh_net_addr_sysfs(pmInDom, int *);
 extern int refresh_net_sysfs(pmInDom, int *);
-extern int refresh_proc_net_all(pmInDom, proc_net_all_t *);
+extern void refresh_proc_net_all(pmInDom, proc_net_all_t *);
 
 extern void refresh_net_addr_sysfs(pmInDom, int *);
 extern void refresh_net_addr_ioctl(pmInDom, struct linux_container *, int *);

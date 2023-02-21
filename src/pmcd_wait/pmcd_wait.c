@@ -34,6 +34,7 @@ static pmLongOptions longopts[] = {
     { "host", 1, 'h', "HOST", "wait for PMCD on host" },
     { "interval", 1, 't', "TIME", "maximum interval to wait for PMCD [default 60 seconds]" },
     { "verbose", 0, 'v', 0, "turn on output messages" },
+    PMOPT_HELP,
     PMAPI_OPTIONS_END
 };
 
@@ -47,8 +48,9 @@ PrintTimeout(void)
 {
     if (verbose) {
 	fprintf(stderr, "%s: Failed to connect to PMCD on host \"%s\""
-		" in %ld seconds\n",
-		pmGetProgname(), hostname, delta);
+		" in %ld %s\n",
+		pmGetProgname(), hostname, delta,
+		delta == 1 ? "second" : "seconds");
     }
 }
 

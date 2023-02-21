@@ -24,9 +24,10 @@ NCURSES_CFLAGS = -DHAVE_LIBNCURSESW=$(HAVE_NCURSESW)
 LCFLAGS = $(NCURSES_CFLAGS) $(C99_CFLAGS) -Ipcp -I.
 LCFLAGS += -DVERSION=\"$(PCP_VERSION)\" -DSYSCONFDIR=\"$(PCP_SYSCONF_DIR)\"
 LCFLAGS += -DCOPYRIGHT=\"$(COPYRIGHT)\" -DPACKAGE=\"$(CMDTARGET)\"
-LCFLAGS += -DMAJOR_IN_SYSMACROS=1
+LCFLAGS += -DMAJOR_IN_SYSMACROS=1 -DNDEBUG
 
-CFILES = \
+TOPCFILES = \
+	pcp-htop.c \
 	Action.c \
 	AvailableColumnsPanel.c \
 	AvailableMetersPanel.c \
@@ -44,10 +45,13 @@ CFILES = \
 	DateTimeMeter.c \
 	DiskIOMeter.c \
 	DisplayOptionsPanel.c \
+	DynamicColumn.c \
+	DynamicMeter.c \
 	EnvScreen.c \
 	FunctionBar.c \
 	Hashtable.c \
 	Header.c \
+	HeaderOptionsPanel.c \
 	HostnameMeter.c \
 	IncSet.c \
 	InfoScreen.c \
@@ -55,6 +59,7 @@ CFILES = \
 	LoadAverageMeter.c \
 	MainPanel.c \
 	MemoryMeter.c \
+	MemorySwapMeter.c \
 	Meter.c \
 	MetersPanel.c \
 	NetworkIOMeter.c \
@@ -67,6 +72,7 @@ CFILES = \
 	ProcessLocksScreen.c \
 	RichString.c \
 	ScreenManager.c \
+	ScreensPanel.c \
 	Settings.c \
 	SignalsPanel.c \
 	SwapMeter.c \
@@ -77,16 +83,20 @@ CFILES = \
 	UsersTable.c \
 	Vector.c \
 	XUtils.c \
+
+SUBCFILES = \
 	linux/PressureStallMeter.c \
 	linux/ZramMeter.c \
 	zfs/ZfsArcMeter.c \
 	zfs/ZfsCompressedArcMeter.c \
+	pcp/PCPDynamicColumn.c \
+	pcp/PCPDynamicMeter.c \
+	pcp/PCPMetric.c \
 	pcp/PCPProcess.c \
 	pcp/PCPProcessList.c \
 	pcp/Platform.c \
-	pcp-htop.c \
 
-HFILES = \
+TOPHFILES = \
 	Action.h \
 	AvailableColumnsPanel.h \
 	AvailableMetersPanel.h \
@@ -104,10 +114,14 @@ HFILES = \
 	DateTimeMeter.h \
 	DiskIOMeter.h \
 	DisplayOptionsPanel.h \
+	DynamicColumn.h \
+	DynamicMeter.h \
 	EnvScreen.h \
 	FunctionBar.h \
 	Hashtable.h \
 	Header.h \
+	HeaderLayout.h \
+	HeaderOptionsPanel.h \
 	HostnameMeter.h \
 	IncSet.h \
 	InfoScreen.h \
@@ -116,6 +130,7 @@ HFILES = \
 	Macros.h \
 	MainPanel.h \
 	MemoryMeter.h \
+	MemorySwapMeter.h \
 	Meter.h \
 	MetersPanel.h \
 	NetworkIOMeter.h \
@@ -129,6 +144,7 @@ HFILES = \
 	ProvideCurses.h \
 	RichString.h \
 	ScreenManager.h \
+	ScreensPanel.h \
 	Settings.h \
 	SignalsPanel.h \
 	SwapMeter.h \
@@ -139,29 +155,60 @@ HFILES = \
 	UsersTable.h \
 	Vector.h \
 	XUtils.h \
+
+SUBHFILES = \
 	linux/PressureStallMeter.h \
 	linux/ZramMeter.h \
 	linux/ZramStats.h \
 	zfs/ZfsArcMeter.h \
 	zfs/ZfsArcStats.h \
 	zfs/ZfsCompressedArcMeter.h \
+	pcp/PCPDynamicColumn.h \
+	pcp/PCPDynamicMeter.h \
+	pcp/PCPMetric.h \
 	pcp/PCPProcess.h \
 	pcp/PCPProcessList.h \
 	pcp/Platform.h \
 	pcp/ProcessField.h \
 
-MAN_PAGES = $(CMDTARGET).1
+DOCFILES = AUTHORS pcp-htop.5.in
+COLUMNS = container delayacct fdcount guest memory sched swap tcp udp wchan
+METERS = entropy freespace ipc locks memcache mysql postfix redis tcp
+CFGMETERS = $(patsubst %,pcp/meters/%,$(METERS))
+CFGCOLUMNS = $(patsubst %,pcp/columns/%,$(COLUMNS))
+
+CFGXFILES = $(CFGMETERS) $(CFGCOLUMNS)
+TOPXFILES = $(TOPCFILES) $(TOPHFILES) $(DOCFILES)
+SUBXFILES = $(SUBCFILES) $(SUBHFILES)
+CFILES = $(TOPCFILES) $(SUBCFILES)
+HFILES = $(TOPHFILES) $(SUBHFILES)
+LDIRT = $(TOPXFILES) $(SUBXFILES) $(CFGXFILES) \
+	htop.1.in $(CMDTARGET).1.in $(CMDTARGET).1 $(CMDTARGET).5
+
+MAN_PAGES = $(CMDTARGET).1 $(CMDTARGET).5
 
 default:	build-me
 
 include $(BUILDRULES)
 
 ifeq "$(HAVE_NCURSESW)" "true"
-build-me: $(CMDTARGET) $(DISTLINKS)
+build-me: $(TOPXFILES) $(SUBXFILES) $(CFGXFILES) $(CMDTARGET) $(DISTLINKS) $(MAN_PAGES)
 
 install: default
 	$(INSTALL) -m 755 $(CMDTARGET) $(DISTARGET)
-	@$(INSTALL_MAN)
+	$(INSTALL_MAN)
+	$(INSTALL) -m 755 -d $(PCP_SYSCONF_DIR)/htop
+	$(INSTALL) -m 755 -d $(PCP_SYSCONF_DIR)/htop/meters
+	$(INSTALL) -m 755 -d $(PCP_SYSCONF_DIR)/htop/columns
+	$(INSTALL) -m 755 -d $(PCP_SHARE_DIR)/htop
+	$(INSTALL) -m 755 -d $(PCP_SHARE_DIR)/htop/meters
+	@for m in $(METERS); do \
+	    $(INSTALL) -m 644 pcp/meters/$$m $(PCP_SHARE_DIR)/htop/meters/$$m; \
+	done
+	$(INSTALL) -m 755 -d $(PCP_SHARE_DIR)/htop/meters
+	@for c in $(COLUMNS); do \
+	    $(INSTALL) -m 644 pcp/columns/$$c $(PCP_SHARE_DIR)/htop/columns/$$c; \
+	done
 else
 build-me:
 install:
@@ -171,8 +218,33 @@ default_pcp: default
 
 install_pcp: install
 
+$(TOPXFILES):
+	$(LN_S) -f $(TOPDIR)/vendor/github.com/htop-dev/htop/$@ $@
+
+$(SUBXFILES):
+	mkdir -p linux pcp zfs
+	$(LN_S) -f $(TOPDIR)/../vendor/github.com/htop-dev/htop/$@ $@
+
+$(CFGXFILES):
+	mkdir -p pcp/columns pcp/meters
+	$(LN_S) -f $(TOPDIR)/../../vendor/github.com/htop-dev/htop/$@ $@
+
 $(DISTLINKS):	$(CMDTARGET)
 	@$(LN_S) -f $(CMDTARGET) $@
+
+$(CMDTARGET).1.in:
+	$(LN_S) -f $(TOPDIR)/vendor/github.com/htop-dev/htop/htop.1.in $@
+
+$(MAN_PAGES): $(CMDTARGET).1.in $(CMDTARGET).5.in
+	for s in 1 5; do \
+	    $(SED) < $(CMDTARGET).$$s.in > $(CMDTARGET).$$s \
+		-e 's;@PACKAGE_STRING@;Performance Co-Pilot;g' \
+		-e 's;^htop, pcp-htop;\\f3pcp-htop\\f1;g' \
+		-e 's;@sysconfdir@;$(PCP_SYSCONF_DIR);g' \
+		-e 's;@datarootdir@;$(PCP_SHARE_DIR);g' \
+		-e 's;^\.SH "NAME";.SH NAME;g' \
+		-e 's;pcp/pcp;pcp;g'; \
+	done
 
 check::	$(CFILES) $(HFILES)
 	$(CLINT) $^

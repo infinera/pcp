@@ -1,12 +1,12 @@
 /*
- * Copyright (c) 2012-2017 Red Hat.
+ * Copyright (c) 2012-2017,2021-2022 Red Hat.
  * Copyright (c) 1995-2001,2004 Silicon Graphics, Inc.  All Rights Reserved.
- * 
+ *
  * This program is free software; you can redistribute it and/or modify it
  * under the terms of the GNU General Public License as published by the
  * Free Software Foundation; either version 2 of the License, or (at your
  * option) any later version.
- * 
+ *
  * This program is distributed in the hope that it will be useful, but
  * WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY
  * or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License
@@ -17,6 +17,10 @@
 #include "libpcp.h"
 #include <sys/stat.h>
 #include <assert.h>
+#ifdef HAVE_OPENSSL
+#include <openssl/opensslv.h>
+#include <openssl/ssl.h>
+#endif
 
 #define PMDAROOT	1	/* domain identifier for pmdaroot(1) */
 #define SHUTDOWNWAIT	15	/* PMDAs wait time, in 10msec increments */
@@ -41,11 +45,10 @@ int		_creds_timeout = 3;	/* Timeout for agents credential PDU */
 static char	*fatalfile = "/dev/tty";/* fatal messages at startup go here */
 static char	*pmnsfile = PM_NS_DEFAULT;
 static char	*username;
-static char	*certdb;		/* certificate database path (NSS) */
-static char	*dbpassfile;		/* certificate database password file */
-static char	*cert_nickname;		/* Alternate nickname to use for server certificate */
 static int	dupok = 1;		/* set to 0 for -N pmnsfile */
 static char	sockpath[MAXPATHLEN];	/* local unix domain socket path */
+static void	*ssl;
+static __pmSecureConfig	tls;
 
 #ifdef HAVE_SA_SIGINFO
 static pid_t	killer_pid;
@@ -99,9 +102,6 @@ static pmLongOptions longopts[] = {
     { "username", 1, 'U', "USER", "in daemon mode, run as named user [default pcp]" },
     PMAPI_OPTIONS_HEADER("Configuration options"),
     { "config", 1, 'c', "PATH", "path to configuration file" },
-    { "certdb", 1, 'C', "PATH", "path to NSS certificate database" },
-    { "passfile", 1, 'P', "PATH", "password file for certificate database access" },
-    { "certname", 1, 'M', "NAME", "certificate name to use" },
     { "", 1, 'L', "BYTES", "maximum size for PDUs from clients [default 65536]" },
     { "", 1, 'q', "TIME", "PMDA initial negotiation timeout (seconds) [default 3]" },
     { "", 1, 't', "TIME", "PMDA response timeout (seconds) [default 5]" },
@@ -121,7 +121,7 @@ static pmLongOptions longopts[] = {
 
 static pmOptions opts = {
     .flags = PM_OPTFLAG_POSIX,
-    .short_options = "Ac:C:D:fH:i:l:L:M:N:n:p:P:q:Qs:St:T:U:vx:?",
+    .short_options = "Ac:D:fH:i:l:L:N:n:p:q:Qs:St:T:U:vx:?",
     .long_options = longopts,
 };
 
@@ -147,10 +147,6 @@ ParseOptions(int argc, char *argv[], int *nports)
 
 	    case 'c':	/* configuration file */
 		strncpy(configFileName, opts.optarg, sizeof(configFileName)-1);
-		break;
-
-	    case 'C':	/* path to NSS certificate database */
-		certdb = opts.optarg;
 		break;
 
 	    case 'D':	/* debug options */
@@ -192,10 +188,6 @@ ParseOptions(int argc, char *argv[], int *nports)
 		}
 		break;
 
-	    case 'M':	/* nickname for the server cert. Use to query the nssdb */
-		cert_nickname = opts.optarg;
-		break;
-
 	    case 'N':
 		dupok = 0;
 		/*FALLTHROUGH*/
@@ -214,10 +206,6 @@ ParseOptions(int argc, char *argv[], int *nports)
 		}
 		break;
 		    
-	    case 'P':	/* password file for certificate database access */
-		dbpassfile = opts.optarg;
-		break;
-
 	    case 'q':
 		val = (int)strtol(opts.optarg, &endptr, 10);
 		if (*endptr != '\0' || val <= 0.0) {
@@ -351,6 +339,11 @@ HandleClientInput(__pmFdSet *fdsPtr)
 		      PM_ERR_PERMISSION : DoFetch(cp, pb);
 		break;
 
+	    case PDU_HIGHRES_FETCH:
+		sts = (cp->denyOps & PMCD_OP_FETCH) ?
+		      PM_ERR_PERMISSION : DoHighResFetch(cp, pb);
+		break;
+
 	    case PDU_INSTANCE_REQ:
 		sts = (cp->denyOps & PMCD_OP_FETCH) ?
 		      PM_ERR_PERMISSION : DoInstance(cp, pb);
@@ -364,6 +357,11 @@ HandleClientInput(__pmFdSet *fdsPtr)
 	    case PDU_DESC_REQ:
 		sts = (cp->denyOps & PMCD_OP_FETCH) ?
 		      PM_ERR_PERMISSION : DoDesc(cp, pb);
+		break;
+
+	    case PDU_DESC_IDS:
+		sts = (cp->denyOps & PMCD_OP_FETCH) ?
+		      PM_ERR_PERMISSION : DoDescIDs(cp, pb);
 		break;
 
 	    case PDU_TEXT_REQ:
@@ -470,13 +468,13 @@ TerminateAgent(AgentInfo *ap)
 	return;
     pid = (ap->ipcType == AGENT_SOCKET) ?
 	   ap->ipc.socket.agentPid : ap->ipc.pipe.agentPid;
-    if (ap->status.isRootChild && pmdarootfd > 0) {
+    if (ap->status.isRootChild && pmdarootfd > 0 && pid > 0) {
 	/* killed via PDU exchange with root PMDA */
 	sts = pmdaRootProcessTerminate(pmdarootfd, pid);
 	    pmNotifyErr(LOG_INFO, "pmdaRootProcessTerminate(..., %" FMT_PID ") failed: %s\n",
 		pid, pmErrStr(sts));
     }
-    else {
+    else if (pid > 0) {
 	/* wrapper for kill(pid, SIGKILL) */
 	if (__pmProcessTerminate(pid, 1) < 0)
 	    pmNotifyErr(LOG_INFO, "__pmProcessTerminate(%" FMT_PID ") failed: %s\n",
@@ -523,7 +521,8 @@ Shutdown(void)
 	    __pmCloseSocket(client[i].fd);
     }
     __pmServerCloseRequestPorts();
-    __pmSecureServerShutdown();
+    __pmSecureServerShutdown(ssl, &tls);
+    __pmSecureServerShutdown(NULL, NULL);
     pmNotifyErr(LOG_INFO, "pmcd Shutdown\n");
     fflush(stderr);
 }
@@ -704,7 +703,9 @@ CheckNewClient(__pmFdSet * fdset, int rfd, int family)
 	    memset(&cp->pduInfo, 0, sizeof(cp->pduInfo));
 	    cp->pduInfo.version = PDU_VERSION;
 	    cp->pduInfo.licensed = 1;
-	    cp->pduInfo.features = PDU_FLAG_LABELS;
+	    cp->pduInfo.features |= PDU_FLAG_DESCS;
+	    cp->pduInfo.features |= PDU_FLAG_LABELS;
+	    cp->pduInfo.features |= PDU_FLAG_HIGHRES;
 	    if (__pmServerHasFeature(PM_SERVER_FEATURE_SECURE))
 		cp->pduInfo.features |= (PDU_FLAG_SECURE | PDU_FLAG_SECURE_ACK);
 	    if (__pmServerHasFeature(PM_SERVER_FEATURE_COMPRESS))
@@ -918,8 +919,8 @@ SigBad(int sig)
 	/* -D desperate on the command line to enable traceback,
 	 * if we have platform support for it
 	 */
-	fprintf(stderr, "\nProcedure call traceback ...\n");
-	__pmDumpStack(stderr);
+	fprintf(stderr, "\n");
+	__pmDumpStack();
 	fflush(stderr);
     }
     _exit(sig);
@@ -940,6 +941,15 @@ main(int argc, char *argv[])
     char	*envstr;
 #ifdef HAVE_SA_SIGINFO
     static struct sigaction act;
+#endif
+#ifdef HAVE___EXECUTABLE_START
+    extern char		__executable_start;
+
+    /*
+     * optionally set address for start of my text segment, to be used
+     * in __pmDumpStack() if it is called later
+     */
+    __pmDumpStackInit((void *)&__executable_start);
 #endif
 
     pmcd_pid = getpid();
@@ -1054,8 +1064,30 @@ main(int argc, char *argv[])
 	    DontStart();
     }
 
-    if (__pmSecureServerCertificateSetup(certdb, dbpassfile, cert_nickname) < 0)
-	DontStart();
+    /* parse /etc/pcp/tls.conf (optional security settings) */
+    __pmSecureConfigInit();
+    __pmGetSecureConfig(&tls);
+    if (tls.certfile) {
+#ifdef HAVE_OPENSSL
+	if ((ssl = __pmSecureServerInit(&tls)) == NULL) {
+	    __pmFreeSecureConfig(&tls);
+	} else {
+	/* OpenSSL setup; log library version, ciphers in use */
+#ifdef OPENSSL_VERSION_STR
+	    pmNotifyErr(LOG_INFO, "OpenSSL %s setup", OPENSSL_VERSION_STR);
+#else /* back-compat and not ideal, includes date */
+	    pmNotifyErr(LOG_INFO, "%s setup", OPENSSL_VERSION_TEXT);
+#endif
+	    if (tls.ciphersuites)
+		fprintf(stderr, "Using cipher suites: %s\n", tls.ciphersuites);
+	    else if (tls.ciphers)
+		fprintf(stderr, "Using cipher list: %s\n", tls.ciphers);
+	}
+#else
+	pmNotifyErr(LOG_ERR, "%s setup but %s not built with OpenSSL enabled",
+			pmGetConfig("PCP_TLSCONF_PATH"), pmGetProgname());
+#endif
+    }
 
     PrintAgentInfo(stderr);
     __pmAccDumpLists(stderr);

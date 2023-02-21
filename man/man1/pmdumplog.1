@@ -18,7 +18,7 @@
 \f3pmdumplog\f1 \- dump internal details of a performance metrics archive log
 .SH SYNOPSIS
 \f3pmdumplog\f1
-[\f3\-adehilLmMrstxzV?\f1]
+[\f3\-adehIilLmMrstxzV?\f1]
 [\f3\-n\f1 \f2pmnsfile\f1]
 [\f3\-S\f1 \f2starttime\f1]
 [\f3\-T\f1 \f2endtime\f1]
@@ -99,6 +99,16 @@ members over the duration of the archive: see
 .BR pmGetInDom (3)
 for more details on instance domains.
 .TP
+\fB\-I\fR, \fB\-\-on-disk-insts\fR
+Display the on-disk instance domains, which may use a different format
+and encoding than the one visible above the
+Performance Metrics Programming Interface (PMAPI)
+when using
+.BR pmGetInDom (3)
+and related routines.
+The on-disk format is only of interest when investigating the internal
+structure of PCP archives.
+.TP
 \fB\-l\fR, \fB\-\-label\fR
 Dump the archive label, showing the log format version,
 the time and date for the start and (current) end of the archive, and
@@ -160,6 +170,12 @@ records are inserted into a PCP archive log by
 and similar tools to indicate a temporal discontinuity in the
 time-series of metric values.
 .RE
+.TP
+\fB\-n\fR \fIpmnsfile\fR, \fB\-\-namespace\fR=\fIpmnsfile\fR
+Load an alternative Performance Metrics Name Space
+.RB ( PMNS (5))
+from the file
+.IR pmnsfile .
 .TP
 \fB\-r\fR, \fB\-\-reverse\fR
 Process the archive in reverse order, from most recent to oldest
@@ -237,6 +253,11 @@ archive in units of seconds.
 This is useful in conjunction with debug diagnostics from the
 archive handling routines in
 .IR libpcp .
+.PP
+A third
+.B -x
+option will also report the timestamp in ``Epoch'' format (seconds
+since 1970-01-01 00:00:00 UTC).
 .RE
 .TP
 \fB\-z\fR, \fB\-\-hostzone\fR

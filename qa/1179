@@ -9,27 +9,32 @@ seq=`basename $0`
 echo "QA output created by $seq"
 
 . ./common.bcc
+
+$sudo rm -rf $tmp.* $seq.full
+
 _pmdabcc_check
 _pmdabcc_require_kernel_version 4 7
 _java_check
 
 status=1       # failure is the default!
 signal=$PCP_BINADM_DIR/pmsignal
-$sudo rm -rf $tmp.* $seq.full
-
-_prepare_pmda bcc
-trap "\$signal -s KILL \$javapid > /dev/null 2>&1; _pmdabcc_cleanup; exit \$status" 0 1 2 3 15
-_stop_auto_restart pmcd
 
 # Launch a Java test program
 cd $here/java
-java -XX:+DTraceAllocProbes -XX:+ExtendedDTraceProbes USDTJVMTest &
+if [ "$__java_major" -ge 19 ]
+then
+    # -XX:+ExtendedDTraceProbes deprecated here
+    #
+    __java_flags="-XX:+DTraceAllocProbes -XX:+DTraceMethodProbes -XX:+DTraceMonitorProbes"
+else
+    __java_flags="-XX:+DTraceAllocProbes -XX:+ExtendedDTraceProbes"
+fi
+java $__java_flags USDTJVMTest &
 javapid=$!
 disown > /dev/null 2>&1 || :
 cd $here
 
-# real QA test starts here
-cat <<EOF | _pmdabcc_install | _pmdabcc_install_filter
+cat <<EOF >$tmp.conf
 # Installed by PCP QA test $seq on `date`
 [pmda]
 modules = ustat
@@ -40,6 +45,15 @@ cluster = 17
 process = java
 language = java
 EOF
+
+_pmdabcc_try_compile $tmp.conf
+
+_prepare_pmda bcc
+trap "\$signal -s KILL \$javapid > /dev/null 2>&1; _pmdabcc_cleanup; exit \$status" 0 1 2 3 15
+_stop_auto_restart pmcd
+
+# real QA test starts here
+_pmdabcc_install <$tmp.conf | _pmdabcc_install_filter
 _pmdabcc_wait_for_metric
 
 # Wait for values to appear

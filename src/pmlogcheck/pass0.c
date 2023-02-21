@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2017 Red Hat.
+ * Copyright (c) 2017,2021 Red Hat.
  * Copyright (c) 2013 Ken McDonell, Inc.  All Rights Reserved.
  * 
  * This program is free software; you can redistribute it and/or modify it
@@ -17,6 +17,11 @@
 #include "pmapi.h"
 #include "libpcp.h"
 #include "logcheck.h"
+#include "../libpcp/src/internal.h"
+
+int		goldenmagic;
+char * 		goldenfname;
+__pmTimestamp	goldenstart;
 
 #define IS_UNKNOWN	0
 #define IS_INDEX	1
@@ -52,65 +57,56 @@
  * Checks here mimic those in __pmLogChkLabel().
  */
 static int
-checklabel(__pmFILE *f, char *fname)
+checklabel(__pmFILE *f, char *fname, int len)
 {
-    static char 	*goldenfname = NULL;
     __pmLogLabel	label;
+    size_t		bytes;
     long		offset = __pmFtell(f);
-    int			sts;
+    __int32_t		magic;
+    int			sts = STS_OK;
 
-    __pmFseek(f, sizeof(int), SEEK_SET);
-    if ((sts = __pmFread(&label, 1, sizeof(label), f)) != sizeof(label)) {
-	fprintf(stderr, "checklabel(...,%s): botch: read returns %d not %d as expected\n", fname, sts, (int)sizeof(label));
-	exit(1);
+    /* first read the magic number for sanity and version checking */
+    __pmFseek(f, sizeof(__int32_t), SEEK_SET);
+    if ((bytes = __pmFread(&magic, 1, sizeof(magic), f)) != sizeof(magic)) {
+	fprintf(stderr, "checklabel(...,%s): botch: magic read returns %zu not %zu as expected\n", fname, bytes, sizeof(magic));
+	sts = STS_FATAL;
     }
-    sts = STS_OK;
-    label.ill_magic = ntohl(label.ill_magic);
-    label.ill_pid = ntohl(label.ill_pid);
-    label.ill_start.tv_sec = ntohl(label.ill_start.tv_sec);
-    label.ill_start.tv_usec = ntohl(label.ill_start.tv_usec);
-    label.ill_vol = ntohl(label.ill_vol);
-    if ((label.ill_magic & 0xffffff00) != PM_LOG_MAGIC) {
+
+    magic = ntohl(magic);
+    if ((magic & 0xffffff00) != PM_LOG_MAGIC) {
 	fprintf(stderr, "%s: bad label magic number: 0x%x not 0x%x as expected\n",
-	    fname, label.ill_magic & 0xffffff00, PM_LOG_MAGIC);
+	    fname, magic & 0xffffff00, PM_LOG_MAGIC);
 	sts = STS_FATAL;
     }
-    if ((label.ill_magic & 0xff) != PM_LOG_VERS02) {
-	fprintf(stderr, "%s: bad label version: %d not %d as expected\n",
-	    fname, label.ill_magic & 0xff, PM_LOG_VERS02);
+    if ((magic & 0xff) != PM_LOG_VERS02 &&
+        (magic & 0xff) != PM_LOG_VERS03) {
+	fprintf(stderr, "%s: bad label version: %d not %d or %d as expected\n",
+	    fname, magic & 0xff, PM_LOG_VERS02, PM_LOG_VERS03);
 	sts = STS_FATAL;
     }
-    if (log_label.ill_start.tv_sec == 0) {
-	if (sts == STS_OK) {
-	    /* first good label */
-	    goldenfname = strdup(fname);
-	    memcpy(&log_label, &label, sizeof(log_label));
-	}
+
+    /* now try to load the label record */
+    memset((void *)&label, 0, sizeof(label));
+    if ((sts = __pmLogLoadLabel(f, &label)) < 0) {
+	/* don't report again if error already reported above */
+	if (sts != STS_FATAL)
+	    fprintf(stderr, "%s: cannot load label record: %s\n", fname, pmErrStr(sts));
+	sts = STS_FATAL;
     }
     else {
-	if ((label.ill_magic & 0xff) != (log_label.ill_magic & 0xff)) {
+	if (goldenmagic == 0) {
+	    if (sts == STS_OK) {
+		/* first good label */
+		goldenfname = strdup(fname);
+		goldenmagic = magic;
+		goldenstart = label.start;
+	    }
+	} else if ((magic & 0xff) != (goldenmagic & 0xff)) {
 	    fprintf(stderr, "%s: mismatched label version: %d not %d as expected from %s\n",
-			    fname, label.ill_magic & 0xff, log_label.ill_magic & 0xff, goldenfname);
+				fname, magic & 0xff, magic & 0xff, goldenfname);
 	    sts = STS_FATAL;
 	}
-#if 0
-	if (label.ill_pid != log_label.ill_pid) {
-	    fprintf(stderr, "Mismatched PID (%d/%d) between %s and %s\n",
-			    label.ill_pid, log_label.ill_pid, file, goldenfname);
-	    status = 2;
-	}
-	if (strncmp(label.ill_hostname, log_label.ill_hostname,
-			PM_LOG_MAXHOSTLEN) != 0) {
-	    fprintf(stderr, "Mismatched hostname (%s/%s) between %s and %s\n",
-		    label.ill_hostname, log_label.ill_hostname, file, goldenfname);
-	    status = 2;
-	}
-	if (strncmp(label.ill_tz, log_label.ill_tz, PM_TZ_MAXLEN) != 0) {
-	    fprintf(stderr, "Mismatched timezone (%s/%s) between %s and %s\n",
-		    label.ill_tz, log_label.ill_tz, file, goldenfname);
-	    status = 2;
-	}
-#endif
+	__pmLogFreeLabel(&label);
     }
     __pmFseek(f, offset, SEEK_SET);
     return sts; 
@@ -121,17 +117,17 @@ pass0(char *fname)
 {
     int		len;
     int		check;
+    int		type;
     int		i;
     int		sts;
     int		nrec = 0;
     int		is = IS_UNKNOWN;
+    int		eol;
     char	*p;
     __pmFILE	*f = NULL;
     int		label_ok = STS_OK;
     char	logBase[MAXPATHLEN];
-
-    if (vflag)
-	fprintf(stderr, "%s: start pass0\n", fname);
+    long	offset = 0;
 
     if ((f = __pmFopen(fname, "r")) == NULL) {
 	fprintf(stderr, "%s: cannot open file: %s\n", fname, osstrerror());
@@ -161,13 +157,38 @@ pass0(char *fname)
 	exit(1);
     }
 
+    if (vflag) {
+	fprintf(stderr, "%s: start pass0 ... ", fname);
+	eol = 0;
+    }
+
+    type = 0;
     while ((sts = __pmFread(&len, 1, sizeof(len), f)) == sizeof(len)) {
 	len = ntohl(len);
+	if (len < 2 * sizeof(len)) {
+	    if (vflag && !eol) {
+		fputc('\n', stderr);
+		eol = 1;
+	    }
+	    if (nrec == 0)
+		fprintf(stderr, "%s: illegal header record length (%d) in label record\n", fname, len);
+	    else
+		fprintf(stderr, "%s[record %d]: illegal header record length (%d)\n", fname, nrec, len);
+	    sts = STS_FATAL;
+	    goto done;
+	}
 	len -= 2 * sizeof(len);
-	/* gobble stuff between header and trailer without looking at it */
+	/*
+	 * gobble stuff between header and trailer without looking at it
+	 * ... except for the record type in the case of metadata records
+	 */
 	for (i = 0; i < len; i++) {
 	    check = __pmFgetc(f);
 	    if (check == EOF) {
+		if (vflag && !eol) {
+		    fputc('\n', stderr);
+		    eol = 1;
+		}
 		if (nrec == 0)
 		    fprintf(stderr, "%s: unexpected EOF in label record body, wanted %d, got %d bytes\n", fname, len, i);
 		else
@@ -175,8 +196,18 @@ pass0(char *fname)
 		sts = STS_FATAL;
 		goto done;
 	    }
+	    if (is == IS_META && i <= 3 && nrec > 0) {
+		/*
+		 * first word (after len) for metadata record, save type
+		 */
+		type = (type << 8) | check;
+	    }
 	}
 	if ((sts = __pmFread(&check, 1, sizeof(check), f)) != sizeof(check)) {
+	    if (vflag && !eol) {
+		fputc('\n', stderr);
+		eol = 1;
+	    }
 	    if (nrec == 0)
 		fprintf(stderr, "%s: unexpected EOF in label record trailer, wanted %d, got %d bytes\n", fname, (int)sizeof(check), sts);
 	    else
@@ -185,8 +216,24 @@ pass0(char *fname)
 	    goto done;
 	}
 	check = ntohl(check);
+	if (check < 2 * sizeof(len)) {
+	    if (vflag && !eol) {
+		fputc('\n', stderr);
+		eol = 1;
+	    }
+	    if (nrec == 0)
+		fprintf(stderr, "%s: illegal trailer record length (%d) in label record\n", fname, check);
+	    else
+		fprintf(stderr, "%s[record %d]: illegal trailer record length (%d)\n", fname, nrec, check);
+	    sts = STS_FATAL;
+	    goto done;
+	}
 	len += 2 * sizeof(len);
 	if (check != len) {
+	    if (vflag && !eol) {
+		fputc('\n', stderr);
+		eol = 1;
+	    }
 	    if (nrec == 0)
 		fprintf(stderr, "%s: label record length mismatch: header %d != trailer %d\n", fname, len, check);
 	    else
@@ -197,34 +244,95 @@ pass0(char *fname)
 
 	if (nrec == 0) {
 	    int		xsts;
-	    xsts = checklabel(f, fname);
+	    xsts = checklabel(f, fname, len - 2 * sizeof(len));
 	    if (label_ok == STS_OK)
 		/* just remember first not OK status */
 		label_ok = xsts;
 	}
 
-	nrec++;
 	if (is == IS_INDEX) {
 	    /* for index files, done label record, now eat index records */
-	    __pmLogTI	tirec;
-	    while ((sts = __pmFread(&tirec, 1, sizeof(tirec), f)) == sizeof(tirec)) { 
+	    size_t	record_size;
+	    void	*buffer;
+
+	    if ((goldenmagic & 0xff) >= PM_LOG_VERS03)
+		record_size = 8*sizeof(__pmPDU);
+	    else
+		record_size = 5*sizeof(__pmPDU);
+	    if ((buffer = (void *)malloc(record_size)) == NULL) {
+		pmNoMem("pass0: index buffer", record_size, PM_FATAL_ERR);
+		/* NOTREACHED */
+	    }
+
+	    nrec++;
+	    while ((sts = __pmFread(buffer, 1, record_size, f)) == record_size) { 
 		nrec++;
 	    }
+	    free(buffer);
 	    if (sts != 0) {
-		fprintf(stderr, "%s[record %d]: unexpected EOF in index entry, wanted %d, got %d bytes\n", fname, nrec, (int)sizeof(tirec), sts);
+		if (vflag && !eol) {
+		    fputc('\n', stderr);
+		    eol = 1;
+		}
+		fprintf(stderr, "%s[record %d]: unexpected EOF in index entry, wanted %zd, got %d bytes\n", fname, nrec, record_size, sts);
 		index_state = STATE_BAD;
 		sts = STS_FATAL;
 		goto done;
 	    }
 	    goto empty_check;
 	}
+	else if (is == IS_META && nrec > 0) {
+	    switch (type) {
+		case TYPE_DESC:
+		case TYPE_TEXT:
+		    /* good for all versions */
+		    break;
+
+		case TYPE_INDOM:
+		case TYPE_INDOM_DELTA:
+		case TYPE_LABEL:
+		    /* not good for V2 */
+		    if ((goldenmagic & 0xff) == PM_LOG_VERS02) {
+			if (vflag && !eol) {
+			    fputc('\n', stderr);
+			    eol = 1;
+			}
+			fprintf(stderr, "%s[record %d]: unexpected record type %s (%d) for V2 archive\n", fname, nrec, __pmLogMetaTypeStr(type), type);
+			sts = STS_FATAL;
+		    }
+		    break;
+
+		case TYPE_INDOM_V2:
+		case TYPE_LABEL_V2:
+		    /* not good for V3 */
+		    if ((goldenmagic & 0xff) == PM_LOG_VERS03) {
+			if (vflag && !eol) {
+			    fputc('\n', stderr);
+			    eol = 1;
+			}
+			fprintf(stderr, "%s[record %d]: unexpected record type %s (%d) for V3 archive\n", fname, nrec, __pmLogMetaTypeStr(type), type);
+			sts = STS_FATAL;
+		    }
+		    break;
+	    }
+	}
+	nrec++;
+	offset = __pmFtell(f);
     }
     if (sts != 0) {
+	if (vflag && !eol) {
+	    fputc('\n', stderr);
+	    eol = 1;
+	}
 	fprintf(stderr, "%s[record %d]: unexpected EOF in record header, wanted %d, got %d bytes\n", fname, nrec, (int)sizeof(len), sts);
 	sts = STS_FATAL;
     }
 empty_check:
     if (sts != STS_FATAL && nrec < 2) {
+	if (vflag && !eol) {
+	    fputc('\n', stderr);
+	    eol = 1;
+	}
 	fprintf(stderr, "%s: contains no PCP data\n", fname);
 	sts = STS_WARNING;
     }
@@ -232,6 +340,9 @@ empty_check:
      * sts == 0 (from __pmFread) => STS_OK
      */
 done:
+    if (sts == STS_FATAL && offset > 0) {
+	fprintf(stderr, "%s: last valid record ends at offset %ld\n", fname, offset);
+    }
     if (is == IS_INDEX) {
 	if (sts == STS_OK)
 	    index_state = STATE_OK;
@@ -260,6 +371,9 @@ done:
 
     if (f != NULL)
 	__pmFclose(f);
+
+    if (vflag && nrec > 0 && sts != STS_FATAL)
+	fprintf(stderr, "found %d records\n", nrec);
 
     return sts;
 }

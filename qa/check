@@ -11,11 +11,23 @@ needwrap=true
 try=0
 n_bad=0
 bad=""
+n_triaged=0
+triaged=""
 notrun=""
 seq=''
-aborted=true
+__aborted=true
 myname=`basename $0`
-iam=$myname  #  a synonym
+__scriptname=$myname  #  a synonym
+
+# Suggested by Andreas Gerstmayr on 11 Mar 2022
+#
+if which timeout >/dev/null 2>&1
+then
+    use_timeout=true
+    max_timeout=5m
+else
+    use_timeout=false
+fi
 
 # lock (and PID) file to prevent concurrent QA execution
 #
@@ -54,7 +66,7 @@ _wrapup()
 	_release_lock
 	[ -d $tmp ] && ( rm -rf $tmp/checksums ; rmdir $tmp )
 
-	if $showme
+	if $__showme
 	then
 	    :
 	elif $needwrap
@@ -72,8 +84,8 @@ END	{ if (NR > 0) {
 		mv $tmp.out check.time
 	    fi
 
-	    echo $list | fmt | sed -e 's/^/    /' >>check.log
-	    if $aborted
+	    echo $__list | fmt | sed -e 's/^/    /' >>check.log
+	    if $__aborted
 	    then
 		if [ -z "$seq" ]
 		then
@@ -86,26 +98,39 @@ END	{ if (NR > 0) {
 
 	    if [ ! -z "$notrun" ]
 	    then
-		[ $color = true ] && tput bold && tput setaf 4 # blue
+		[ $__color = true ] && tput bold && tput setaf 4 # blue
 		echo "Not run:$notrun"
-		[ $color = true ] && tput sgr0 # reset
+		[ $__color = true ] && tput sgr0 # reset
 		echo "Not run:$notrun" | fmt >>check.log
 	    fi
-	    if [ ! -z "$n_bad" -a "$n_bad" != 0 ]
+	    if [ "$n_triaged" != 0 ]
 	    then
-		[ $color = true ] && tput bold && tput setaf 1 # red
+		[ $__color = true ] && tput bold && tput setaf 2 # green
+		echo "Triaged:$triaged"
+		[ $__color = true ] && tput sgr0 # reset
+		echo "Triaged:$triaged" | fmt >>check.log
+	    fi
+	    if [ "$n_bad" != 0 ]
+	    then
+		[ $__color = true ] && tput bold && tput setaf 1 # red
 		echo "Failures:$bad"
 		echo "Failed $n_bad of $try tests"
-		[ $color = true ] && tput sgr0 # reset
+		[ $__color = true ] && tput sgr0 # reset
 		echo "Failures:$bad" | fmt >>check.log
 		echo "Failed $n_bad of $try tests" >>check.log
 	    else
+		try=`expr $try - $n_triaged`
 		if [ $try != 0 ]
 		then
-		    [ $color = true ] && tput bold && tput setaf 2 # green
-		    echo "Passed all $try tests"
-		    [ $color = true ] && tput sgr0 # reset
-		    echo "Passed all $try tests" >>check.log
+		    [ $__color = true ] && tput bold && tput setaf 2 # green
+		    echo "Passed $try tests"
+		    [ $__color = true ] && tput sgr0 # reset
+		    echo "Passed $try tests" >>check.log
+		else
+		    [ $__color = true ] && tput bold && tput setaf 1 # red
+		    echo "No tests passed"
+		    [ $__color = true ] && tput sgr0 # reset
+		    echo "No tests passed" >>check.log
 		fi
 	    fi
 	    needwrap=false
@@ -124,7 +149,7 @@ _addfiles()
 
     for fn in "$@"
     do
-    	fgrep -s "$fn" "$af" >/dev/null
+    	grep -F -s "$fn" "$af" >/dev/null
     	[ $? = 1 ] && echo "$fn" >>"$af"
     done
 
@@ -267,14 +292,14 @@ _checksums()
     	    	buf=$tmp/checksums/$buf
 		if [ ! -f $f ]
 		then
-		    if fgrep "$f" $2 >/dev/null 2>&1
+		    if grep -F "$f" $2 >/dev/null 2>&1
 		    then
 			echo "    Missing: \"$f\""
 		        [ -f $buf ] && $sudo cp -f $buf $f
 		    fi
 		else
 		    _cs=`sum $f`
-		    if fgrep "$_cs" $2 >/dev/null 2>&1
+		    if grep -F "$_cs" $2 >/dev/null 2>&1
 		    then
 			$sudo rm -f $f.$seq.O
 		    else
@@ -294,18 +319,51 @@ _checksums()
     return 0
 }
 
+
+# If the file "triaged" exists, check if the current test ($seq)
+# and this platform are mentioned there ... if so, assume this
+# particular failure has already been triaged.
+#
+_is_triaged()
+{
+    [ -f triaged ] || return 0
+    rm -f $tmp.ok
+    [ ! -f $tmp.whatami ] && admin/whatami >$tmp.whatami
+    sed -n <triaged \
+	-e '/^'$seq'	/{
+s///
+s@\\@\\\\\\\\\\\\\\\\@g
+p
+}' \
+    | while read _line
+    do
+	eval `echo "$_line" | sed -e 's/\//\\\\/g' -e 's/^/_re="/' -e 's/	.*/"/'`
+	eval `echo "$_line" | sed -e 's/^[^	]*	/_comments="/' -e 's/$/"/'`
+	if grep -E "$_re" $tmp.whatami >/dev/null 2>&1
+	then
+	    # triaged, don't treat as a Failure
+	    #
+	    touch $tmp.ok
+	    break
+	fi
+    done
+
+    if [ -f $tmp.ok ]
+    then
+	return 0
+    else
+	return 1
+    fi
+}
+
 trap "_wrapup; exit \$status" 0 1 2 3 15
 
-# by default don't output timestamps
-timestamp=false
-timings_file=false
-
 # generic initialization... this may take a while to run, because (unless
-# $quick is true) make is run.
+# $__quick is true) make is run.
 . ./common
 
 [ -f check.time ] || touch check.time
-$timings_file && $PCP_ECHO_PROG $PCP_ECHO_N > check.timings
+$__timings_file && $PCP_ECHO_PROG $PCP_ECHO_N > check.timings
 
 # Remove automated PMDA install/remove that will interfere with tests
 $sudo rm -f $PCP_PMDAS_DIR/*/.NeedInstall $PCP_PMDAS_DIR/*/.NeedRemove
@@ -315,21 +373,29 @@ $sudo rm -f $PCP_PMLOGGER_DIR/.NeedRewrite
 
 [ "`_get_config pmcd`" != on ] && _change_config pmcd on
 
-torun=`echo $list | wc -w | sed -e 's/ //g'`
+torun=`echo $__list | wc -w | sed -e 's/ //g'`
 haverun=0
 
-if $showme
+if $__showme
 then
     :
 else
     echo "" >>check.log
     date >>check.log
+    # make sure everything is ship-shape from pmlogger_daily
+    #
+    if ./daily-cleanup
+    then
+	:
+    else
+	echo "... you have been warned!"
+    fi
 fi
 
-for seq in $list
+for seq in $__list
 do
-    err=false
-    if $showme
+    state="Pass"
+    if $__showme
     then
 	echo $seq
 	continue
@@ -363,15 +429,15 @@ do
 	    exit
     	fi
 
-	if $check_config
+	if $__check_config
 	then
 	    # save checksums for critical conf and control files
 	    [ ! -f $tmp.checksums ] && _checksums get >$tmp.checksums
 	fi
 
 	start=`_wallclock`
-	$timestamp && _timestamp
-	$timings_file && $PCP_ECHO_PROG $PCP_ECHO_N "$seq `date '+%s'` " >> check.timings
+	$__timestamp && _timestamp
+	$__timings_file && $PCP_ECHO_PROG $PCP_ECHO_N "$seq `date '+%s'` " >> check.timings
 
 	# optional --precheck callback
 	#
@@ -381,10 +447,18 @@ do
 	    ./check.callback --precheck $seq >$tmp.callback.pre 2>&1
 	fi
 
-	./$seq >$tmp.out 2>&1
-	sts=$?
+	if $use_timeout
+	then
+	    # -s 6 => SIGABRT ... see trap in common.rc
+	    #
+	    timeout -s 6 $max_timeout ./$seq >$tmp.out 2>&1
+	    sts=$?
+	else
+	    ./$seq >$tmp.out 2>&1
+	    sts=$?
+	fi
 
-	if $check_config
+	if $__check_config
 	then
 	    # check the saved checksums
 	    _checksums check $tmp.checksums >$tmp.check
@@ -403,28 +477,28 @@ do
 	then
 	    $PCP_ECHO_PROG $PCP_ECHO_N " [dumped core]""$PCP_ECHO_C"
 	    mv core $seq.core
-	    err=true
+	    state="Fail"
 	fi
 
 	$sudo rm -f $seq.out.bad
 	rm -f $tmp.callback.abort
 	if [ -f $seq.notrun ]
 	then
-	    [ $color = true ] && tput bold && tput setaf 4 # blue
+	    [ $__color = true ] && tput bold && tput setaf 4 # blue
 	    echo " [not run] `cat $seq.notrun`"
-	    [ $color = true ] && tput sgr0 # reset
+	    [ $__color = true ] && tput sgr0 # reset
 	    notrun="$notrun $seq"
 	else
 	    if [ $sts -ne 0 ]
 	    then
 		$PCP_ECHO_PROG $PCP_ECHO_N " [failed, exit status $sts]""$PCP_ECHO_C"
-		err=true
+		state="Fail"
 	    fi
 	    if [ ! -f $seq.out ]
 	    then
 		echo " - no qualified output"
 		mv $tmp.out $seq.out.bad
-		err=true
+		state="Fail"
 	    else
 		# we have $seq.out (expected) and $tmp.out (observed)
 		# output files, first check if they match
@@ -433,12 +507,21 @@ do
 		then
 		    done_nl=false
 		else
-		    [ $color = true ] && tput bold && tput setaf 1 # red
-		    echo " - output mismatch (see $seq.out.bad)"
-		    [ $color = true ] && tput sgr0 # reset
+		    [ $__color = true ] && tput bold && tput setaf 1 # red
+		    $PCP_ECHO_PROG $PCP_ECHO_N " - output mismatch (see $seq.out.bad)"
+		    if _is_triaged
+		    then
+			[ $__color = true ] && tput bold && tput setaf 2 # green
+			echo " - triaged"
+			state="Triaged"
+			[ $__color = true ] && tput sgr0 # reset
+		    else
+			echo
+			$__diff $seq.out $tmp.out
+			state="Fail"
+			[ $__color = true ] && tput sgr0 # reset
+		    fi
 		    done_nl=true
-		    $diff $seq.out $tmp.out
-		    err=true
 		fi
 
 		# now some integrity checks to see if the test has
@@ -452,19 +535,19 @@ do
 		sh ./994 --fix >$tmp.tmp
 		if [ -s $tmp.tmp ]
 		then
-		    [ $color = true ] && tput bold && tput setaf 1 # red
+		    [ $__color = true ] && tput bold && tput setaf 1 # red
 		    if $done_nl
 		    then
 			echo "$seq ... - also failed permissions check"
 		    else
 			$PCP_ECHO_PROG $PCP_ECHO_N " - failed permissions check""$PCP_ECHO_C"
 		    fi
-		    [ $color = true ] && tput sgr0 # reset
+		    [ $__color = true ] && tput sgr0 # reset
 		    reported=true
 		    echo >>$tmp.out
 		    echo "*** Failed permissions/ownership checks ***" >>$tmp.out
 		    cat $tmp.tmp >>$tmp.out
-		    err=true
+		    state="Fail"
 		fi
 
 		# optional callback
@@ -481,45 +564,45 @@ do
 			    # output from check.callback, this means something
 			    # bad has been detected ...
 			    #
-			    [ $color = true ] && tput bold && tput setaf 1 # red
+			    [ $__color = true ] && tput bold && tput setaf 1 # red
 			    if $done_nl
 			    then
 				echo "$seq ... - also badness detected by check.callback"
 			    else
 				$PCP_ECHO_PROG $PCP_ECHO_N " - badness detected by check.callback""$PCP_ECHO_C"
 			    fi
-			    [ $color = true ] && tput sgr0 # reset
+			    [ $__color = true ] && tput sgr0 # reset
 			    echo >>$tmp.out
 			    echo "+++ check.callback output +++" >>$tmp.out
 			    [ -f $tmp.callback.pre ] && cat $tmp.callback.pre >>$tmp.out
 			    cat $tmp.callback.post >>$tmp.out
-			    err=true
+			    state="Fail"
 			fi
 		    else
 			# check.callback suggests we should abandon the QA run ...
 			#
-			[ $color = true ] && tput bold && tput setaf 1 # red
+			[ $__color = true ] && tput bold && tput setaf 1 # red
 			if $done_nl
 			then
 			    echo "$seq ... - also run aborted by check.callback"
 			else
 			    $PCP_ECHO_PROG $PCP_ECHO_N " - run aborted by check.callback""$PCP_ECHO_C"
 			fi
-			[ $color = true ] && tput sgr0 # reset
+			[ $__color = true ] && tput sgr0 # reset
 			echo >>$tmp.out
 			echo "+++ check.callback output +++" >>$tmp.out
 			[ -f $tmp.callback.pre ] && cat $tmp.callback.pre >>$tmp.out
 			cat $tmp.callback.post >>$tmp.out
-			err=true
+			state="Fail"
 			echo "Check! [after $seq] Run aborted by check.callback @ `date`" >>check.log
 			touch $tmp.callback.abort
 		    fi
 		fi
 
-		$timestamp && _timestamp
+		$__timestamp && _timestamp
 		stop=`_wallclock`
 
-		if $err
+		if [ "$state" != "Pass" ]
 		then
 		    mv $tmp.out $seq.out.bad
 		else
@@ -529,21 +612,28 @@ do
 		$done_nl || echo
 	    fi
 	fi
-	$timings_file && date '+%s' >> check.timings
+	$__timings_file && date '+%s' >> check.timings
     fi
 
-    # come here for each test, except when $showme is true
+    # come here for each test, except when $__showme is true
     #
-    if $err
+    if [ "$state" = "Fail" ]
     then
 	bad="$bad $seq"
 	n_bad=`expr $n_bad + 1`
-	quick=false
-	[ $diff = true ] || echo "Check local PMCD is still alive ..."
+	try=`expr $try + 1`
+	__quick=false
+	[ $__diff = true ] || echo "Check local PMCD is still alive ..."
 	$OPTION_AGENTS && _haveagents
 	$OPTION_LOGGER && _havelogger
+    elif [ "$state" = "Triaged" ]
+    then
+	triaged="$triaged $seq"
+	n_triaged=`expr $n_triaged + 1`
+	try=`expr $try + 1`
+    else
+	[ -f $seq.notrun ] || try=`expr $try + 1`
     fi
-    [ -f $seq.notrun ] || try=`expr $try + 1`
     rm -f $seq.notrun
 
     [ -f $tmp.callback.abort ] && break
@@ -552,9 +642,9 @@ done
 
 if [ -f $tmp.callback.abort ]
 then
-    aborted=true
+    __aborted=true
 else
-    aborted=false
+    __aborted=false
 fi
 
 status=$n_bad

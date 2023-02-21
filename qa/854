@@ -2,6 +2,8 @@
 # PCP QA Test No. 854
 # Check PMCD state change notification, aka PMCD_ADD_AGENT
 #
+# This one checks sample.dynamic.meta.pmdesc.sem ... see also qa/1055
+#
 # Copyright (c) 2016 Red Hat, Inc.
 #
 
@@ -17,6 +19,7 @@ signal=$PCP_BINADM_DIR/pmsignal
 status=1
 done_clean=false
 LOCALHOST=`hostname`
+LOGGING_DIR="$PCP_ARCHIVE_DIR"
 
 _cleanup()
 {
@@ -59,37 +62,34 @@ cat <<End-of-File >$tmp.tmp
 # Installed by PCP QA test $seq on `date`
 pmcd	2	dso	pmcd_init	$PMDA_PMCD_PATH
 sample	29	pipe	binary 		$PCP_PMDAS_DIR/sample/pmdasample -d 29 
-simple	253	pipe	binary 		/var/lib/pcp/pmdas/simple/pmdasimple -d 253 
+simple	253	pipe	binary 		$PCP_PMDAS_DIR/simple/pmdasimple -d 253 
 End-of-File
 $sudo cp $tmp.tmp $PCP_PMCDCONF_PATH
 
 _writable_primary_logger
 _service pcp restart 2>&1 | _filter_pcp_start
 _wait_for_pmcd
-if [ -d $PCP_LOG_DIR/pmlogger ]
-then
-    LOGGING_DIR=$PCP_LOG_DIR/pmlogger
-else
-    LOGGING_DIR=$PCP_LOG_DIR
-fi
-_wait_for_pmlogger -P $LOGGING_DIR/$LOCALHOST/pmlogger.log
+_wait_for_pmlogger
 
 # Reset pmlogger
 echo "log sample.dynamic.meta.metric"
 # Log the sample pmda's sample.dynamic.meta.metric
-echo 'connect primary
-log mandatory on 500 msec { sample.dynamic.meta.metric }' \
-    | pmlc
+cat <<'End-of-File' >$tmp.pmlc
+connect primary
+log mandatory on 500 msec { sample.dynamic.meta.metric }
+End-of-File
+_try_pmlc
 
 # log a few samples
 sleep 2
 
 # check, to be sure !
 #
-echo 'connect primary
+cat <<'End-of-File' >$tmp.pmlc
+connect primary
 query sample.dynamic.meta.metric
-' \
-| pmlc >>$seq.full
+End-of-File
+_try_pmlc
 
 # killing off pmlogger (as expected) may start another pmlogger instance
 # thanks to systemd, so remember the current archive and the current log
@@ -103,7 +103,7 @@ echo "archive contents before pmda simple restart..."
 echo "expect no <mark> record"
 echo "---------------------------------------------------------------"
 pmdumplog $archive  >$tmp.out 2>&1
-egrep '(<mark>)|(sample.dynamic.meta.metric)' $tmp.out \
+grep -E '(<mark>)|(sample.dynamic.meta.metric)' $tmp.out \
 | _filter_pmdumplog \
 | uniq
 echo "---------------------------------------------------------------"
@@ -133,7 +133,7 @@ echo "archive contents after pmda simple restart..."
 echo "expect no <mark> record"
 echo "---------------------------------------------------------------"
 pmdumplog $archive >$tmp.out 2>&1
-egrep '(<mark>)|(sample.dynamic.meta.metric)' $tmp.out \
+grep -E '(<mark>)|(sample.dynamic.meta.metric)' $tmp.out \
 | _filter_pmdumplog \
 | uniq
 echo "---------------------------------------------------------------"

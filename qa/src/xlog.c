@@ -3,7 +3,7 @@
  */
 
 /*
- * exercise meta-Data services for an archive
+ * exercise meta-data services for an archive
  */
 
 #include <ctype.h>
@@ -13,6 +13,7 @@
 static int	vflag;
 static int	numpmid;
 static pmID	pmidlist[20];
+static pmDesc	desclist[20];
 static const char *namelist[20];
 
 static void
@@ -22,62 +23,57 @@ grind(void)
     int		i;
     int		*instlist;
     char	**inamelist;
-    pmDesc	desc;
 
     for (i = 0; i < numpmid; i++) {
 	if (pmidlist[i] != PM_ID_NULL) {
 	    printf("\npmid: 0x%x name: %s", pmidlist[i], namelist[i]);
-	    if ((sts = pmLookupDesc(pmidlist[i], &desc)) < 0) {
-		printf("\npmLookupDesc: %s\n", pmErrStr(sts));
+	    printf(" indom: 0x%x", desclist[i].indom);
+	    if (vflag) {
+		const char	*u = pmUnitsStr(&desclist[i].units);
+		printf("\ndesc: type=%d indom=0x%x sem=%d units=%s",
+			desclist[i].type, desclist[i].indom, desclist[i].sem,
+			*u == '\0' ? "none" : u);
+	    }
+	    if (desclist[i].indom == PM_INDOM_NULL) {
+		printf("\n");
+		continue;
+	    }
+	    if (vflag)
+		putchar('\n');
+	    if ((sts = pmGetInDomArchive(desclist[i].indom, &instlist, &inamelist)) < 0) {
+		printf("pmGetInDomArchive: %s\n", pmErrStr(sts));
 	    }
 	    else {
-		printf(" indom: 0x%x", desc.indom);
-		if (vflag) {
-		    const char	*u = pmUnitsStr(&desc.units);
-		    printf("\ndesc: type=%d indom=0x%x sem=%d units=%s",
-			desc.type, desc.indom, desc.sem,
-			*u == '\0' ? "none" : u);
-		}
-		if (desc.indom == PM_INDOM_NULL) {
-		    printf("\n");
-		    continue;
-		}
-		if (vflag)
-		    putchar('\n');
-		if ((sts = pmGetInDomArchive(desc.indom, &instlist, &inamelist)) < 0) {
-		    printf("pmGetInDomArchive: %s\n", pmErrStr(sts));
-		}
-		else {
-		    int		j;
-		    int		numinst = sts;
-		    char	*name;
-		    printf(" numinst: %d\n", numinst);
-		    for (j = 0; j < numinst; j++) {
+		int	j;
+		int	numinst = sts;
+		char	*name;
+
+		printf(" numinst: %d\n", numinst);
+		for (j = 0; j < numinst; j++) {
+		    if (vflag)
+			printf("  instance id: 0x%x ", instlist[j]);
+		    if ((sts = pmNameInDomArchive(desclist[i].indom, instlist[j], &name)) < 0) {
+			printf("pmNameInDomArchive: %s\n", pmErrStr(sts));
+		    }
+		    else {
 			if (vflag)
-			    printf("  instance id: 0x%x ", instlist[j]);
-			if ((sts = pmNameInDomArchive(desc.indom, instlist[j], &name)) < 0) {
-			    printf("pmNameInDomArchive: %s\n", pmErrStr(sts));
+			    printf("%s (== %s?)", name, inamelist[j]);
+			if ((sts = pmLookupInDomArchive(desclist[i].indom, name)) < 0) {
+			    printf(" pmLookupInDomArchive: %s\n", pmErrStr(sts));
 			}
 			else {
-			    if (vflag)
-				printf("%s (== %s?)", name, inamelist[j]);
-			    if ((sts = pmLookupInDomArchive(desc.indom, name)) < 0) {
-				printf(" pmLookupInDomArchive: %s\n", pmErrStr(sts));
-			    }
-			    else {
-				if (sts != instlist[j]) {
-				    printf(" botch: pmLookupInDom returns 0x%x, expected 0x%x\n",
+			    if (sts != instlist[j]) {
+				printf(" botch: pmLookupInDom returns 0x%x, expected 0x%x\n",
 					sts, instlist[j]);
-				}
-				else if (vflag)
-				    putchar('\n');
 			    }
-			    free(name);
+			    else if (vflag)
+				putchar('\n');
 			}
+			free(name);
 		    }
-		    free(instlist);
-		    free(inamelist);
 		}
+		free(instlist);
+		free(inamelist);
 	    }
 	}
     }
@@ -87,15 +83,16 @@ int
 main(int argc, char **argv)
 {
     int		c;
+    int		i;
     int		sts;
     int		ctx[2];
     int		errflag = 0;
     char	*archive = "foo";
     char	*namespace = PM_NS_DEFAULT;
     static char	*usage = "[-D debugspec] [-a archive] [-n namespace] [-v]";
-    int		i;
-    pmLogLabel	loglabel;
-    pmLogLabel	duplabel;
+    struct timespec	delta = { 0, 5000000 };	/* 5 msec */
+    pmHighResLogLabel	loglabel;
+    pmHighResLogLabel	duplabel;
 
     pmSetProgname(argv[0]);
 
@@ -144,40 +141,43 @@ main(int argc, char **argv)
 	printf("%s: Cannot connect to archive \"%s\": %s\n", pmGetProgname(), archive, pmErrStr(ctx[0]));
 	exit(1);
     }
-    if ((sts = pmGetArchiveLabel(&loglabel)) < 0) {
-	printf("%s: pmGetArchiveLabel(%d): %s\n", pmGetProgname(), ctx[0], pmErrStr(sts));
+    if ((sts = pmGetHighResArchiveLabel(&loglabel)) < 0) {
+	printf("%s: pmGetHighResArchiveLabel(%d): %s\n", pmGetProgname(), ctx[0], pmErrStr(sts));
 	exit(1);
     }
-    if ((sts = pmSetMode(PM_MODE_INTERP, &loglabel.ll_start, 5)) < 0) {
-	printf("%s: pmSetMode: %s\n", pmGetProgname(), pmErrStr(sts));
+    if ((sts = pmSetModeHighRes(PM_MODE_INTERP, &loglabel.start, &delta)) < 0) {
+	printf("%s: pmSetModeHighRes: %s\n", pmGetProgname(), pmErrStr(sts));
 	exit(1);
     }
     if ((ctx[1] = pmDupContext()) < 0) {
 	printf("%s: Cannot dup context: %s\n", pmGetProgname(), pmErrStr(ctx[1]));
 	exit(1);
     }
-    if ((sts = pmGetArchiveLabel(&duplabel)) < 0) {
-	printf("%s: pmGetArchiveLabel(%d): %s\n", pmGetProgname(), ctx[1], pmErrStr(sts));
+    if ((sts = pmGetHighResArchiveLabel(&duplabel)) < 0) {
+	printf("%s: pmGetHighResArchiveLabel(%d): %s\n", pmGetProgname(), ctx[1], pmErrStr(sts));
 	exit(1);
     }
-    if (loglabel.ll_magic != duplabel.ll_magic ||
-	loglabel.ll_pid != duplabel.ll_pid ||
- 	loglabel.ll_start.tv_sec != duplabel.ll_start.tv_sec ||
-	loglabel.ll_start.tv_usec != duplabel.ll_start.tv_usec ||
-	strcmp(loglabel.ll_hostname, duplabel.ll_hostname) != 0 ||
-	strcmp(loglabel.ll_tz, duplabel.ll_tz) != 0) {
-	printf("Error: pmLogLabel mismatch\n");
-	printf("First context: magic=0x%x pid=%" FMT_PID " start=%ld.%06ld\n",
-		loglabel.ll_magic, loglabel.ll_pid,
-		(long)loglabel.ll_start.tv_sec,
-		(long)loglabel.ll_start.tv_usec);
-	printf("host=%s TZ=%s\n", loglabel.ll_hostname, loglabel.ll_tz);
-	printf("Error: pmLogLabel mismatch\n");
-	printf("Dup context: magic=0x%x pid=%" FMT_PID " start=%ld.%06ld\n",
-		duplabel.ll_magic, duplabel.ll_pid,
-		(long)duplabel.ll_start.tv_sec,
-		(long)duplabel.ll_start.tv_usec);
-	printf("host=%s TZ=%s\n", duplabel.ll_hostname, duplabel.ll_tz);
+    if (loglabel.magic != duplabel.magic ||
+	loglabel.pid != duplabel.pid ||
+ 	loglabel.start.tv_sec != duplabel.start.tv_sec ||
+	loglabel.start.tv_nsec != duplabel.start.tv_nsec ||
+	strcmp(loglabel.hostname, duplabel.hostname) != 0 ||
+	strcmp(loglabel.timezone, duplabel.timezone) != 0 ||
+	strcmp(loglabel.zoneinfo, duplabel.zoneinfo) != 0) {
+	printf("Error: pmHighResLogLabel mismatch\n");
+	printf("First context: magic=0x%x pid=%" FMT_PID " start=%lld.%09ld\n",
+		loglabel.magic, loglabel.pid,
+		(long long)loglabel.start.tv_sec,
+		(long)loglabel.start.tv_nsec);
+	printf("hostname=%s timezone=%s zoneinfo=%s\n",
+		loglabel.hostname, loglabel.timezone, loglabel.zoneinfo);
+	printf("Error: pmHighResLogLabel mismatch\n");
+	printf("Dup context: magic=0x%x pid=%" FMT_PID " start=%lld.%09ld\n",
+		duplabel.magic, duplabel.pid,
+		(long long)duplabel.start.tv_sec,
+		(long)duplabel.start.tv_nsec);
+	printf("hostname=%s timezone=%s zoneinfo=%s\n",
+		duplabel.hostname, duplabel.timezone, duplabel.zoneinfo);
 	exit(1);
     }
 
@@ -215,7 +215,11 @@ main(int argc, char **argv)
 	    }
 	}
 
-	grind();
+	if ((sts = pmLookupDescs(numpmid, pmidlist, desclist)) < 0) {
+	    printf("\npmLookupDesc: %s\n", pmErrStr(sts));
+	} else {
+	    grind();
+	}
     }
     exit(0);
 }

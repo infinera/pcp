@@ -1,11 +1,11 @@
 /*
- * Copyright (c) 2016-2021 Red Hat.
+ * Copyright (c) 2016-2023 Red Hat.
  *
  * This program is free software; you can redistribute it and/or modify it
  * under the terms of the GNU General Public License as published by the
  * Free Software Foundation; either version 2 of the License, or (at your
  * option) any later version.
- * 
+ *
  * This program is distributed in the hope that it will be useful, but
  * WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY
  * or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License
@@ -113,6 +113,8 @@ enum {
 	CLUSTER_ZRAM_BD_STAT,	/* 89 /sys/block/zram[0-9]/bd_stat metrics */
 	CLUSTER_NET_ALL,	/* 90 /proc/net/dev aggregate metrics */
 	CLUSTER_FCHOST,		/* 91 /sys/class/fc_host metrics */
+	CLUSTER_WWID,		/* 92 multipath aggregated stats */
+	CLUSTER_PRESSURE_IRQ,	/* 93 /proc/pressure/irq metrics */
 
 	NUM_CLUSTERS		/* one more than highest numbered cluster */
 };
@@ -128,6 +130,7 @@ enum {
 	REFRESH_NET_LINKUP,
 	REFRESH_NET_RUNNING,
 	REFRESH_NET_WIRELESS,
+	REFRESH_NET_VIRTUAL,
 
 	REFRESH_NETADDR_INET,
 	REFRESH_NETADDR_IPV6,
@@ -135,6 +138,9 @@ enum {
 
 	REFRESH_PROC_DISKSTATS,
 	REFRESH_PROC_PARTITIONS,
+
+	REFRESH_SYSFS_KERNEL_UEVENTSEQ,
+	REFRESH_SYSFS_KERNEL_EXTFRAG,
 
 	NUM_REFRESHES		/* one more than highest refresh index */
 };
@@ -185,6 +191,7 @@ enum {
 	FCHOST_INDOM,		/* 39 - fibrechannel hosts */
 	INTERRUPT_CPU_INDOM,	/* 40 - per-CPU interrupt lines */
 	SOFTIRQ_CPU_INDOM,	/* 41 - per-CPU soft IRQs */
+	WWID_INDOM,		/* 42 - per-WWID multipath device */
 
 	NUM_INDOMS		/* one more than highest numbered cluster */
 };
@@ -200,9 +207,8 @@ extern pmdaIndom *linux_pmda_indom(int);
  */
 #define	LINUX_TEST_MODE		(1<<0)
 #define	LINUX_TEST_STATSPATH	(1<<1)
-#define	LINUX_TEST_MEMINFO	(1<<2)
-#define	LINUX_TEST_NCPUS	(1<<3)
-#define	LINUX_TEST_NNODES	(1<<4)
+#define	LINUX_TEST_NCPUS	(1<<2)
+#define	LINUX_TEST_NNODES	(1<<3)
 extern int linux_test_mode;
 
 /*  
@@ -282,6 +288,14 @@ typedef struct {
 
 typedef struct {
     unsigned int	flags;
+    uint64_t		count;
+    uint64_t		time;
+    uint32_t		max;
+    uint32_t		min;
+} cpufreq_t;
+
+typedef struct {
+    unsigned int	flags;
     uint64_t		processed;
     uint64_t		dropped;
     uint64_t		time_squeeze;
@@ -297,15 +311,18 @@ typedef struct {
     struct linux_table	*meminfo;
     struct linux_table	*memstat;
     double		bandwidth;
+    float		extfrag_unusable;  /* external fragmentation */
+    unsigned int	num_extfrag_index; /* memory allocator order */
 } pernode_t;
 
 typedef struct {
     unsigned int	cpuid;  /* cpu%d instance name */
-    unsigned int	instid; /* internal instance id */
+    unsigned int	flags;	/* refresh status */
     pernode_t		*node;
     char		*name;
     cpuacct_t		stat;
     cpuinfo_t		info;
+    cpufreq_t		freq;
     softnet_t		*softnet;
 } percpu_t;
 

@@ -15,6 +15,7 @@ echo "QA output created by $seq"
 
 _check_series
 _check_search
+_check_redis_server_version_offline
 
 _cleanup()
 {
@@ -34,7 +35,6 @@ status=1	# failure is the default!
 signal=$PCP_BINADM_DIR/pmsignal
 
 userid=`id -u`
-groupid=`id -g`
 username=`id -u -n`
 hostname=`hostname`
 machineid=`_machine_id`
@@ -71,12 +71,25 @@ echo "=== Start test Redis server ==="
 redisport=`_find_free_port`
 redispath=`_find_redis_modules`
 redisearch="$redispath/redisearch.$DSO_SUFFIX"
-$sudo redis-server --port $redisport --loadmodule $redisearch > $tmp.redis 2>&1 &
-echo "PING"
-pmsleep 0.125
+# workaround until https://bugs.debian.org/cgi-bin/bugreport.cgi?bug=989385 is fixed
+sudo chmod +x $redisearch
+# RediSearch module is only accessible by the redis user
+sudo -u redis redis-server --port $redisport --save "" --loadmodule $redisearch > $tmp.redis 2>&1 &
+_check_redis_ping $redisport
 port="-p $redisport"
-redis-cli $port ping
 echo
+
+cat > $tmp.conf <<EOF
+[pmproxy]
+pcp.enabled = true
+http.enabled = true
+redis.enabled = true
+[pmseries]
+enabled = true
+servers = localhost:$redisport
+[pmsearch]
+enabled = true
+EOF
 
 # import some well-known test data into Redis
 _filter_load()
@@ -114,11 +127,12 @@ _filter_info()
 }
 
 echo "=== Load deterministic search content ==="
-pmseries $port --load $here/archives/sample-labels | _filter_load
+pmseries -c $tmp.conf $port --load $here/archives/sample-labels | _filter_load
 
 # start pmproxy
 proxyport=`_find_free_port`
-proxyopts="-p $proxyport -r $redisport -t" # -Dseries,http,af
+echo "proxyport=$proxyport" >>$seq.full
+proxyopts="-p $proxyport -r $redisport -c $tmp.conf" # -Dseries,http,af
 pmproxy -f -U $username -x $seq.full -l $tmp.pmproxy.log $proxyopts &
 pmproxy_pid=$!
 
@@ -129,7 +143,7 @@ pmcd_wait -h localhost@localhost:$proxyport -v -t 5sec
 pmsleep 10s
 
 $PCP_PS_PROG $PCP_PS_ALL_FLAGS | grep pmproxy >> $seq.full
-redis-cli $options keys pcp:text >> $seq.full
+redis-cli $port keys pcp:text >> $seq.full
 cat $tmp.pmproxy.log >> $seq.full
 
 echo "=== /search/text - query for '99' 'random' 'interesting' 'result' ==="
@@ -137,7 +151,7 @@ search_terms="99 random interesting result"
 for term in $search_terms
 do
     url="http://localhost:$proxyport/search/text?query=$term"
-    echo "== verify request - $url"
+    echo "== verify request - $url" | sed -e "s/$proxyport/PORT/"
     echo "$url" >> $seq.full
     curl --get --silent "$url" | tee -a $seq.full | pmjson | _filter_elapsed
 done
@@ -145,31 +159,31 @@ done
 echo "=== /search/text - no match response ==="
 
 url="http://localhost:$proxyport/search/text?query=bazinga"
-echo "== verify request - $url"
+echo "== verify request - $url" | sed -e "s/$proxyport/PORT/"
 echo "$url" >> $seq.full
 curl --get --silent "$url" | tee -a $seq.full | pmjson | _filter_elapsed
 
 echo "=== /search/text - query param is required ==="
 
 url="http://localhost:$proxyport/search/text"
-echo "== verify request - $url"
+echo "== verify request - $url" | sed -e "s/$proxyport/PORT/"
 echo "$url" >> $seq.full
 curl --get --silent -s -o /dev/null -w "%{http_code}\n" "$url" | tee -a $seq.full 
 
 echo "=== /search/text - highlighting is supported on 'name', 'oneline' and 'helptext' by using 'highlight' param ==="
 
 url="http://localhost:$proxyport/search/text?query=domain&highlight=name,oneline,helptext"
-echo "== verify request - $url"
+echo "== verify request - $url" | sed -e "s/$proxyport/PORT/"
 echo "$url" >> $seq.full
 curl --get --silent "$url" | tee -a $seq.full | pmjson | _filter_elapsed
 
 url="http://localhost:$proxyport/search/text?query=sample&highlight=name"
-echo "== verify request - $url"
+echo "== verify request - $url" | sed -e "s/$proxyport/PORT/"
 echo "$url" >> $seq.full
 curl --get --silent "$url" | tee -a $seq.full | pmjson | _filter_elapsed
 
 url="http://localhost:$proxyport/search/text?query=counter&highlight=oneline,helptext"
-echo "== verify request - $url"
+echo "== verify request - $url" | sed -e "s/$proxyport/PORT/"
 echo "$url" >> $seq.full
 curl --get --silent "$url" | tee -a $seq.full | pmjson | _filter_elapsed
 
@@ -177,163 +191,167 @@ curl --get --silent "$url" | tee -a $seq.full | pmjson | _filter_elapsed
 echo "=== /search/text  - pagination is supported using cursor params 'limit' and 'offset'"
 
 url="http://localhost:$proxyport/search/text?query=random&limit=1"
-echo "== verify request - $url"
+echo "== verify request - $url" | sed -e "s/$proxyport/PORT/"
 echo "$url" >> $seq.full
 curl --get --silent "$url" | tee -a $seq.full | pmjson | _filter_elapsed
 
 url="http://localhost:$proxyport/search/text?query=random&limit=1&offset=1"
-echo "== verify request - $url"
+echo "== verify request - $url" | sed -e "s/$proxyport/PORT/"
 echo "$url" >> $seq.full
 curl --get --silent "$url" | tee -a $seq.full | pmjson | _filter_elapsed
 
 echo "=== /search/text - its possible to query only specific fields (name, oneline, helptext, indom) using 'field' param ==="
 
 url="http://localhost:$proxyport/search/text?query=99&field=name"
-echo "== verify request - $url"
+echo "== verify request - $url" | sed -e "s/$proxyport/PORT/"
 echo "$url" >> $seq.full
 curl --get --silent "$url" | tee -a $seq.full | pmjson | _filter_elapsed
 
 url="http://localhost:$proxyport/search/text?query=99&field=oneline"
-echo "== verify request - $url"
+echo "== verify request - $url" | sed -e "s/$proxyport/PORT/"
 echo "$url" >> $seq.full
 curl --get --silent "$url" | tee -a $seq.full | pmjson | _filter_elapsed
 
 url="http://localhost:$proxyport/search/text?query=99&field=helptext"
-echo "== verify request - $url"
+echo "== verify request - $url" | sed -e "s/$proxyport/PORT/"
 echo "$url" >> $seq.full
 curl --get --silent "$url" | tee -a $seq.full | pmjson | _filter_elapsed
 
 echo "=== /search/text - filtering out fields from response (name, oneline, helptext, type, indom) using 'return' param ==="
 
 url="http://localhost:$proxyport/search/text?query=99&return=name"
-echo "== verify request - $url"
+echo "== verify request - $url" | sed -e "s/$proxyport/PORT/"
 echo "$url" >> $seq.full
 curl --get --silent "$url" | tee -a $seq.full | pmjson | _filter_elapsed
 
 url="http://localhost:$proxyport/search/text?query=99&return=type"
-echo "== verify request - $url"
+echo "== verify request - $url" | sed -e "s/$proxyport/PORT/"
 echo "$url" >> $seq.full
 curl --get --silent "$url" | tee -a $seq.full | pmjson | _filter_elapsed
 
 url="http://localhost:$proxyport/search/text?query=99&return=oneline"
-echo "== verify request - $url"
+echo "== verify request - $url" | sed -e "s/$proxyport/PORT/"
 echo "$url" >> $seq.full
 curl --get --silent "$url" | tee -a $seq.full | pmjson | _filter_elapsed
 
 url="http://localhost:$proxyport/search/text?query=99&return=helptext"
-echo "== verify request - $url"
+echo "== verify request - $url" | sed -e "s/$proxyport/PORT/"
 echo "$url" >> $seq.full
 curl --get --silent "$url" | tee -a $seq.full | pmjson | _filter_elapsed
 
 url="http://localhost:$proxyport/search/text?query=99&return=indom"
-echo "== verify request - $url"
+echo "== verify request - $url" | sed -e "s/$proxyport/PORT/"
 echo "$url" >> $seq.full
 curl --get --silent "$url" | tee -a $seq.full | pmjson | _filter_elapsed
 
 url="http://localhost:$proxyport/search/text?query=random&return=name,type,indom"
-echo "== verify request - $url"
+echo "== verify request - $url" | sed -e "s/$proxyport/PORT/"
 echo "$url" >> $seq.full
 curl --get --silent "$url" | tee -a $seq.full | pmjson | _filter_elapsed
 
 echo "=== /search/text - filtering based on entity type (metric, instance, indom) using 'type' param ==="
 
 url="http://localhost:$proxyport/search/text?query=random&type=metric"
-echo "== verify request - $url"
+echo "== verify request - $url" | sed -e "s/$proxyport/PORT/"
 echo "$url" >> $seq.full
 curl --get --silent "$url" | tee -a $seq.full | pmjson | _filter_elapsed
 
 url="http://localhost:$proxyport/search/text?query=random&type=indom"
-echo "== verify request - $url"
+echo "== verify request - $url" | sed -e "s/$proxyport/PORT/"
 echo "$url" >> $seq.full
 curl --get --silent "$url" | tee -a $seq.full | pmjson | _filter_elapsed
 
 url="http://localhost:$proxyport/search/text?query=random&type=instance"
-echo "== verify request - $url"
+echo "== verify request - $url" | sed -e "s/$proxyport/PORT/"
 echo "$url" >> $seq.full
 curl --get --silent "$url" | tee -a $seq.full | pmjson | _filter_elapsed
 
 url="http://localhost:$proxyport/search/text?query=random&type=metric,indom"
-echo "== verify request - $url"
+echo "== verify request - $url" | sed -e "s/$proxyport/PORT/"
 echo "$url" >> $seq.full
 curl --get --silent "$url" | tee -a $seq.full | pmjson | _filter_elapsed
 
 echo "=== /search/suggest - generic request ==="
 
 url="http://localhost:$proxyport/search/suggest?query=sam"
-echo "== verify request - $url"
+echo "== verify request - $url" | sed -e "s/$proxyport/PORT/"
 echo "$url" >> $seq.full
 curl --get --silent "$url" | tee -a $seq.full | pmjson | _filter_elapsed
 
 url="http://localhost:$proxyport/search/suggest?query=sample.r"
-echo "== verify request - $url"
+echo "== verify request - $url" | sed -e "s/$proxyport/PORT/"
 echo "$url" >> $seq.full
 curl --get --silent "$url" | tee -a $seq.full | pmjson | _filter_elapsed
 
 echo "=== /search/suggest - limit is supported"
 
 url="http://localhost:$proxyport/search/suggest?query=sam&limit=2"
-echo "== verify request - $url"
+echo "== verify request - $url" | sed -e "s/$proxyport/PORT/"
 echo "$url" >> $seq.full
 curl --get --silent "$url" | tee -a $seq.full | pmjson | _filter_elapsed
 
 echo "=== /search/suggest - query param is required ==="
 
 url="http://localhost:$proxyport/search/suggest"
-echo "== verify request - $url"
+echo "== verify request - $url" | sed -e "s/$proxyport/PORT/"
 echo "$url" >> $seq.full
 curl --get --silent -s -o /dev/null -w "%{http_code}\n" "$url" | tee -a $seq.full 
 
 echo "=== /search/suggest - no match response ==="
 
 url="http://localhost:$proxyport/search/suggest?query=xxx"
-echo "== verify request - $url"
+echo "== verify request - $url" | sed -e "s/$proxyport/PORT/"
 echo "$url" >> $seq.full
 curl --get --silent "$url" | tee -a $seq.full | pmjson | _filter_elapsed
 
 echo "=== /search/indom - generic request ==="
 
 url="http://localhost:$proxyport/search/indom?query=29.1"
-echo "== verify request - $url"
+echo "== verify request - $url" | sed -e "s/$proxyport/PORT/"
 echo "$url" >> $seq.full
 curl --get --silent "$url" | tee -a $seq.full | pmjson | _filter_elapsed
 
 url="http://localhost:$proxyport/search/indom?query=29.3"
-echo "== verify request - $url"
+echo "== verify request - $url" | sed -e "s/$proxyport/PORT/"
 echo "$url" >> $seq.full
 curl --get --silent "$url" | tee -a $seq.full | pmjson | _filter_elapsed
 
 echo "=== /search/indom - no match response ==="
 
 url="http://localhost:$proxyport/search/indom?query=x"
-echo "== verify request - $url"
+echo "== verify request - $url" | sed -e "s/$proxyport/PORT/"
 echo "$url" >> $seq.full
 curl --get --silent "$url" | tee -a $seq.full | pmjson | _filter_elapsed
 
 echo "=== /search/indom - query param is required ==="
 
 url="http://localhost:$proxyport/search/indom"
-echo "== verify request - $url"
+echo "== verify request - $url" | sed -e "s/$proxyport/PORT/"
 echo "$url" >> $seq.full
 curl --get --silent -s -o /dev/null -w "%{http_code}\n" "$url" | tee -a $seq.full 
 
 echo "=== /search/indom  - pagination is supported using cursor params 'limit' and 'offset'"
 
 url="http://localhost:$proxyport/search/indom?query=29.1&limit=2&offset=0"
-echo "== verify request - $url"
+echo "== verify request - $url" | sed -e "s/$proxyport/PORT/"
 echo "$url" >> $seq.full
 curl --get --silent "$url" | tee -a $seq.full | pmjson | _filter_elapsed
 
 url="http://localhost:$proxyport/search/indom?query=29.1&limit=2&offset=2"
-echo "== verify request - $url"
+echo "== verify request - $url" | sed -e "s/$proxyport/PORT/"
 echo "$url" >> $seq.full
 curl --get --silent "$url" | tee -a $seq.full | pmjson | _filter_elapsed
 
 echo "=== /search/info ==="
 
 url="http://localhost:$proxyport/search/info"
-echo "== verify request - $url"
+echo "== verify request - $url" | sed -e "s/$proxyport/PORT/"
 echo "$url" >> $seq.full
 curl --get --silent "$url" | tee -a $seq.full | pmjson | _filter_info
+
+
+cat $tmp.redis >> $seq.full
+cat $tmp.pmproxy.log >> $seq.full
 
 # success, all done
 status=0

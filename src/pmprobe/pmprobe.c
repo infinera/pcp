@@ -312,7 +312,6 @@ main(int argc, char **argv)
 		    printf("%s %d %s (pmGetInDom)", namelist[i], numinst, pmErrStr(numinst));
 		}
 		else {
-		    int		j;
 		    printf("%s %d", namelist[i], numinst);
 		    for (j = 0; j < numinst; j++) {
 			if (iflag)
@@ -443,6 +442,8 @@ main(int argc, char **argv)
 	}
 	printf("\nTotal: %d\n", j);
     }
+
+    pmDestroyContext(c);
 
     exit(0);
 }

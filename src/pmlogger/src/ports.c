@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2012-2015,2018 Red Hat.
+ * Copyright (c) 2012-2015,2018,2021 Red Hat.
  * Copyright (c) 1995-2001,2004 Silicon Graphics, Inc.  All Rights Reserved.
  * 
  * This program is free software; you can redistribute it and/or modify it
@@ -20,6 +20,9 @@
 #include <string.h>
 #include <ctype.h>
 #include "logger.h"
+#ifdef HAVE_EXECINFO_H
+#include <execinfo.h>
+#endif
 
 #if !defined(SIGRTMAX)
 #if defined(NSIG)
@@ -48,14 +51,14 @@ int		ctlport;	/* pmlogger control port number */
  * expect linkfile to be a symlink -> ..../<pid> (pid starts after last /)
  * or -> ...<pid> (pid starts at first digit)
  */
-static int
-get_pid_from_symlink(const char *linkfile, pid_t *pidp)
+STATIC_FUNC int
+get_pid_from_symlink(const char *link, pid_t *pidp)
 {
     ssize_t	plen;
     char	pbuf[MAXPATHLEN+1];
     char	*p;
 
-    plen = readlink(linkfile, pbuf, (size_t)MAXPATHLEN);
+    plen = readlink(link, pbuf, (size_t)MAXPATHLEN);
     if (plen > 0) {
 	pbuf[plen] = '\0';
 	p = strrchr(pbuf, '/');
@@ -127,43 +130,59 @@ cleanup(void)
 	unlink(socketPath);
 }
 
-static void
+STATIC_FUNC void
 sigexit_handler(int sig)
 {
-    if (pmDebugOptions.desperate)
-	fprintf(stderr, "pmlogger: Signalled (signal=%d), exiting\n", sig);
+    if (pmDebugOptions.appl3)
+	fprintf(stderr, "sigexit_handler: Signalled (signal=%d)\n", sig);
     cleanup();
     _exit(sig);
 }
 
-static void
+STATIC_FUNC void
+sigmisc_handler(int sig)
+{
+    if (pmDebugOptions.appl3)
+	fprintf(stderr, "sigmisc_handler: Signalled (signal=%d)\n", sig);
+    /* just ignore these ones ... */
+    __pmSetSignalHandler(sig, sigmisc_handler);
+}
+
+STATIC_FUNC void
 sigterm_handler(int sig)
 {
+    if (pmDebugOptions.appl3)
+	fprintf(stderr, "sigterm_handler: Signalled (signal=%d)\n", sig);
     /* exit as soon as possible, handler is deferred for log cleanup */
     sig_code = sig;
 }
 
-static void
+STATIC_FUNC void
 sighup_handler(int sig)
 {
-    __pmSetSignalHandler(SIGHUP, sighup_handler);
+    if (pmDebugOptions.appl3)
+	fprintf(stderr, "sighup_handler: Signalled (signal=%d)\n", sig);
+    __pmSetSignalHandler(sig, sighup_handler);
     vol_switch_flag = 1;
 }
 
 #ifndef IS_MINGW
-static void
+STATIC_FUNC void
 sigcore_handler(int sig)
 {
-    if (pmDebugOptions.desperate)
-	fprintf(stderr, "pmlogger: Signalled (signal=%d), exiting (core dumped)\n", sig);
-    __pmSetSignalHandler(SIGABRT, SIG_DFL);	/* Don't come back here */
+    if (pmDebugOptions.appl3)
+	fprintf(stderr, "sigcore_handler: Signalled (signal=%d), exiting (core dumped)\n", sig);
+    __pmDumpStack();
+    __pmSetSignalHandler(sig, SIG_DFL);	/* Don't come back here */
     cleanup();
     _exit(sig);
 }
 
-static void
+STATIC_FUNC void
 sigpipe_handler(int sig)
 {
+    if (pmDebugOptions.appl3)
+	fprintf(stderr, "sigpipe_handler: Signalled (signal=%d)\n", sig);
     /*
      * just ignore the signal, the write() will fail, and the PDU
      * xmit will return with an error
@@ -171,9 +190,11 @@ sigpipe_handler(int sig)
     __pmSetSignalHandler(SIGPIPE, sigpipe_handler);
 }
 
-static void
+STATIC_FUNC void
 sigusr2_handler(int sig)
 {
+    if (pmDebugOptions.appl3)
+	fprintf(stderr, "sigusr2_handler: Signalled (signal=%d)\n", sig);
     __pmSetSignalHandler(SIGUSR2, sigusr2_handler);
     log_switch_flag = 1;
     sig_code = sig; /* triggers break from main loop so we can re-exec */
@@ -200,7 +221,7 @@ static sig_map_t	sig_handler[] = {
     { SIGEMT,	sigcore_handler },	/* Core   Emulation Trap */
 #endif
     { SIGFPE,	sigcore_handler },	/* Core   Arithmetic Exception */
-    { SIGKILL,	sigexit_handler },	/* Exit   Killed */
+    { SIGKILL,	SIG_DFL },		/* Exit   Killed */
     { SIGBUS,	sigcore_handler },	/* Core   Bus Error */
     { SIGSEGV,	sigcore_handler },	/* Core   Segmentation Fault */
     { SIGSYS,	sigcore_handler },	/* Core   Bad System Call */
@@ -211,20 +232,20 @@ static sig_map_t	sig_handler[] = {
 #ifndef IS_MINGW
     { SIGUSR1,	sigterm_handler },	/* Exit User Signal 1 */
     { SIGUSR2,	sigusr2_handler },	/* reexec User Signal 2 */
-    { SIGCHLD,	SIG_IGN },		/* NOP    Child stopped or terminated */
+    { SIGCHLD,	SIG_DFL },		/* Ignore Child stopped or terminated */
 #ifdef SIGPWR
-    { SIGPWR,	SIG_DFL },		/* Ignore Power Fail/Restart */
+    { SIGPWR,	sigmisc_handler },	/* Ignore Power Fail/Restart */
 #endif
-    { SIGWINCH,	SIG_DFL },		/* Ignore Window Size Change */
-    { SIGURG,	SIG_DFL },		/* Ignore Urgent Socket Condition */
+    { SIGWINCH,	sigmisc_handler },	/* Ignore Window Size Change */
+    { SIGURG,	sigmisc_handler },	/* Ignore Urgent Socket Condition */
 #ifdef SIGPOLL
     { SIGPOLL,	sigexit_handler },	/* Exit   Pollable Event [see streamio(7)] */
 #endif
     { SIGSTOP,	SIG_DFL },		/* Stop   Stopped (signal) */
-    { SIGTSTP,	SIG_DFL },		/* Stop   Stopped (user) */
-    { SIGCONT,	SIG_DFL },		/* Ignore Continued */
-    { SIGTTIN,	SIG_DFL },		/* Stop   Stopped (tty input) */
-    { SIGTTOU,	SIG_DFL },		/* Stop   Stopped (tty output) */
+    { SIGTSTP,	sigmisc_handler },	/* Stop   Stopped (user) */
+    { SIGCONT,	sigmisc_handler },	/* Ignore Continued */
+    { SIGTTIN,	sigmisc_handler },	/* Stop   Stopped (tty input) */
+    { SIGTTOU,	sigmisc_handler },	/* Stop   Stopped (tty output) */
     { SIGVTALRM, sigterm_handler },	/* Exit   Virtual Timer Expired */
 
     { SIGPROF,	sigterm_handler },	/* Exit   Profiling Timer Expired */
@@ -239,7 +260,7 @@ static sig_map_t	sig_handler[] = {
  * Only returns if it succeeds (exits on failure).
  */
 
-static void
+STATIC_FUNC void
 GetPorts(char *file)
 {
     int			fd;
@@ -250,6 +271,7 @@ GetPorts(char *file)
     int			address = INADDR_ANY;
     int			ctlix;
     int			sts;
+    int			fdFlags;
     char		*env_str;
     __pmSockAddr	*myAddr;
 #if defined(HAVE_STRUCT_SOCKADDR_UN)
@@ -358,7 +380,7 @@ GetPorts(char *file)
 	    if (ctlix == CFD_INET) {
 		fd = __pmCreateSocket();
 		if (fd < 0) {
-		    if (pmDebugOptions.context)
+		    if (pmDebugOptions.pmlc)
 			fprintf(stderr, "GetPorts: inet socket creation failed: %s\n",
 			    netstrerror());
 		    continue;
@@ -367,7 +389,7 @@ GetPorts(char *file)
 	    else {
 		fd = __pmCreateIPv6Socket();
 		if (fd < 0) {
-		    if (pmDebugOptions.context)
+		    if (pmDebugOptions.pmlc)
 			fprintf(stderr, "GetPorts: ipv6 socket creation failed: %s\n",
 			    netstrerror());
 		    continue;
@@ -423,6 +445,14 @@ GetPorts(char *file)
 		    break;
 	    }
 	    __pmSockAddrFree(myAddr);
+	}
+
+	/* Set close on exec for daily reexec log-roll */
+	if (sts >= 0 && (fdFlags = __pmGetFileDescriptorFlags(fd)) >= 0) {
+	    if (__pmSetFileDescriptorFlags(fd, fdFlags | FD_CLOEXEC) != 0) {
+		/* report the error, but this is not fatal */
+		perror("GetPorts: __pmSetFileDescriptorFlags");
+	    }
 	}
 
 	/* Now listen on the new socket. */
@@ -494,27 +524,14 @@ GetPorts(char *file)
 	exit(1);
 }
 
-/* Create the control port for this pmlogger and the file containing the port
- * number so that other programs know which port to connect to.
- * If this is the primary pmlogger, create the special link to the
- * control file.
+/*
+ * Set up signal handlers
  */
 void
-init_ports(void)
+init_signals(void)
 {
-    int		i, j, n, sts;
-    int		sep = pmPathSeparator();
-    int		extlen, baselen;
-    char	path[MAXPATHLEN];
-    char	pidfile[MAXPATHLEN];
-#if defined(HAVE_STRUCT_SOCKADDR_UN)
-    int		pidlen;
-#endif
-#ifndef IS_MINGW
-    struct stat	sbuf;
-#endif
-    pid_t	mypid = getpid();
-    pid_t	pid;
+    int		i;
+    int		j;
 
     /*
      * make sure control port files are removed when pmlogger terminates
@@ -546,7 +563,37 @@ init_ports(void)
 	cleanup();
 	exit(1);
     }
+    if (pmDebugOptions.appl3) {
+	if (atexit(__pmDumpStack) != 0) {
+	    fprintf(stderr, "%s: Warning: unable to register atexit __pmDumpStack function\n",
+		pmGetProgname());
+	}
+    }
 #endif
+}
+
+/* Create the control port for this pmlogger and the file containing the port
+ * number so that other programs know which port to connect to.
+ * If this is the primary pmlogger, create the special link to the
+ * control file.
+ */
+void
+init_ports(void)
+{
+    int		i;
+    int		n, sts;
+    int		sep = pmPathSeparator();
+    int		extlen, baselen;
+    char	path[MAXPATHLEN];
+    char	pidfile[MAXPATHLEN];
+#if defined(HAVE_STRUCT_SOCKADDR_UN)
+    int		pidlen;
+#endif
+#ifndef IS_MINGW
+    struct stat	sbuf;
+#endif
+    pid_t	mypid = getpid();
+    pid_t	pid;
 
     /* create the control port file (make the directory if necessary). */
 
@@ -608,7 +655,7 @@ init_ports(void)
 		fprintf(stderr, "%s: warning: failed to remove old-style hardlink to stale control file '%s': %s\n",
 			pmGetProgname(), linkfile, osstrerror());
 	    }
-	    else if (pmDebugOptions.context) {
+	    else if (pmDebugOptions.pmlc) {
 		fprintf(stderr, "%s: info: removed old-style hardlink to stale control file '%s' (mode: %0lo)\n",
 			pmGetProgname(), linkfile, (long)sbuf.st_mode);
 	    }
@@ -621,7 +668,7 @@ init_ports(void)
 	pid = -1;
 	if (get_pid_from_symlink(linkfile, &pid) == 0) {
 	    /* primary symlink is OK */
-	    if (pmDebugOptions.context) {
+	    if (pmDebugOptions.pmlc) {
 		fprintf(stderr, "%s: info: found primary symlink -> pid %" FMT_PID "\n", pmGetProgname(), pid);
 	    }
 	    if (!__pmProcessExists(pid)) {
@@ -629,7 +676,7 @@ init_ports(void)
 		    fprintf(stderr, "%s: warning: failed to remove '%s' symlink to stale control file for pid %" FMT_PID ": %s\n",
 			    pmGetProgname(), linkfile, pid, osstrerror());
 		}
-		else if (pmDebugOptions.context) {
+		else if (pmDebugOptions.pmlc) {
 		    fprintf(stderr, "%s: info: removed '%s' symlink to stale control file for pid %" FMT_PID "\n",
 			    pmGetProgname(), linkfile, pid);
 		}
@@ -640,7 +687,7 @@ init_ports(void)
 		    fprintf(stderr, "%s: warning: failed to remove stale control file '%s': %s\n",
 			    pmGetProgname(), pidfile, osstrerror());
 		}
-		else if (pmDebugOptions.context) {
+		else if (pmDebugOptions.pmlc) {
 		    fprintf(stderr, "%s: info: removed stale control file '%s': %s\n",
 			    pmGetProgname(), pidfile, osstrerror());
 		}
@@ -665,7 +712,7 @@ init_ports(void)
 	    fprintf(stderr, "%s: error creating primary logger symbolic link %s: %s\n",
 		    pmGetProgname(), linkfile, osstrerror());
 	}
-	else if (pmDebugOptions.context) {
+	else if (pmDebugOptions.pmlc) {
 	    fprintf(stderr, "%s: info: created control file symlink %s -> %s\n", pmGetProgname(), linkfile, ctlfile);
 	}
 
@@ -685,7 +732,7 @@ init_ports(void)
 		fprintf(stderr, "%s: warning: failed to remove old-style hardlink to stale socket '%s': %s\n",
 			pmGetProgname(), linkSocketPath, osstrerror());
 	    }
-	    else if (pmDebugOptions.context) {
+	    else if (pmDebugOptions.pmlc) {
 		fprintf(stderr, "%s: info: removed old-style hardlink to stale socket '%s': %s\n",
 			pmGetProgname(), linkSocketPath, osstrerror());
 	    }
@@ -697,13 +744,13 @@ init_ports(void)
 	    for (i=0; i < pidlen; i++) {
 		/* first digit is the start of the PID */
 		if (isdigit((int)pidfile[i])) {
-		    pid_t pid = atoi(pidfile + i);
-		    if (!__pmProcessExists(pid)) {
+		    pid_t lpid = atoi(pidfile + i);
+		    if (!__pmProcessExists(lpid)) {
 			if (unlink(linkSocketPath) != 0) {
 			    fprintf(stderr, "%s: warning: failed to remove '%s' symlink to stale socket '%s': %s\n",
 				    pmGetProgname(), linkSocketPath, pidfile, osstrerror());
 			}
-			else if (pmDebugOptions.context) {
+			else if (pmDebugOptions.pmlc) {
 			    fprintf(stderr, "%s: info: removed '%s' symlink to stale socket '%s'\n",
 				    pmGetProgname(), linkSocketPath, pidfile);
 			}
@@ -712,7 +759,7 @@ init_ports(void)
 			    fprintf(stderr, "%s: warning: failed to remove stale pmlogger socket '%s': %s\n",
 				    pmGetProgname(), pidfile, osstrerror());
 			}
-			else if (pmDebugOptions.context) {
+			else if (pmDebugOptions.pmlc) {
 			    fprintf(stderr, "%s: info: removed stale pmlogger socket '%s'\n",
 				    pmGetProgname(), pidfile);
 			}
@@ -741,7 +788,7 @@ init_ports(void)
 	    fprintf(stderr, "%s: error creating primary logger socket symbolic link %s: %s\n",
 		    pmGetProgname(), linkSocketPath, osstrerror());
 	}
-	else if (pmDebugOptions.context) {
+	else if (pmDebugOptions.pmlc) {
 	    fprintf(stderr, "%s: info: created primary pmlogger socket symlink %s -> %s\n",
 		    pmGetProgname(), linkSocketPath, socketPath);
 	}
@@ -764,7 +811,7 @@ char		pmlc_host[MAXHOSTNAMELEN];
 int		connect_state = 0;
 
 #if defined(HAVE_STRUCT_SOCKADDR_UN)
-static int
+STATIC_FUNC int
 check_local_creds(__pmHashCtl *attrs)
 {
     __pmHashNode	*node;
@@ -777,7 +824,7 @@ check_local_creds(__pmHashCtl *attrs)
 			(const char *)node->data : NULL);
     if (connectingUser == NULL) {
 	/* We don't know who is connecting. */
-	if (pmDebugOptions.context)
+	if (pmDebugOptions.pmlc)
 	    fprintf(stderr, "check_local_creds: connectingUser is NULL => connection refused\n");
 	return PM_ERR_PERMISSION;
     }
@@ -787,7 +834,7 @@ check_local_creds(__pmHashCtl *attrs)
     connectingUid = strtol(connectingUser, &end, 0);
     if (errno != 0 || *end != '\0') {
 	/* Can't convert the connecting user to a uid cleanly. */
-	if (pmDebugOptions.context)
+	if (pmDebugOptions.pmlc)
 	    fprintf(stderr, "check_local_creds: connectingUser \"%s\" is bad => connection refused\n", connectingUser);
 	return PM_ERR_PERMISSION;
     }
@@ -801,7 +848,7 @@ check_local_creds(__pmHashCtl *attrs)
 	return 0;
 
     /* Connection is not allowed. */
-    if (pmDebugOptions.context)
+    if (pmDebugOptions.pmlc)
 	fprintf(stderr, "check_local_creds: uid connecting %ld != %ld or %ld => connection refused\n", (long)connectingUid, (long)getuid(), (long)geteuid());
     return PM_ERR_PERMISSION;
 }
@@ -830,12 +877,23 @@ control_req(int ctlfd)
     }
     __pmSetSocketIPC(fd);
     if (clientfd != -1) {
-	if (pmDebugOptions.context)
+	if (pmDebugOptions.pmlc)
 	    fprintf(stderr, "control_req: send EADDRINUSE on fd=%d (client already on fd=%d)\n", fd, clientfd);
 	sts = __pmSendError(fd, FROM_ANON, -EADDRINUSE);
-	if (sts < 0)
-	    fprintf(stderr, "error sending connection NACK to client: %s\n",
+	if (sts < 0) {
+	    /*
+	     * Note: in "error sending ..." messages here and further on
+	     *       in this routine.  We should no be suprised by PM_ERR_IPC
+	     *       here as the connecting pmlc instance may have timed out
+	     *       the PDU read and/or exited by the time pmlogger gets
+	     *       to __pmAccept(), especially during pmlogger start up.
+	     *       So don't issue a warning unless -Dpmlc is in play, or
+	     *       the error is something different to PM_ERR_IPC.
+	     */
+	    if (sts != PM_ERR_IPC || pmDebugOptions.pmlc)
+		fprintf(stderr, "error sending connection NACK to client: %s\n",
 			 pmErrStr(sts));
+	}
 	__pmSockAddrFree(addr);
 	__pmCloseSocket(fd);
 	pmlc_host[0] = '\0';
@@ -867,7 +925,7 @@ control_req(int ctlfd)
 
     sts = __pmAccAddClient(addr, &denyops);
     if (sts < 0) {
-	if (pmDebugOptions.context) {
+	if (pmDebugOptions.pmlc) {
 	    abuf = __pmSockAddrToString(addr);
 	    fprintf(stderr, "client addr: %s\n\n", abuf);
 	    free(abuf);
@@ -875,9 +933,11 @@ control_req(int ctlfd)
 	    fprintf(stderr, "\ncontrol_req: connection rejected on fd=%d from %s: %s\n", fd, pmlc_host, pmErrStr(sts));
 	}
 	sts = __pmSendError(fd, FROM_ANON, sts);
-	if (sts < 0)
-	    fprintf(stderr, "error sending connection access NACK to client: %s\n",
+	if (sts < 0) {
+	    if (sts != PM_ERR_IPC || pmDebugOptions.pmlc)
+		fprintf(stderr, "error sending connection access NACK to client: %s\n",
 			 pmErrStr(sts));
+	}
 	sleep(1);	/* QA 083 seems like there is a race w/out this delay */
 	__pmSockAddrFree(addr);
 	__pmCloseSocket(fd);
@@ -897,9 +957,11 @@ control_req(int ctlfd)
 	/* Get the user credentials. */
 	if ((sts = __pmServerSetLocalCreds(fd, &clientattrs)) < 0) {
 	    sts = __pmSendError(fd, FROM_ANON, sts);
-	    if (sts < 0)
-		fprintf(stderr, "error sending connection credentials NACK to client: %s\n",
-			pmErrStr(sts));
+	    if (sts < 0) {
+		if (sts != PM_ERR_IPC || pmDebugOptions.pmlc)
+		    fprintf(stderr, "error sending connection credentials NACK to client: %s\n",
+			    pmErrStr(sts));
+	    }
 	    __pmSockAddrFree(addr);
 	    __pmCloseSocket(fd);
 	    pmlc_host[0] = '\0';
@@ -909,9 +971,11 @@ control_req(int ctlfd)
 	/* Check the user credentials. */
 	if ((sts = check_local_creds(&clientattrs)) < 0) {
 	    sts = __pmSendError(fd, FROM_ANON, sts);
-	    if (sts < 0)
-		fprintf(stderr, "error sending connection credentials NACK to client: %s\n",
-			pmErrStr(sts));
+	    if (sts < 0) {
+		if (sts != PM_ERR_IPC || pmDebugOptions.pmlc)
+		    fprintf(stderr, "error sending connection credentials NACK to client: %s\n",
+			    pmErrStr(sts));
+	    }
 	    __pmSockAddrFree(addr);
 	    __pmCloseSocket(fd);
 	    pmlc_host[0] = '\0';
@@ -932,9 +996,10 @@ control_req(int ctlfd)
      * also need "from" to be pmlogger's pid as this is checked at
      * the other end
      */
-    sts = __pmSendError(fd, (int)getpid(), LOG_PDU_VERSION);
+    sts = __pmSendError(fd, (int)getpid(), pmlc_ipc_version);
     if (sts < 0) {
-	fprintf(stderr, "error sending connection ACK to client: %s\n",
+	if (sts != PM_ERR_IPC || pmDebugOptions.pmlc)
+	    fprintf(stderr, "error sending connection ACK to client: %s\n",
 		     pmErrStr(sts));
 	__pmCloseSocket(fd);
 	pmlc_host[0] = '\0';
@@ -942,7 +1007,7 @@ control_req(int ctlfd)
     }
     clientfd = fd;
 
-    if (pmDebugOptions.context)
+    if (pmDebugOptions.pmlc)
 	fprintf(stderr, "control_req: connection accepted on fd=%d from %s\n", fd, pmlc_host);
 
     return 1;

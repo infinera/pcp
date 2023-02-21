@@ -36,18 +36,22 @@ _cleanup()
 	echo "=== $file ===" >>$here/$seq.full
 	cat $file >>$here/$seq.full
     done
-    $sudo rm -f $tmp.*
     _restore_auto_restart pmcd
     [ "$pmie_state" = on ] && _change_config pmie on
     if $pmie_was_running
     then
+	# don't trigger systemctl "request repeated too quickly" snarfoo
+	#
+	sleep 2
 	_restore_auto_restart pmie
 	_service pmie start >>$here/$seq.full 2>&1
+	_wait_for_pmie
     else
 	_service pmie stop >>$here/$seq.full 2>&1
 	$sudo $PCP_BINADM_DIR/pmsignal -a -s TERM pmie >>$here/$seq.full 2>&1
 	_wait_pmie_end
     fi
+    $sudo rm -f $tmp.*
 }
 
 status=1	# failure is the default!
@@ -124,10 +128,13 @@ skip == 0		{ print }
 
 _count_pmies()
 {
+    $PCP_PS_PROG $PCP_PS_ALL_FLAGS | grep -E '([P]ID)|([p]mie)' >>$here/$seq.full
     count=0
     if [ -d $PCP_TMP_DIR/pmie ] 
-    then cd $PCP_TMP_DIR/pmie
-    else return 0
+    then
+	cd $PCP_TMP_DIR/pmie
+    else
+	return 0
     fi
 
     ls -l >>$here/$seq.full
@@ -137,22 +144,33 @@ _count_pmies()
 
     for process in $plist
     do
-	$PCP_PS_PROG $PCP_PS_ALL_FLAGS -p $process >/dev/null 2>&1
+	$PCP_PS_PROG -p $process >/dev/null 2>&1
 	if [ $? = 1 ]
 	then
 	    echo "urk, $PCP_TMP_DIR/pmie/$process has no running pmie instance"
 	else
 	    count=`expr $count + 1`
-	    $PCP_PS_PROG $PCP_PS_ALL_FLAGS -p $process >>$here/$seq.full
+	    $PCP_PS_PROG -p $process >>$here/$seq.full
 	    if which pstree >/dev/null 2>&1
 	    then
-		pstree $process >>$here/$seq.full
+		pstree $pstree_parents -p $process >>$here/$seq.full
 	    fi
 	fi
     done
 
     return $count
 }
+
+# Deal with pstree variants
+#
+pstree_parents=''
+if which pstree >/dev/null 2>&1
+then
+    if pstree --help 2>&1 | grep '.--show-parents' >/dev/null
+    then
+	pstree_parents='--show-parents'
+    fi
+fi
 
 # create a basic pmcd config file
 cat >$tmp.pmcd.conf << EOF
@@ -187,6 +205,7 @@ then
     echo "Found pmie PID `cat $PCP_RUN_DIR/pmie.pid` running @ start" >>$here/$seq.full
     _stop_auto_restart pmie
     _service pmie stop >>$here/$seq.full 2>&1
+    _wait_pmie_end
 fi
 
 # real QA test starts here
@@ -206,12 +225,15 @@ echo "pmie count at start of QA testing: $?" | tee -a $here/$seq.full
 echo
 
 echo === check default install operation === | tee -a $here/$seq.full
-_service pmie restart 2>&1 | _filter_pmie_start
+_service pmie restart 2>&1 | tee -a $here/$seq.full | _filter_pmie_start
 _wait_for_pmie
 _count_pmies
 # chkconfig no longer controls start-ability, expect non-zero
 echo "pmie count after chkconfig pmie off: $?"
 echo
+# don't trigger systemctl "request repeated too quickly" snarfoo
+#
+sleep 2
 
 echo === check for missing control file === | tee -a $here/$seq.full
 _change_config pmie off
@@ -221,6 +243,9 @@ _service pmie restart 2>&1 | _filter_pmie_start | _filter
 _count_pmies
 echo "pmie count after attempt without control file: $?"
 echo
+# don't trigger systemctl "request repeated too quickly" snarfoo
+#
+sleep 2
 
 echo === check pmie_check and custom configs === | tee -a $here/$seq.full
 echo "--- v1.0 ---" | tee -a $here/$seq.full
@@ -259,9 +284,9 @@ LOCALHOSTNAME   n n $tmp.locker/ok.$case -c $tmp.conf
 EOF
 rm -f $tmp.locker/ok.$case.lock
 touch $tmp.locker/ok.$case.lock
-$PCP_PS_PROG $PCP_PS_ALL_ARGS | grep '([P]ID)|([p]mie)' >>$here/$seq.full
+$PCP_PS_PROG $PCP_PS_ALL_FLAGS | grep -E '([P]ID)|([p]mie)' >>$here/$seq.full
 pmie_check -V -V -N -c $tmp.warning.$case >$tmp.warning.$case.log
-$PCP_PS_PROG $PCP_PS_ALL_ARGS | grep '([P]ID)|([p]mie)' >>$here/$seq.full
+$PCP_PS_PROG $PCP_PS_ALL_FLAGS | grep -E '([P]ID)|([p]mie)' >>$here/$seq.full
 cat $tmp.warning.$case.log | _filter
 rm -f $tmp.warning.$case.log
 echo

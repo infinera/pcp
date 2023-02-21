@@ -1,11 +1,11 @@
 /*
- * Copyright (c) 2016-2020 Red Hat.
- * 
+ * Copyright (c) 2016-2020,2022 Red Hat.
+ *
  * This library is free software; you can redistribute it and/or modify it
  * under the terms of the GNU Lesser General Public License as published
  * by the Free Software Foundation; either version 2.1 of the License, or
  * (at your option) any later version.
- * 
+ *
  * This library is distributed in the hope that it will be useful, but
  * WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY
  * or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU Lesser General Public
@@ -18,7 +18,7 @@
 #include "libpcp.h"
 #include "pmda.h"
 #include "internal.h"
-#include "jsonsl.h"
+#include <jsonsl/jsonsl.h>
 #include "sha256.h"
 #include "sort_r.h"
 #include "fault.h"
@@ -29,10 +29,10 @@
 static int __pmMergeLabels(const char *, const char *, char *, int, int);
 static int __pmParseLabels(const char *, int, pmLabel *, int, __pmHashCtl *, int, char *, int *);
 
-typedef int (*filter)(const pmLabel *, const char *, void *);
+typedef int (*filter_labels)(const pmLabel *, const char *, void *);
 static int __pmMergeLabelSets(pmLabel *, const char *, __pmHashCtl *, int,
 		pmLabel *, const char *, __pmHashCtl *, int,
-		pmLabel *, char *, int *, int, filter, void *);
+		pmLabel *, char *, int *, int, filter_labels, void *);
 
 /*
  * Parse JSONB labels string, building up the array index as we go.
@@ -434,7 +434,7 @@ static int
 stash_label(const pmLabel *lp, const char *json, __pmHashCtl *lc,
 	    pmLabel *olabel, const char *obuffer, int *no,
 	    char **buffer, int *buflen,
-	    filter filter, void *arg)
+	    filter_labels filter, void *arg)
 {
     const char		*name;
     char		*bp = *buffer;
@@ -846,7 +846,7 @@ static int
 __pmMergeLabelSets(pmLabel *alabels, const char *abuf, __pmHashCtl *ac, int na,
 		   pmLabel *blabels, const char *bbuf, __pmHashCtl *bc, int nb,
 		   pmLabel *olabels, char *output, int *no, int buflen,
-		   filter filter, void *arg)
+		   filter_labels filter, void *arg)
 {
     char		*bp = output;
     int			sts, i, j;
@@ -969,7 +969,7 @@ __pmMergeLabels(const char *a, const char *b, char *buffer, int buflen, int flag
  */
 int
 pmMergeLabelSets(pmLabelSet **sets, int nsets, char *buffer, int buflen,
-		filter filter, void *arg)
+		filter_labels filter, void *arg)
 {
     __pmHashCtl		*compound, bhash = {0};
     pmLabel		olabels[MAXLABELSET];
@@ -1124,12 +1124,12 @@ archive_host_labels(__pmContext *ctxp, char *buffer, int buflen)
     /*
      * Backward compatibility fallback, for archives created before
      * labels support is added to pmlogger.
-     * Once that's implemented (TYPE_LABEL in .meta) fields will be
+     * Once that's implemented (TYPE_LABEL_V2 in .meta) fields will be
      * added to the context structure and we'll be able to read 'em
      * here to provide complete archive label support.
      */
     pmsprintf(buffer, buflen, "{\"hostname\":\"%s\"}",
-	     ctxp->c_archctl->ac_log->l_label.ill_hostname);
+		ctxp->c_archctl->ac_log->label.hostname);
     buffer[buflen-1] = '\0';
     return buffer;
 }
@@ -1256,6 +1256,7 @@ local_host_labels(char *buffer, int buflen)
     return buffer;
 }
 
+#if defined(HAVE_GETUID) && defined(HAVE_GETGID)
 static char *
 local_user_labels(char *buffer, int buflen)
 {
@@ -1263,13 +1264,17 @@ local_user_labels(char *buffer, int buflen)
 		    (unsigned int)getgid(), (unsigned int)getuid());
     return buffer;
 }
+#endif
 
 static int
 local_context_labels(pmLabelSet **sets)
 {
     pmLabelSet	*lp = NULL;
     char	buf[PM_MAXLABELJSONLEN];
-    char	*hostp, *userp;
+    char	*hostp;
+#if defined(HAVE_GETUID) && defined(HAVE_GETGID)
+    char	*userp;
+#endif
     int		sts, flags = PM_LABEL_CONTEXT;
 
     if ((sts = __pmGetContextLabels(&lp)) < 0)
@@ -1281,12 +1286,14 @@ local_context_labels(pmLabelSet **sets)
 	return sts;
     }
 
+#if defined(HAVE_GETUID) && defined(HAVE_GETGID)
     flags |= PM_LABEL_OPTIONAL;
     userp = local_user_labels(buf, sizeof(buf));
     if ((sts = __pmAddLabels(&lp, userp, flags)) <= 0) {
 	pmFreeLabelSets(lp, 1);
 	return sts;
     }
+#endif
 
     *sets = lp;
     return 1;
@@ -1352,7 +1359,7 @@ getlabels(int ident, int type, pmLabelSet **sets, int *nsets)
 	    sts = 0;
 	    if ((type & PM_LABEL_INSTANCES) && ctxp->c_sent == 0) {
 	    	/* profile not current for label instances request */
-		if (pmDebugOptions.indom || pmDebugOptions.labels) {
+		if (pmDebugOptions.profile || pmDebugOptions.labels) {
 		    fprintf(stderr, "dolabels: sent profile, indom=%d\n", ident);
 		    __pmDumpProfile(stderr, ident, ctxp->c_instprof);
 		}
@@ -1369,7 +1376,7 @@ getlabels(int ident, int type, pmLabelSet **sets, int *nsets)
 		    sts = __pmMapErrno(sts);
 		else {
 		    int x_ident = ident, x_type = type;
-		    PM_FAULT_POINT("libpcp/" __FILE__ ":1", PM_FAULT_TIMEOUT);
+		    PM_FAULT_POINT("libpcp/" __FILE__ ":1", PM_FAULT_CALL);
 		    sts = __pmRecvLabel(fd, ctxp, tout, &x_ident, &x_type, sets, nsets);
 		}
 	    }
@@ -1407,8 +1414,9 @@ getlabels(int ident, int type, pmLabelSet **sets, int *nsets)
 	}
     }
     else {
-	if ((sts = __pmLogLookupLabel(ctxp->c_archctl, type,
-				ident, sets, &ctxp->c_origin)) < 0) {
+	sts = __pmLogLookupLabel(ctxp->c_archctl, type, ident, sets, &ctxp->c_origin);
+
+	if (sts < 0) {
 	    /* supply context labels for archives lacking label support */
 	    if (type & PM_LABEL_CONTEXT)
 		sts = archive_context_labels(ctxp, sets);

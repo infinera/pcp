@@ -18,6 +18,7 @@ include $(TOPDIR)/src/include/builddefs
 CFILES = pmfind.c
 HFILES = groups.h
 CMDTARGET = pmfind$(EXECSUFFIX)
+LDIRT = crontab pmfind.service
 
 ifeq "$(HAVE_LIBUV)" "true"
 CFILES += source.c
@@ -65,6 +66,7 @@ pmfind.service : pmfind.service.in
 	    -e 's;@PCP_SYSCONFIG_DIR@;'$(PCP_SYSCONFIG_DIR)';' \
 	    -e 's;@PCP_BINADM_DIR@;'$(PCP_BINADM_DIR)';' \
 	    -e 's;@PCP_VAR_DIR@;'$(PCP_VAR_DIR)';' \
+	    -e 's;@SD_SERVICE_TYPE@;'$(SD_SERVICE_TYPE)';' \
 	# END
 
 crontab: crontab.in

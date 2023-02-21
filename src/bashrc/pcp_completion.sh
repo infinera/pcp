@@ -44,8 +44,12 @@ _pcp_complete()
         all_args="ahLKcCeVHGASTOstRrIijJ4589nNvP0qQbByYgpXExl"
         arg_regex="-[ahKceASTOstiJ489NP0qQbByYgpXEx]"
     ;;
+    pmclient)
+        all_args="AahnOPSsTtVZz"
+        arg_regex="-[AahnOSsTtZz]"
+    ;;
     pmdumplog)
-        all_args="adehiLlMmnrSsTtVvxZz"
+        all_args="adehIiLlMmnrSsTtVvxZz"
         arg_regex="-[nSTvZ]"
     ;;
     pmdumptext)
@@ -53,20 +57,68 @@ _pcp_complete()
         arg_regex="-[AacdfhnOPRSsTtUwZ]"
     ;;
     pmevent)
-        all_args="AadfghiKLnOprSsTtUVvwxZz"
+        all_args="AadfghiKLnOprSsTtUVvwXxZz"
         arg_regex="-[AafhiKnOpSsTtUwxZ]"
+    ;;
+    pmfind)
+        all_args="CmqrSstV"
+        arg_regex="-[mst]"
+    ;;
+    pmie)
+        all_args="AabCcdeFfhjlnOPqSTtUVvWXxZz"
+        arg_regex="-[AachljnOSTtUZ]"
+    ;;
+    pmie2col)
+        all_args="dpw"
+        arg_regex="-[dpw]"
+    ;;
+    pmiectl)
+        all_args="aCcfimNpV"
+        arg_regex="-[Ccip]"
     ;;
     pminfo)
         all_args="abcdFfhIKLlMmNnOsTtVvxZz"
         arg_regex="-[abchKNnOZ]"
     ;;
+    pmjson)
+        all_args="imopqyV"
+        arg_regex="-[io]"
+    ;;
+    pmlc)
+        all_args="ehinPpZz"
+        arg_regex="-[hnpZ]"
+    ;;
     pmlogcheck)
         all_args="lmnSTvwZz"
         arg_regex="-[nSTZ]"
     ;;
+    pmlogctl)
+        all_args="aCcfimNpV"
+        arg_regex="-[Ccip]"
+    ;;
     pmlogextract)
-        all_args="cdfmSsTvwxZz"
-        arg_regex="-[cSsTvZ]"
+        all_args="cdfmSsTVvwxZz"
+        arg_regex="-[cSsTVvZ]"
+    ;;
+    pmlogger)
+        all_args="CcHIhKLlmNnoPprsTtUuVvxy"
+        arg_regex="-[cHIhKlmnpsTtUVvx]"
+    ;;
+    pmloglabel)
+        all_args="hLlpsVvZ"
+        arg_regex="-[hpVZ]"
+    ;;
+    pmlogpaste)
+        all_args="fhlmot"
+        arg_regex="-[fhlmot]"
+    ;;
+    pmlogreduce)
+        all_args="ASsTtvZz"
+        arg_regex="-[ASsTtZ]"
+    ;;
+    pmlogsize)
+        all_args="drvx"
+        arg_regex="-[x]"
     ;;
     pmlogsummary)
         all_args="aBbFfHIilMmNnpSsTVvxyZz"
@@ -81,19 +133,19 @@ _pcp_complete()
         arg_regex="-[04689ABabcEeFfhiJKlNOoPQqSsTtWwXYyZ]"
     ;;
     pmseries)
-        all_args="acdFghIiLlMmnpqSstVvZ"
-        arg_regex="-[cghpZ]"
-    ;;
-    pmstore)
-        all_args="FfhiKLnV"
-        arg_regex="-[hiKn]"
+        all_args="acdFghIiLlMmnpqSstVvwZ"
+        arg_regex="-[cghpwZ]"
     ;;
     pmstat)
         all_args="AagHhLlnOPpSsTtVxZz"
         arg_regex="-[AaHhnOpSsTtZ]"
     ;;
+    pmstore)
+        all_args="FfhiKLnV"
+        arg_regex="-[hiKn]"
+    ;;
     pmval)
-        all_args="AadfghiKLnOprSsTtUvVwxZz"
+        all_args="AadfghiKLnOprSsTtUVvwXxZz"
         arg_regex="-[AafhiKnOpSsTtUwxZ]"
     ;;
     esac
@@ -111,23 +163,36 @@ _pcp_complete()
         for i in $(seq 1 $COMP_CWORD); do
             if [[ "${COMP_WORDS[$i]}" == -c || "${COMP_WORDS[$i]}" == --config ]]; then
                 conf="${COMP_WORDS[(($i+1))]}"
+                [[ ! -e $conf ]] && COMPREPLY=("") && return
                 break
             fi
         done
-        if [[ -z $conf ]]; then
-            local sysconf=$(grep ^PCP_SYSCONF_DIR= /etc/pcp.conf 2> /dev/null | cut -d= -f2)/$cmd/$cmd.conf
-            for f in ./$cmd.conf $HOME/.$cmd.conf $HOME/.pcp/$cmd.conf $sysconf; do
-                [[ -f $f ]] && conf=$f && break
-            done
-        fi
-        [[ -z $conf ]] && return
-        local sets=()
-        while read line; do
-            if [[ $line == \[*\] && $line != \[global\] && $line != \[options\] ]]; then
-                local set=${line/[} ; set=${set/]}
-                sets+=($set)
+        if [[ -d $conf ]]; then
+            if compgen -G "$conf/*.conf" > /dev/null; then
+                conf=($conf/*.conf)
             fi
-        done < $conf
+        elif [[ -z $conf ]]; then
+            local defconfdir=$(grep ^PCP_SYSCONF_DIR= /etc/pcp.conf 2> /dev/null | cut -d= -f2)/$cmd
+            for f in ./$cmd.conf $HOME/.$cmd.conf $HOME/.pcp/$cmd.conf $defconfdir/$cmd.conf; do
+                [[ -f $f ]] && conf=($f) && break
+            done
+            if [[ -z $conf && $cmd == pmrep ]]; then
+                if compgen -G "$defconfdir/*.conf" > /dev/null; then
+                    conf=($defconfdir/*.conf)
+                fi
+            fi
+        fi
+        [[ -z $conf || -d $conf ]] && COMPREPLY=("") && return
+        local sets=()
+        for f in ${conf[@]}; do
+            while read line; do
+                if [[ $line == \[*\] && $line != \[global\] && $line != \[options\] ]]; then
+                    local set=${line/[} ; set=${set/]}
+                    sets+=($set)
+                fi
+            done < $f
+        done
+        [[ -z $sets ]] && COMPREPLY=("") && return
         [[ "$cur" == : ]] && cur=
         COMPREPLY=( $(compgen -W "${sets[*]}" -- "$cur") )
     elif [[ $cmd == pmseries && ! "${COMP_WORDS[$((COMP_CWORD-1))]}" =~ $arg_regex ]]; then
@@ -141,4 +206,4 @@ _pcp_complete()
         fi
     fi
 }
-complete -F _pcp_complete -o default pcp2elasticsearch pcp2graphite pcp2influxdb pcp2json pcp2spark pcp2xlsx pcp2xml pcp2zabbix pmdumplog pmdumptext pmevent pminfo pmlogcheck pmlogextract pmlogsummary pmprobe pmrep pmseries pmstat pmstore pmval
+complete -F _pcp_complete -o default pcp2elasticsearch pcp2graphite pcp2influxdb pcp2json pcp2spark pcp2xlsx pcp2xml pcp2zabbix pmclient pmdumplog pmdumptext pmevent pmfind pmie pmie2col pmiectl pminfo pmjson pmlc pmlogcheck pmlogctl pmlogextract pmlogger pmloglabel pmlogpaste pmlogreduce pmlogsize pmlogsummary pmprobe pmrep pmseries pmstat pmstore pmval

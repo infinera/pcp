@@ -44,6 +44,16 @@ pmInDom_build(domain, serial)
     OUTPUT:
 	RETVAL
 
+# name here is a little odd ... follows libpcp.h definition rather
+# than pmi* naming so calls from C and Perl are the same
+int
+pmSetDebug(options)
+	char *options;
+    CODE:
+	RETVAL = pmSetDebug(options);
+    OUTPUT:
+	RETVAL
+
 # libpcp_import wrappers
 #
 
@@ -93,6 +103,10 @@ pmiSetHostname(value)
 int
 pmiSetTimezone(value)
 	char	*value;
+
+int
+pmiSetVersion(value)
+	int	value;
 
 int
 pmiAddMetric(name, pmid, type, indom, sem, units)

@@ -5,6 +5,13 @@ QA output created by 921
 3 values for pmcd.numagents
 3 <mark> records
 7565 timestamps
++++ -l
+Note: timezone set to local timezone of host "super.elastic.org" from archive
+
+Log Label (Log Format Version 2)
+Performance metrics from host super.elastic.org
+    commencing Fri Jan 10 17:58:09.600347 2014
+    ending     Mon Jan 13 08:59:49.930068 2014
 
 +++ -M
 7556 values for kernel.all.nprocs

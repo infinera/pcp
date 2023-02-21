@@ -62,6 +62,7 @@ _cleanup()
     _wait_for_stop
     echo "final pmproxy log ..." >>$here/$seq.full
     cat $tmp.log >>$here/$seq.full
+    _restore_auto_restart pmproxy
     if $pmproxy_was_running
     then
 	echo "Restart pmproxy ..." >>$here/$seq.full
@@ -95,12 +96,12 @@ _wait_for_start()
     if [ -f $tmp.started ]
     then
 	$PCP_PS_PROG $PCP_PS_ALL_FLAGS \
-	| egrep 'PID|pmproxy|pmcd' >>$here/$seq.full
+	| grep -E 'PID|pmproxy|pmcd' >>$here/$seq.full
     else
 	# NB: may be an expected situation at this stage of the test
 	echo "Failed to probe pmproxy" >>$here/$seq.full
 	$PCP_PS_PROG $PCP_PS_ALL_FLAGS \
-	| egrep 'PID|pmproxy|pmcd' >>$here/$seq.full
+	| grep -E 'PID|pmproxy|pmcd' >>$here/$seq.full
 	[ -f $tmp.log ] && cat $tmp.log >>$here/$seq.full
     fi
 }
@@ -126,7 +127,7 @@ _wait_for_stop()
     else
 	echo "Failed to stop pmproxy"
 	$PCP_PS_PROG $PCP_PS_ALL_FLAGS \
-	| egrep '[P]ID|[p]mproxy|[p]mcd'
+	| grep -E '[P]ID|[p]mproxy|[p]mcd'
     fi
 }
 
@@ -134,6 +135,7 @@ _wait_for_stop()
 export PMCD_HOST=localhost
 export PMPROXY_HOST=$hostname
 export PMPROXY_PORT=44322
+_stop_auto_restart pmproxy
 
 _service pmproxy stop 2>&1 | _filter_pmproxy_stop
 _wait_for_stop

@@ -133,16 +133,23 @@ hacluster_corosync_ring_fetch(int item, struct rings *rings, pmAtomValue *atom)
 }
 
 int
+hacluster_corosync_ring_all_fetch(int item, pmAtomValue *atom)
+{
+	atom->ul = 1; /* Assign default exists value 1 */
+	return PMDA_FETCH_STATIC;
+}
+
+int
 hacluster_refresh_corosync_node(const char *node_name, struct member_votes *node)
 {
 	char buffer[4096], local[8];
 	char *buffer_ptr;
 	FILE *pf;
 
-	pmsprintf(buffer, sizeof(buffer), "%s", quorumtool_command);
+	pmsprintf(buffer, sizeof(buffer), "%s 2>&1", quorumtool_command);
 
 	if ((pf = popen(buffer, "r")) == NULL)
-		return -oserror();
+		return oserror();
 
 	while(fgets(buffer, sizeof(buffer)-1, pf) != NULL) {
 		if (strstr(buffer, node_name)) {
@@ -187,10 +194,10 @@ hacluster_refresh_corosync_global()
 	char buffer[4096], quorate[6];
 	FILE *pf;
 
-	pmsprintf(buffer, sizeof(buffer), "%s", quorumtool_command);
+	pmsprintf(buffer, sizeof(buffer), "%s 2>&1", quorumtool_command);
 
 	if ((pf = popen(buffer, "r")) == NULL)
-		return -oserror();
+		return oserror();
 
 	while(fgets(buffer, sizeof(buffer)-1, pf) != NULL) {
 	
@@ -218,10 +225,10 @@ hacluster_refresh_corosync_global()
 	}
 	pclose(pf);
 
-	pmsprintf(buffer, sizeof(buffer), "%s", cfgtool_command);
+	pmsprintf(buffer, sizeof(buffer), "%s 2>&1", cfgtool_command);
 
 	if ((pf = popen(buffer, "r")) == NULL)
-		return -oserror();
+		return oserror();
 
 	while(fgets(buffer, sizeof(buffer)-1, pf) != NULL) {
 
@@ -240,10 +247,10 @@ hacluster_refresh_corosync_ring(const char *ring_name, struct rings *rings)
 	FILE *pf;	
 	int ring_found = 0;
 	
-	pmsprintf(buffer, sizeof(buffer), "%s", cfgtool_command);
+	pmsprintf(buffer, sizeof(buffer), "%s 2>&1", cfgtool_command);
 
 	if ((pf = popen(buffer, "r")) == NULL)
-		return -oserror();
+		return oserror();
 
 	while(fgets(buffer, sizeof(buffer)-1, pf) != NULL) {
 
@@ -293,10 +300,10 @@ hacluster_refresh_corosync_ring(const char *ring_name, struct rings *rings)
 	}
 	pclose(pf);
 
-	pmsprintf(buffer, sizeof(buffer), "%s", quorumtool_command);
+	pmsprintf(buffer, sizeof(buffer), "%s 2>&1", quorumtool_command);
 
 	if ((pf = popen(buffer, "r")) == NULL)
-		return -oserror();  
+		return oserror();
 	
 	/* 
 	 * Check corosync-quorumtool for our node_id and ring_id values for our

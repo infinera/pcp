@@ -15,16 +15,23 @@ echo "QA output created by $seq"
 
 which netstat >/dev/null 2>&1 || _notrun "netstat not installed"
 
+case $PCP_PLATFORM
+in
+    linux)
+	netstat_args='-n --tcp'
+	;;
+    openbsd)
+	netstat_args='-n -p tcp'
+	;;
+    *)
+	echo "Arrgh ... need netstat TCP+ESTABLISHED+IPADDR options for $PCP_PLATFORM"
+	exit
+esac
+
 status=0
 clean=false
 LOCALHOST=`hostname`
-
-if [ -d $PCP_LOG_DIR/pmlogger ]
-then
-    LOGGING_DIR=$PCP_LOG_DIR/pmlogger
-else
-    LOGGING_DIR=$PCP_LOG_DIR
-fi
+LOGGING_DIR="$PCP_ARCHIVE_DIR"
 
 _cleanup()
 {
@@ -40,7 +47,7 @@ _cleanup()
 	for i in 1 2 3 4 5
 	do
 	    echo "delay $i" >>$here/$seq.full
-	    if netstat -t -n | grep 44321 >>$here/$seq.full
+	    if netstat $netstat_args | grep 44321 >>$here/$seq.full
 	    then
 		sleep 1
 	    else
@@ -53,6 +60,24 @@ _cleanup()
 	_wait_for_pmcd
 	_wait_for_pmlogger
 	clean=true
+
+	# for some systems we're seeing ...
+	#    Job for pmlogger.service failed because the service did
+	#    not take the steps required by its unit configuration.
+	# try to figure out why
+	#
+	if which systemctl >/dev/null 2>&1
+	then
+	    eval `systemctl show pmlogger.service --property=ActiveState`
+	    if [ "$ActiveState" != active ]
+	    then
+		$sudo systemctl status pmlogger.service >>$here/$seq.full
+		if which journalctl >/dev/null 2>&1
+		then
+		    $sudo journalctl -xe -u pmlogger.service >>$here/$seq.full
+		fi
+	    fi
+	fi
     fi
     $sudo rm -f $tmp.*
 }
@@ -67,10 +92,21 @@ _stop_auto_restart pmlogger
 # Make sure we have a stable starting point. This test was passing when
 # run alone, but failing if test 184 was run immediately before it.
 _service pmlogger restart 2>&1 | _filter_pcp_start
+_wait_for_pmlogger
 
+# all running, get primary pmlogger pid, then stop 'em all
+#
+_pid=`cat $PCP_RUN_DIR/pmlogger.pid 2>/dev/null`
+if [ -z "$_pid" ]
+then
+    echo "Botch: primary pmlogger PID not found"
+    ls -l $PCP_RUN_DIR
+fi
 _service pcp stop | _filter_pcp_stop
-echo "primary pmlogger processes?  exect none"
-ps $PCP_PS_ALL_FLAGS | grep 'pmlogger.* -P' | grep -v grep
+_wait_pmcd_end
+[ -n "$_pid" ] && _wait_pmlogger_end $_pid
+echo "primary pmlogger processes?  expect none"
+ps $PCP_PS_ALL_FLAGS | grep '[p]mlogger.* -P'
 
 echo
 echo "primary port map? expect none"

@@ -1,6 +1,6 @@
 #!/usr/bin/env pmpython
 #
-# Copyright (C) 2015-2019 Marko Myllynen <myllynen@redhat.com>
+# Copyright (C) 2015-2021 Marko Myllynen <myllynen@redhat.com>
 # Copyright (C) 2018 Red Hat.
 #
 # This program is free software; you can redistribute it and/or modify it
@@ -108,6 +108,14 @@ class PCP2Zabbix(object):
                      'speclocal', 'instances', 'ignore_incompat', 'ignore_unknown',
                      'omit_flat')
 
+        # Ignored for pmrep(1) compatibility
+        self.keys_ignore = (
+                     'timestamp', 'unitinfo', 'colxrow', 'separate_header', 'fixed_header',
+                     'delay', 'width', 'delimiter', 'extcsv', 'width_force',
+                     'extheader', 'repeat_header', 'timefmt', 'interpol',
+                     'dynamic_header', 'overall_rank', 'overall_rank_alt', 'sort_metric',
+                     'instinfo', 'include_labels', 'include_texts')
+
         # The order of preference for options (as present):
         # 1 - command line options
         # 2 - options from configuration file(s)
@@ -173,7 +181,7 @@ class PCP2Zabbix(object):
         self.pmfg_ts = None
 
         # Read configuration and prepare to connect
-        self.config = self.pmconfig.set_config_file(DEFAULT_CONFIG)
+        self.config = self.pmconfig.set_config_path(DEFAULT_CONFIG)
         self.pmconfig.read_options()
         self.pmconfig.read_cmd_line()
         self.pmconfig.prepare_metrics()
@@ -507,7 +515,7 @@ class PCP2Zabbix(object):
         except socket.timeout as err:
             sys.stderr.write("Zabbix connection timed out: %s\n" % str(err))
             return False
-        except KeyboardInterrupt as err:
+        except KeyboardInterrupt:
             sys.exit(1)
         finally:
             zabbix.close()

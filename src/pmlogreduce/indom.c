@@ -1,7 +1,8 @@
 #include "pmlogreduce.h"
+#include "pcp/archive.h"
 
-void
-doindom(pmResult *rp)
+int
+doindom(__pmResult *rp)
 {
     pmValueSet		*vsp;
     int			i;
@@ -10,7 +11,7 @@ doindom(pmResult *rp)
     int			need;
     metric_t		*mp = NULL;
     int			*instlist;
-    char		**namelist;
+    char		**names;
     int			sts;
 
     for (i = 0; i < rp->numpmid; i++) {
@@ -33,17 +34,17 @@ doindom(pmResult *rp)
 	    fprintf(stderr,
 		"%s: doindom: Arrgh, unexpected PMID %s @ vset[%d]\n",
 		    pmGetProgname(), pmIDStr(vsp->pmid), i);
-	    __pmDumpResult(stderr, rp);
-	    exit(1);
+	    __pmPrintResult(stderr, rp);
+	    return PM_ERR_GENERIC;
 	}
 	if (mp->idp == NULL)
 	    continue;
 
-	if ((sts = pmGetInDom(mp->idp->indom, &instlist, &namelist)) < 0) {
+	if ((sts = pmGetInDom(mp->idp->indom, &instlist, &names)) < 0) {
 	    fprintf(stderr,
 		"%s: doindom: pmGetInDom (%s) failed: %s\n",
 		    pmGetProgname(), pmInDomStr(mp->idp->indom), pmErrStr(sts));
-	    exit(1);
+	    return sts;
 	}
 
 	need = 1;
@@ -59,7 +60,7 @@ doindom(pmResult *rp)
 	    }
 	    if (j == mp->idp->numinst) {
 		/*
-		 * Do we need to check the namelist elts as well, e.g.
+		 * Do we need to check the 'names' entries as well, e.g.
 		 * using strcmp()?
 		 * Not at this stage ... if the instance ids are all the
 		 * same, then only a very odd (and non-compliant) PMDA
@@ -70,32 +71,50 @@ doindom(pmResult *rp)
 	}
 
 	if (need) {
+	    __pmLogInDom	lid;
+	    int			pdu_type;
 	    if (pmDebugOptions.appl0) {
 		fprintf(stderr, "Add metadata: indom %s for metric %s\n", pmInDomStr(mp->idp->indom), pmIDStr(vsp->pmid));
 	    }
 	    if (mp->idp->name != NULL) free(mp->idp->name);
 	    if (mp->idp->inst != NULL) free(mp->idp->inst);
-	    mp->idp->name = namelist;
-	    mp->idp->inst = instlist;
-	    mp->idp->numinst = sts;
-	    if ((sts = __pmLogPutInDom(&archctl, mp->idp->indom, &current, mp->idp->numinst, mp->idp->inst, mp->idp->name)) < 0) {
+	    lid.indom = mp->idp->indom;
+	    lid.stamp = current;	/* struct assignment */
+	    lid.numinst = mp->idp->numinst = sts;
+	    lid.instlist = mp->idp->inst = instlist;
+	    lid.namelist = mp->idp->name = names;
+	    lid.alloc = 0;
+	    if (__pmLogVersion(archctl.ac_log) >= PM_LOG_VERS03) {
+		/* try delta indom */
+		pdu_type = TYPE_INDOM;
+		sts = pmaTryDeltaInDom(archctl.ac_log, NULL, &lid);
+		if (sts < 0) {
+		    fprintf(stderr, "Botch: pmaTryDeltaInDom failed: %d\n", sts);
+		    return PM_ERR_GENERIC;
+
+		}
+		if (sts == 1)
+		    pdu_type = TYPE_INDOM_DELTA;
+	    }
+	    else
+		pdu_type = TYPE_INDOM_V2;
+	    sts = __pmLogPutInDom(&archctl, pdu_type, &lid);
+	    if (pdu_type == TYPE_INDOM_DELTA)
+		__pmFreeLogInDom(&lid);
+	    if (sts < 0) {
 		fprintf(stderr,
 		    "%s: Error: failed to add pmInDom: indom %s (for pmid %s): %s\n",
 			pmGetProgname(), pmInDomStr(mp->idp->indom), pmIDStr(vsp->pmid), pmErrStr(sts));
-		exit(1);
+		return sts;
 	    }
 	    needti = 1;		/* requires a temporal index update */
 	}
 	else {
 	    free(instlist);
-	    free(namelist);
+	    free(names);
 	}
 
     }
 
-    if (needti) {
-	__pmFflush(logctl.l_mdfp);
-	__pmLogPutIndex(&archctl, &current);
-    }
-
+    return needti;
 }

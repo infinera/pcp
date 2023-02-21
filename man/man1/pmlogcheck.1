@@ -78,6 +78,9 @@ for a complete description of the syntax for
 \fB\-v\fR, \fB\-\-verbose\fR
 Enable verbose mode.
 .TP
+\fB\-w\fR, \fB\-\-nowrap\fR
+Suppress reporting of counter wraps.
+.TP
 \fB\-z\fR, \fB\-\-hostzone\fR
 Use the local timezone of the host that is the source of the
 performance metrics archive.
@@ -180,9 +183,6 @@ in addition to the time at which the counter wrap occurred.
 If the extent of the data being checked is less than 24 hours, a more
 precise format is used (time is displayed with millisecond precision, but
 without the date).
-.SH DIAGNOSTICS
-All are generated on standard error and are intended to be self-
-explanatory.
 .SH FILES
 .TP 5
 .I $PCP_VAR_DIR/pmns/*

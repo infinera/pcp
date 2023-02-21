@@ -36,7 +36,7 @@ do
     echo
     echo "=== $infile ==="
     rm -f $tmp.0 $tmp.index $tmp.meta
-    iostat2pcp -v $infile $tmp
+    iostat2pcp -V2 -v $infile $tmp
 
     if [ -f $tmp.0 ]
     then

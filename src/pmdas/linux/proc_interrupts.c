@@ -165,7 +165,7 @@ extract_interrupt_values(char *name, char *buffer, pmInDom intr, pmInDom cpuintr
 	cpuid = column_to_cpuid(i);
 	online_cpumap[cpuid].intr_count += value;
 	pmsprintf(cpubuf, sizeof cpubuf, "%s::cpu%lu", name, cpuid);
-	sts = pmdaCacheLookupName(intr, cpubuf, NULL, (void **)&cpuip);
+	sts = pmdaCacheLookupName(cpuintr, cpubuf, NULL, (void **)&cpuip);
 	if (sts < 0 || cpuip == NULL) {
 	    if ((cpuip = calloc(1, sizeof(interrupt_cpu_t))) == NULL)
 	        continue;
@@ -264,7 +264,7 @@ extract_softirq_values(char *name, char *buffer, pmInDom sirq, pmInDom cpusirq, 
 	cpuid = column_to_cpuid(i);
 	online_cpumap[cpuid].sirq_count += value;
 	pmsprintf(cpubuf, sizeof cpubuf, "%s::cpu%lu", name, cpuid);
-	sts = pmdaCacheLookupName(sirq, cpubuf, NULL, (void **)&cpuip);
+	sts = pmdaCacheLookupName(cpusirq, cpubuf, NULL, (void **)&cpuip);
 	if (sts < 0 || cpuip == NULL) {
 	    if ((cpuip = calloc(1, sizeof(interrupt_cpu_t))) == NULL)
 	        continue;
@@ -373,7 +373,7 @@ proc_interrupts_fetch(int cluster, int item, unsigned int inst, pmAtomValue *ato
 
     case CLUSTER_SOFTIRQS_TOTAL:
 	if (item == 0) {	/* kernel.all.softirqs.total */
-	    pmInDom indom = INDOM(SOFTIRQ_INDOM);
+	    indom = INDOM(SOFTIRQ_INDOM);
 	    sts = pmdaCacheLookup(indom, inst, NULL, (void **)&ip);
 	    if (sts < 0)
 		return sts;

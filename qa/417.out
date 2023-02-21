@@ -171,30 +171,29 @@ Temporal Index
 		Error: offset to log file past end of file (3076)
 16:11:13.259723	      0        69936      1045256
 		Error: offset to log file past end of file (3076)
-11:02:12.1342514690	  29015    816930151       554564
+11:02:12.-1810073	  29015    816930151       554564
 		Warning: file missing for log volume 29015
-		Error: illegal timestamp value (132 sec, 1342514690 usec)
+		Error: illegal timestamp value (132 sec, -1810073648 nsec)
 		Error: offset to meta file past end of file (75462)
-		Error: timestamp went backwards in time 816930673.259723 -> 132.1342514690
-10:59:58.1836019565	  1650524160            0            0
+		Error: timestamp went backwards in time 16:11:13.259723 -> 11:02:12.-1810073
+10:59:58.2068529	  1650524160            0            0
 		Warning: file missing for log volume 1650524160
-		Error: illegal timestamp value (-2 sec, 1836019565 usec)
-		Error: timestamp went backwards in time 132.1342514690 -> -2.1836019565
+		Error: illegal timestamp value (-2 sec, 2068529608 nsec)
+		Error: timestamp went backwards in time 11:02:12.-1810073 -> 10:59:58.2068529
 11:00:00.000000	      0            0            0
 		Error: volume number decreased
 11:00:00.000000	      0            0            0
 11:00:00.000000	  1163088941    825312595   1412247856
 		Warning: file missing for log volume 1163088941
 		Error: offset to meta file past end of file (75462)
-00:09:51.842674224	  741552179    791820848    805306368
+00:09:51.860633	  741552179    791820848    805306368
 		Warning: file missing for log volume 741552179
-		Error: illegal timestamp value (741881391 sec, 842674224 usec)
 		Error: offset to meta file past end of file (75462)
 		Error: volume number decreased
 11:00:00.000000	    132    816930151       554564
 		Warning: file missing for log volume 132
 		Error: offset to meta file past end of file (75462)
-		Error: timestamp went backwards in time 741881391.842674224 -> 0.000000
+		Error: timestamp went backwards in time 00:09:51.860633 -> 11:00:00.000000
 		Error: volume number decreased
 11:00:00.001644	    132    816930151       842927
 		Error: offset to meta file past end of file (75462)

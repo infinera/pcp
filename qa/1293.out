@@ -132,6 +132,7 @@ indirectly lost: 0 bytes in 0 blocks
 ERROR SUMMARY: 0 errors from 0 contexts ...
 Log for pmlogger on ...
 
+[DATE] pmlogger(PID) Info: Start
 preprocessor cmd: ...
 Config parsed
 Starting logger for ...
@@ -212,6 +213,6 @@ pmlc request from ...: advisory on once
     instance: bin-900
   metric: sample.dupnames.five.bucket or sample.bucket
     instance: bin-100
-pmlogger: Caught signal 15, exiting
+[DATE] pmlogger(PID) Info: pmlogger: Caught signal 15, exiting
 
 Log finished DATE

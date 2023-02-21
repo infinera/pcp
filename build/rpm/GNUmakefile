@@ -1,5 +1,5 @@
 #
-# Copyright (c) 2012-2020 Red Hat.
+# Copyright (c) 2012-2022 Red Hat.
 # Copyright (c) 2000,2004 Silicon Graphics, Inc.  All Rights Reserved.
 # 
 # This program is free software; you can redistribute it and/or modify it
@@ -67,9 +67,8 @@ pcp.spec: pcp.spec.in
 	    -e's|@package_configure@|$(PACKAGE_CONFIGURE)|g' \
 	    -e's|@package_distribution@|$(PACKAGE_DISTRIBUTION)|g' \
 	    -e's|@pmda_bcc@|$(PMDA_BCC)|g' \
+	    -e's|@pmda_bpf@|$(PMDA_BPF)|g' \
 	    -e's|@pmda_bpftrace@|$(PMDA_BPFTRACE)|g' \
-	    -e's|@pmda_rpm@|$(PMDA_RPM)|g' \
-	    -e's|@pmda_podman@|$(PMDA_PODMAN)|g' \
 	    -e's|@pmda_statsd@|$(PMDA_STATSD)|g' \
 	    -e's|@pmda_systemd@|$(PMDA_SYSTEMD)|g' \
 	    -e's|@pmda_infiniband@|$(PMDA_INFINIBAND)|g' \
@@ -80,6 +79,7 @@ pcp.spec: pcp.spec.in
 	    -e's|@pmda_json@|$(PMDA_JSON)|g' \
 	    -e's|@pmda_nginx@|$(PMDA_NGINX)|g' \
 	    -e's|@pmda_oracle@|$(PMDA_ORACLE)|g' \
+	    -e's|@pmda_mongodb@|$(PMDA_MONGODB)|g' \
 	    -e's|@pmda_postgresql@|$(PMDA_POSTGRESQL)|g' \
 	    -e's|@pmda_postfix@|$(PMDA_POSTFIX)|g' \
 	    -e's|@pmda_elasticsearch@|$(PMDA_ELASTICSEARCH)|g' \
@@ -105,6 +105,7 @@ pcp.spec: pcp.spec.in
 	    -e's|@have_perl@|$(HAVE_PERL)|g' \
 	    -e"s|@build_root@|$${DIST_ROOT}|g" \
 	    -e's|@pcp_pmcdconf_path@|$(PCP_PMCDCONF_PATH)|g' \
+	    -e's|@pcp_systemdsysusers_dir@|$(PCP_SYSTEMDSYSUSERS_DIR)|g' \
 	    -e's|@pcp_systemdtmpfiles_dir@|$(PCP_SYSTEMDTMPFILES_DIR)|g' \
 	    -e's|@pcp_sysconfig_dir@|$(PCP_SYSCONFIG_DIR)|g' \
 	    -e's|@pcp_sysconf_dir@|$(PCP_SYSCONF_DIR)|g' \
@@ -113,6 +114,7 @@ pcp.spec: pcp.spec.in
 	    -e's|@pcp_sa_dir@|$(PCP_SA_DIR)|g' \
 	    -e's|@pcp_var_dir@|$(PCP_VAR_DIR)|g' \
 	    -e's|@pcp_etc_dir@|$(PCP_ETC_DIR)|g' \
+	    -e's|@pcp_selinux_dir@|$(PCP_SELINUX_DIR)|g' \
 	    -e's|@pcp_binadm_dir@|$(PCP_BINADM_DIR)|g' \
 	    -e's|@pcp_pmdas_dir@|$(PCP_PMDAS_DIR)|g' \
 	    -e's|@qt_version@|$(QT_VERSION)|g' \

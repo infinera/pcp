@@ -1,4 +1,9 @@
 QA output created by 1180
+System Activity Report
+
+Host: ...
+Archive:         TMP/crontab-sar-report
+Report created: ...
 
 
 #  Wed Mar 7 16:36:43.514833 2018
@@ -119,64 +124,48 @@ QA output created by 1180
 
 #  Wed Mar 7 16:36:43.514833 2018
 # paging statistics
--- no report for config ":sar-B"
+-- no report for config ":sar-B" because the metric "mem.vmstat.pgscan_kswapd" is not in the archive
 
 
 #  Wed Mar 7 16:36:43.514833 2018
 # I/O and transfer rate statistics
-                  tps      rtps      wtps   bread/s   bwrtn/s
-16:36:43          N/A       N/A       N/A       N/A       N/A
-17:06:43          N/A       N/A       N/A       N/A       N/A
-17:36:43         0.83      0.15      0.68      8.28     36.77
-18:06:43         3.08      1.65      1.43     34.29     51.46
-18:36:43         0.83      0.00      0.83      0.00     36.44
-19:06:43         0.97      0.00      0.97      0.00     37.37
-19:36:43         0.86      0.00      0.86      0.00     36.37
-20:06:43         2.14      1.14      0.99     92.13     37.97
-20:36:43         0.94      0.00      0.94      0.00     36.55
-21:06:43         0.91      0.02      0.89      3.76     36.88
-21:36:43         0.87      0.00      0.87      0.00     36.39
-22:06:43          N/A       N/A       N/A       N/A       N/A
-22:36:43          N/A       N/A       N/A       N/A       N/A
-23:06:43         0.95      0.00      0.95      0.00     37.93
-23:36:43         0.99      0.00      0.99      0.00     38.16
-00:06:43         1.05      0.01      1.03      1.59     38.32
+-- no report for config ":sar-b" because the metric "disk.all.discard" is not in the archive
 
 
 #  Wed Mar 7 16:36:43.514833 2018
 # block device statistics
--- no report for config ":sar-d-dev"
+-- no report for config ":sar-d-dev" because the metric "disk.dev.discard_bytes" is not in the archive
 
 
 #  Wed Mar 7 16:36:43.514833 2018
 # device-mapper device statistics
--- no report for config ":sar-d-dm"
+-- no report for config ":sar-d-dm" because the metric "disk.dm.discard_bytes" is not in the archive
 
 
 #  Wed Mar 7 16:36:43.514833 2018
 # mounted filesystem statistics
--- no report for config ":sar-F"
+-- no report for config ":sar-F" because the metric "filesys.free" is not in the archive
 
 
 #  Wed Mar 7 16:36:43.514833 2018
 # hugepages utilization statistics
-            kbhugfree kbhugused  %hugused
-16:36:43          N/A       N/A       N/A
-17:06:43            0         0      0.00
-17:36:43            0         0      0.00
-18:06:43            0         0      0.00
-18:36:43            0         0      0.00
-19:06:43            0         0      0.00
-19:36:43            0         0      0.00
-20:06:43            0         0      0.00
-20:36:43            0         0      0.00
-21:06:43            0         0      0.00
-21:36:43            0         0      0.00
-22:06:43            0         0      0.00
-22:36:43            0         0      0.00
-23:06:43            0         0      0.00
-23:36:43            0         0      0.00
-00:06:43            0         0      0.00
+            kbhugfree kbhugused  %hugused kbhugrsvd kbhugsurp
+16:36:43          N/A       N/A       N/A       N/A       N/A
+17:06:43            0         0      0.00         0         0
+17:36:43            0         0      0.00         0         0
+18:06:43            0         0      0.00         0         0
+18:36:43            0         0      0.00         0         0
+19:06:43            0         0      0.00         0         0
+19:36:43            0         0      0.00         0         0
+20:06:43            0         0      0.00         0         0
+20:36:43            0         0      0.00         0         0
+21:06:43            0         0      0.00         0         0
+21:36:43            0         0      0.00         0         0
+22:06:43            0         0      0.00         0         0
+22:36:43            0         0      0.00         0         0
+23:06:43            0         0      0.00         0         0
+23:36:43            0         0      0.00         0         0
+00:06:43            0         0      0.00         0         0
 
 
 #  Wed Mar 7 16:36:43.514833 2018
@@ -276,12 +265,12 @@ QA output created by 1180
 
 #  Wed Mar 7 16:36:43.514833 2018
 # NFSv4 client and RPC statistics
--- no report for config ":sar-n-NFSv4"
+-- no report for config ":sar-n-NFSv4" because there are no values for any instance of the metric "nfs4.client.reqs" in the archive
 
 
 #  Wed Mar 7 16:36:43.514833 2018
 # NFSv4 server and RPC statistics
--- no report for config ":sar-n-NFSDv4"
+-- no report for config ":sar-n-NFSDv4" because the metric "rpc.server.rpcerr" is not in the archive
 
 
 #  Wed Mar 7 16:36:43.514833 2018
@@ -352,21 +341,21 @@ QA output created by 1180
 # memory utilization statistics
             kbmemfree kbmemavai kbmemused  %memused kbbuffers  kbcached  kbcommit   %commit  kbactive   kbinact   kbdirty
 16:36:43          N/A       N/A       N/A       N/A       N/A       N/A       N/A       N/A       N/A       N/A       N/A
-17:06:43      7691436   7750548    476204      5.83      2220    277436    475740      4.63    145628    213024      1716
-17:36:43      7639744   7748028    527896      6.46      2220    325940    471636      4.59    225140    182748       160
-18:06:43      7557144   7717020    610496      7.47      2220    366140    449296      4.38    242924    205604       140
-18:36:43      7531792   7716620    635848      7.78      2220    390820    455032      4.43    243148    230204       428
-19:06:43      7505644   7715920    661996      8.11      2220    415804    464652      4.53    243724    255012       168
-19:36:43      7479744   7715188    687896      8.42      2220    440516    457968      4.46    243928    279760       132
-20:06:43      7370788   7714528    796852      9.76      2220    548432    474516      4.62    244620    387108       432
-20:36:43      7345268   7714040    822372     10.07      2220    573100    457012      4.45    244692    411760       300
-21:06:43      7316304   7713496    851336     10.42      2220    601176    451152      4.40    245092    439728       160
-21:36:43      7290612   7713020    877028     10.74      2220    626056    456964      4.45    245308    464596       160
-22:06:43      6794952   7651400   1372688     16.81      2220   1042980    450120      4.39    361252    764224       160
-22:36:43      6768860   7650668   1398780     17.13      2220   1068008    470628      4.58    361764    789196       304
-23:06:43      6743076   7650096   1424564     17.44      2220   1092884    470804      4.59    361984    813980       156
-23:36:43      6717604   7649800   1450036     17.75      2220   1117704    470628      4.58    362164    838800       140
-00:06:43      6690024   7648976   1477616     18.09      2220   1144104    460544      4.49    365920    861700       132
+17:06:43      7691436   7750548    150748      1.85      2220    277436    475740      4.63    145628    213024      1716
+17:36:43      7639744   7748028    152656      1.87      2220    325940    471636      4.59    225140    182748       160
+18:06:43      7557144   7717020    168692      2.07      2220    366140    449296      4.38    242924    205604       140
+18:36:43      7531792   7716620    168636      2.06      2220    390820    455032      4.43    243148    230204       428
+19:06:43      7505644   7715920    169004      2.07      2220    415804    464652      4.53    243724    255012       168
+19:36:43      7479744   7715188    169272      2.07      2220    440516    457968      4.46    243928    279760       132
+20:06:43      7370788   7714528    169444      2.07      2220    548432    474516      4.62    244620    387108       432
+20:36:43      7345268   7714040    169616      2.08      2220    573100    457012      4.45    244692    411760       300
+21:06:43      7316304   7713496    169956      2.08      2220    601176    451152      4.40    245092    439728       160
+21:36:43      7290612   7713020    170108      2.08      2220    626056    456964      4.45    245308    464596       160
+22:06:43      6794952   7651400    197696      2.42      2220   1042980    450120      4.39    361252    764224       160
+22:36:43      6768860   7650668    198228      2.43      2220   1068008    470628      4.58    361764    789196       304
+23:06:43      6743076   7650096    198632      2.43      2220   1092884    470804      4.59    361984    813980       156
+23:36:43      6717604   7649800    198572      2.43      2220   1117704    470628      4.58    362164    838800       140
+00:06:43      6690024   7648976    199056      2.44      2220   1144104    460544      4.49    365920    861700       132
 
 
 #  Wed Mar 7 16:36:43.514833 2018
@@ -434,17 +423,17 @@ QA output created by 1180
 
 #  Wed Mar 7 16:36:43.514833 2018
 # TTY devices activity
--- no report for config ":sar-y"
+-- no report for config ":sar-y" because the metric "tty.serial.rx" is not in the archive
 
 
 #  Wed Mar 7 16:36:43.514833 2018
 # NUMA hint fault statistics
--- no report for config ":numa-hint-faults"
+-- no report for config ":numa-hint-faults" because the metric "mem.vmstat.numa_hint_faults" is not in the archive
 
 
 #  Wed Mar 7 16:36:43.514833 2018
 # NUMA per-node CPU statistics
--- no report for config ":numa-per-node-cpu"
+-- no report for config ":numa-per-node-cpu" because one or more metrics for the derived metric "nusr" is not in the archive
 
 
 #  Wed Mar 7 16:36:43.514833 2018

@@ -1,6 +1,7 @@
 QA output created by 248
 Log for pmlogger on HOST started DATE
 
+[DATE] pmlogger(PID) Info: Start
 Warning [CONFIG, line 3-or-4]
 Problem with lookup for metric "sample.no.such.metric" ... logging not activated
 Reason: Unknown metric name
@@ -13,7 +14,7 @@ Reason: Unknown or illegal metric identifier
 Config parsed
 Starting logger for host "HOST"
 Archive basename: ARCHIVE
-pmlogger: Sample limit reached, exiting
+[DATE] pmlogger(PID) Info: pmlogger: Sample limit reached, exiting
 
 Log finished DATE
 TIMESTAMP 5 metrics

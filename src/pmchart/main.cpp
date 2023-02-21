@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2014,2016, Red Hat.
+ * Copyright (c) 2014,2016,2021-2022 Red Hat.
  * Copyright (c) 2006, Ken McDonell.  All Rights Reserved.
  * Copyright (c) 2007-2009, Aconex.  All Rights Reserved.
  * 
@@ -234,6 +234,14 @@ void writeSettings(void)
 	else
 	    userSettings.remove("savedHosts");
     }
+    if (globalSettings.lastArchivePathModified) {
+	globalSettings.lastArchivePathModified = false;
+	userSettings.setValue("lastArchivePath", globalSettings.lastArchivePath);
+    }
+    if (globalSettings.lastExportPathModified) {
+	globalSettings.lastExportPathModified = false;
+	userSettings.setValue("lastExportPath", globalSettings.lastExportPath);
+    }
 
     userSettings.endGroup();
 }
@@ -373,6 +381,21 @@ static void readSettings(void)
 	globalSettings.savedHosts =
 			userSettings.value("savedHosts").toStringList();
 
+    //
+    // Saved filesystem search paths
+    //
+    globalSettings.lastArchivePathModified = false;
+    QChar sep(pmPathSeparator());
+    QString pmlogger = QDir::toNativeSeparators(QDir::homePath());
+    pmlogger.append(sep).append(".pcp").append(sep).append("pmlogger");
+    globalSettings.lastArchivePath =
+    		userSettings.value("lastArchivePath", pmlogger).toString();
+    globalSettings.lastExportPathModified = false;
+    QString pictures = QDir::toNativeSeparators(QDir::homePath());
+    pictures.append(sep).append("Pictures");
+    globalSettings.lastExportPath =
+    		userSettings.value("lastExportPath", pictures).toString();
+
     userSettings.endGroup();
 }
 
@@ -475,6 +498,7 @@ main(int argc, char ** argv)
     QApplication a(argc, argv);
     setupEnvironment();
     readSettings();
+    atexit(writeSettings);
 
     opts.flags = PM_OPTFLAG_MULTI | PM_OPTFLAG_MIXED;
     opts.short_options = "A:a:Cc:D:f:F:g:h:H:Ln:o:O:p:s:S:T:t:Vv:WzZ:?";
@@ -664,7 +688,8 @@ main(int argc, char ** argv)
     else if (liveGroup->numContexts() > 0) {
 	liveGroup->defaultTZ(tzLabel, tzString);
 	pmtimevalNow(&logStartTime);
-	logEndTime.tv_sec = logEndTime.tv_usec = INT_MAX;
+	logEndTime.tv_sec = logEndTime.tv_usec = PM_MAX_TIME_T;
+	logEndTime.tv_usec = 0;
 	if ((sts = pmParseTimeWindow(opts.start_optarg, opts.finish_optarg,
 					opts.align_optarg, opts.origin_optarg,
 					&logStartTime, &logEndTime, &opts.start,

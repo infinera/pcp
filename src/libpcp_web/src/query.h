@@ -1,12 +1,13 @@
 /*
- * Copyright (c) 2017-2020 Red Hat.
+ * Copyright (c) 2017-2022 Red Hat.
  * Copyright (c) 2020 Yushan ZHANG.
- * 
+ * Copyright (c) 2022 Shiyao CHEN.
+ *
  * This library is free software; you can redistribute it and/or modify it
  * under the terms of the GNU Lesser General Public License as published
  * by the Free Software Foundation; either version 2.1 of the License, or
  * (at your option) any later version.
- * 
+ *
  * This library is distributed in the hope that it will be useful, but
  * WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY
  * or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU Lesser General Public
@@ -35,11 +36,25 @@ typedef enum nodetype {
     N_STAR,
     N_SLASH,
     N_AVG,
+    N_AVG_INST,
+    N_AVG_SAMPLE,
     N_COUNT,
     N_DELTA,
     N_MAX,
+    N_MAX_INST,
+    N_MAX_SAMPLE,
     N_MIN,
+    N_MIN_INST,
+    N_MIN_SAMPLE,
     N_SUM,
+    N_SUM_INST,
+    N_SUM_SAMPLE,
+    N_STDEV_INST,
+    N_STDEV_SAMPLE,
+    N_TOPK_INST,
+    N_TOPK_SAMPLE,
+    N_NTH_PERCENTILE_INST,
+    N_NTH_PERCENTILE_SAMPLE,
     N_ANON,
     N_RATE,
     N_INSTANT,
@@ -91,7 +106,7 @@ typedef struct seriesGetSID {
     sds			name;		/* series or source SID */
     sds			metric;		/* back-pointer for instance series */
     /* various flags */
-    int			freed : 1;	/* freed individually on completion */
+    unsigned int	freed : 1;	/* freed individually on completion */
     void		*baton;
 } seriesGetSID;
 
@@ -135,10 +150,10 @@ typedef struct timing {
     pmSeriesTimeWindow	window;
 
     /* parsed inputs */
-    struct timeval	delta;	
-    struct timeval	align;
-    struct timeval	start;
-    struct timeval	end;
+    struct timespec	delta;	
+    struct timespec	align;
+    struct timespec	start;
+    struct timespec	end;
     unsigned int	count;		/* sample count */
     unsigned int	offset;		/* sample offset */
     int			zone;		/* pmNewZone handle */
@@ -179,9 +194,10 @@ typedef struct series {
     timing_t		time;
 } series_t;
 
-extern int series_parse(sds, series_t *, char **, void *);
+extern int series_parse(sds, series_t *, char **);
 extern int series_solve(pmSeriesSettings *, node_t *, timing_t *, pmSeriesFlags, void *);
 extern int series_load(pmSeriesSettings *, node_t *, timing_t *, pmSeriesFlags, void *);
+extern void series_stats_inc(pmSeriesSettings *, unsigned int);
 
 extern const char *series_instance_name(sds);
 extern const char *series_context_name(sds);

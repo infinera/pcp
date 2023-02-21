@@ -263,7 +263,7 @@ __pmLogFindLocalPorts(int pid, __pmLogPort **result)
 		    pmflush();
 		}
 		else {
-		    char	*q = strchr(buf, '\n');
+		    q = strchr(buf, '\n');
 		    if (q != NULL)
 			*q = '\0';
 		    lpp->archive = strdup(buf);
@@ -391,7 +391,7 @@ __pmLogFindPort(const char *host, int pid, __pmLogPort **lpp)
 	return localcon;
 
     /* note: there may not be a current context */
-    ctx = 0;
+    ctx = -1;
     oldctx = pmWhichContext();
 
     /*

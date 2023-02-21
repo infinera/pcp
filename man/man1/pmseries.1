@@ -1,6 +1,6 @@
 '\"macro stdmacro
 .\"
-.\" Copyright (c) 2018-2020 Red Hat.
+.\" Copyright (c) 2018-2020,2022 Red Hat.
 .\"
 .\" This program is free software; you can redistribute it and/or modify it
 .\" under the terms of the GNU General Public License as published by the
@@ -23,6 +23,7 @@
 [\fB\-g\fR \fIpattern\fR]
 [\fB\-h\fR \fIhost\fR]
 [\fB\-p\fR \fIport\fR]
+[\fB\-w\fR \fIwindow\fR]
 [\fB\-Z\fR \fItimezone\fR]
 [\fIquery\fR | \fIlabels\fR ... | \fIseries\fR ... | \fIsource\fR ... ]
 .SH DESCRIPTION
@@ -56,12 +57,19 @@ runs in several different modes \- either querying
 timeseries identifiers, metadata or values (already
 stored in Redis), or manually loading timeseries
 into Redis.
-The latter mode is seldom used, however, since
+The latter mode is generally only used for loading
+previously collected (inactive) archives,
+since
 .BR pmproxy (1)
-will automatically perform this function for local
+automatically performs this function for "live" (actively growing)
+local
 .BR pmlogger (1)
-instances,
-when running in its default time series mode.
+instances, when running in its default time series mode.
+See the
+.B "TIMESERIES LOADING"
+section below and the
+.B \-L
+option for further details.
 .PP
 Without command line options specifying otherwise,
 .B pmseries
@@ -194,8 +202,7 @@ inequality ("!=").
 Strings can be subject to pattern matching in the form of
 glob matching ("~~"), regular expression matching ("=~"),
 and regular expression non-matching ("!~").
-The ":" operator is equivalent to "~~" - i.e., regular expression
-matching.
+The ":" operator is equivalent to "~~" - i.e., glob matching.
 .SS Relational operators (numeric label values only)
 Numeric label values can be subject to the less than ("<"),
 greater than (">"), less than or equal ("<="), greater than
@@ -381,7 +388,7 @@ for each series of instances.
 For example, the result for
 .P
 .SAMPLE
-$ pmseries 'min(kernel.all.load[count:100])'
+$ pmseries 'min_sample(kernel.all.load[count:100])'
 .ESAMPLE
 .P
 will be the smallest value of the 100 most recent samples,
@@ -400,10 +407,10 @@ $ pmseries 'kernel.all.load[count:2]'
     [Tue Nov 10 11:52:20.827134000 2020] 1.070000e+00 d5e1c360d13064c461169091997e1e8be7488133
 .ESAMPLE
 .P
-Using the \fBmin\fP function :
+Using the \fBmin_sample\fP function :
 .P
 .SAMPLE
-$ pmseries 'min(kernel.all.load[count:2])'
+$ pmseries 'min_sample(kernel.all.load[count:2])'
 11b965bc5f9598034ed9139fb3a78c6c0b7065ba
     [Tue Nov 10 11:52:30.833379000 2020] 1.100000e+00 a7c96e5e2e0431a12279756d11590fa9fed8f306
     [Tue Nov 10 11:52:30.833379000 2020] 9.900000e-01 ee9b506935fd0976a893dc27242926f49326b9a1
@@ -422,22 +429,64 @@ d7832c4fba33bcc980b1a1b614e0508043288480
     [Tue Nov 10 12:44:29.379029000 2020] 460697388
     [Tue Nov 10 12:44:19.379096000 2020] 460657412
 
-$ pmseries 'min(kernel.all.pswitch[count:5])'
+$ pmseries 'min_sample(kernel.all.pswitch[count:5])'
 1b6e92fb5bc012372f54452734dd03f0f131fa06
     [Tue Nov 10 12:44:19.379096000 2020] 460657412 d7832c4fba33bcc980b1a1b614e0508043288480
 
 .ESAMPLE
 .P
+Some
+.B pmseries
+functions provide operations across both time and instances domain. For example,
+.BR max_inst (\f2expr\fP)
+finds the maximum value across instances while
+.BR max_sample (\f2expr\fP)
+finds the maximum value across time.
+.P
 Future versions of
 .B pmseries
 may provide functions that perform aggregation, interpolation, filtering
-or transforms in other ways, e.g. across instances instead of time.
+or transforms in other ways.
 .SS Function Reference
-.BR max(\f2expr\fP)
-the maximum value in the time series for each instance of \fIexpr\fP
+.BR max_inst (\f2expr\fP)
+the maximum value in the time series for each instance of \fIexpr\fP.
+For backwards compatibility, the synonym
+.B max
+is equivalent to
+.BR max_inst .
 .P
-.BR min(\f2expr\fP)
-the minimum value in the time series for each instance of \fIexpr\fP
+.BR max_sample(\f2expr\fP)
+the maximum value in the time series for each sample of \fIexpr\fP across time.
+.P
+.BR min_inst(\f2expr\fP)
+the minimum value in the time series for each instance of \fIexpr\fP.
+For backwards compatibility, the synonym
+.B min
+is equivalent to
+.BR min_inst .
+.P
+.BR min_sample(\f2expr\fP)
+the minimum value in the time series for each sample of \fIexpr\fP across time.
+.P
+.BR sum_inst(\f2expr\fP)
+sum of the values in the time series for each instance of \fIexpr\fP.
+For backwards compatibility, the synonym
+.B sum
+is equivalent to
+.BR sum_inst .
+.P
+.BR sum_sample(\f2expr\fP)
+sum of the values in the time series for each sample of \fIexpr\fP across time.
+.P
+.BR avg_inst(\f2expr\fP)
+average of the values in the time series for each instance of \fIexpr\fP.
+For backwards compatibility, the synonym
+.B avg
+is equivalent to
+.BR avg_inst .
+.P
+.BR avg_sample(\f2expr\fP)
+average of the values in the time series for each sample of \fIexpr\fP across time.
 .P
 .BR rate(\f2expr\fP)
 the rate with respect to time of each sample.
@@ -501,6 +550,30 @@ logarithm of the values in the time series for each instance of \fIexpr\fP
 .P
 .BR sqrt(\f2expr\fP)
 square root of the values in the time series for each instance of \fIexpr\fP
+.P
+.BR stdev_inst(\f2expr\fP)
+standard deviation of the values in the time series for each instance of \fIexpr\fP.
+.P
+.BR stdev_sample(\f2expr\fP)
+standard deviation of the values in the time series for each sample of \fIexpr\fP across time.
+.P
+.BR topk_inst(\f2expr\fP, \f2k\fP)
+the top \fIk\fP values in the time series for each instance of \fIexpr\fP.
+.P
+.BR topk_sample(\f2expr\fP, \f2k\fP)
+the top \fIk\fP values in the time series for each sample of \fIexpr\fP across time.
+.P
+.BR nth_percentile_inst(\f2expr\fP, \f2percentile_value\fP)
+the nth percentile of the values in the time series for each instance of \fIexpr\fP. Note that
+.I percentile_value
+has value in the range 0 to 100.
+.P
+.BR nth_percentile_sample(\f2expr\fP, \f2percentile_value\fP)
+the nth percentile of the values in the time series for each sample of \fIexpr\fP across time.
+Note that
+.I percentile_value
+has value in the range 0 to 100.
+
 .SS Compatibility
 All operands in an expression must have the same number of samples,
 but not necessarily the same time window. e.g. you could subtract some
@@ -557,6 +630,9 @@ equivalent to \fB\-deilms\fR.
 Metric descriptions detailing the PMID, data type, data semantics, units,
 scale and associated instance domain.
 This option has a direct \fBpminfo\fR(1) equivalent.
+.TP
+\fB\-F\fR, \fB\-\-fast\fR
+Query or load series metadata only, not values.
 .TP
 \fB\-g\fR \fIpattern\fR, \fB\-\-glob\fR=\fIpattern\fR
 Provide a
@@ -676,7 +752,15 @@ Report time stamps numerically (in milliseconds) instead of
 the default human readable form.
 .TP
 \fB\-v\fR, \fB\-\-values\fR
-Report all of the known values for given \fIlabel\fR name(s).
+Report all of the known values for given \fIlabel\fR name(s),
+or report values for the given \fIseries\fR identifiers.
+.TP
+\fB\-w\fR, \fB\-\-window\fR
+Provide a time specification that will be applied to values
+being returned when returning values via use of \fIseries\fR
+identifiers (i.e. when not using a \fIquery\fR string).
+The time specification uses the same square-bracket enclosed
+form described earlier in the ``TIME SPECIFICATION'' section.
 .TP
 \fB\-V\fR, \fB\-\-version\fR
 Display version number and exit.

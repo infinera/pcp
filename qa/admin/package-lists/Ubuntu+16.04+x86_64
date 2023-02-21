@@ -15,7 +15,6 @@ bsd-mailx
 build-essential
 chrpath
 coreutils
-Spreadsheet::ReadSXC cpan
 Text::CSV_XS cpan
 cppcheck
 cron
@@ -50,9 +49,6 @@ liblist-moreutils-perl
 liblzma-dev
 libncurses5-dev
 libnet-snmp-perl
-libnspr4-dev
-libnss3-dev
-libnss3-tools
 libperl5.22
 libpfm4-dev
 libpython-dev
@@ -107,6 +103,7 @@ python3-openpyxl
 python3-pil
 python3-prometheus-client
 python3-psycopg2
+python3-pymongo
 python3-requests
 python3-setuptools
 python3-six

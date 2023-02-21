@@ -101,9 +101,9 @@ Once all the command name and arguments have been registered
 calling
 .B __pmProcessExec
 uses a
-.B fork (2)
+.BR fork (2)
 and
-.B execvp (2)
+.BR execvp (2)
 sequence to execute the command.
 .PP
 The argument
@@ -161,20 +161,23 @@ the first one is completed by calling
 .B __pmProcessExec
 or
 .BR __pmProcessPipe (3).
-.SH SEE ALSO
-.BR execvp(2),
-.BR fork (2),
-.BR __pmProcessPipe (3),
-.BR popen (3),
-.BR system (3)
-and
-.BR waitpid (3).
 .SH DIAGNOSTICS
 If successful
 .B __pmProcessAddArg
-returns 0.  Other conditions are rare (e.g. alloc failure) and are
+returns 0.  Other conditions are rare (e.g. memory allocation failure) and are
 indicated by a return value that can be decoded using
 .BR pmErrStr (3).
+When an error does occur
+.B __pmProcessAddArg
+cleans up any allocations made in the current call and uses
+.I handle
+to clean up any allocations made by previous calls so there
+is no need for the caller to worry about memory leaks, and
+then (re)sets
+.I handle
+to
+.B NULL
+before returning.
 .PP
 .B __pmProcessUnpickArgs
 returns 0 on success.  In the case of an unterminated string,
@@ -184,6 +187,11 @@ is returned.
 Other return values less than 0 indicate a more serious error and the
 value can be decoded using
 .BR pmErrStr (3).
+When an error does occur
+the clean up is similar to
+.B __pmProcessAddArg
+so there is no need for the caller to worry about
+memory leaks.
 .PP
 The return status from
 .B __pmProcessExec
@@ -201,3 +209,11 @@ the return value is an encoding of the
 status as follows: 2000 if something unknown went wrong, else
 if 1000 + signal number of the command was killed or stopped by
 a signal, else the exit status of the command.
+.SH SEE ALSO
+.BR execvp(2),
+.BR fork (2),
+.BR __pmProcessPipe (3),
+.BR popen (3),
+.BR system (3)
+and
+.BR waitpid (3).

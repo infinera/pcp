@@ -2,18 +2,40 @@
 #
 # Suss out what sort of platform I am ...
 #
-# whatami [-h]
+# whatami [-d][-h]
 #
 
+fmt="%-19.19s %-8.8s %-7.7s %s%s%s\n"
+sts=0
 debug=false
-tmp=/var/tmp/$$
-trap "rm -f $tmp.*; exit 0" 0 1 2 3 15
+heading=false
 
-fmt="%-11.11s %-8.8s %-7.7s %s%s%s\n"
-if [ "$1" = "-h" ]
+tmp=/var/tmp/$$
+trap "rm -f $tmp.*; exit \$sts" 0 1 2 3 15
+
+while [ $# -gt 0 ]
+do
+    case "$1"
+    in
+	-d)
+	    debug=true
+	    ;;
+	-h)
+	    heading=true
+	    ;;
+	*)
+	    echo >&2 "Usage: whatami [-d][-h]"
+	    sts=1
+	    exit
+	    ;;
+    esac
+    shift
+done
+
+if $heading
 then
     printf "$fmt" "Host" "PCP" "CPU" "Operating System and Options"
-    printf "$fmt" "-----------" "--------" "------" "-----------------------------"
+    printf "$fmt" "-------------------" "--------" "------" "-----------------------------"
 fi
 
 from=''
@@ -78,9 +100,21 @@ then
     $debug && from=' [/etc/lsb-release]'
 elif [ -f /etc/debian_version ]
 then
-    # 6.0.1
+    # contains just the version number, e.g.
+    # 11.1
     #
     os="Debian `cat /etc/debian_version`"
+    if [ -f /etc/os-release ]
+    then
+	# VERSION_CODENAME=bullseye
+	#
+	codename=`sed </etc/os-release -n -e '/^VERSION_CODENAME= */{
+s///
+s/"//g
+p
+}'`
+	[ -n "$codename" ] && os="$os ($codename)"
+    fi
     $debug && from=' [/etc/debian_version]'
 elif [ -f /etc/mandriva-release ]
 then
@@ -161,6 +195,34 @@ else
 fi
 
 opts=''
+
+# (Linux) kernel version
+#
+#
+if which pmprobe >/dev/null 2>&1
+then
+    if pmprobe -v kernel.uname.release >$tmp.out 2>/dev/null
+    then
+	# variants here include ...
+	# kernel.uname.release 1 "..."
+	# Linux
+	#	5.4.0-121-generic
+	#	5.17.11-100.fc34.x86_64
+	#	4.18.0-394.el8.x86_64
+	#	5.14.14-arch1-1
+	# OpenBSD
+	#	7.0
+	#
+	kernel=`sed <$tmp.out -e 's/"$//' -e 's/.*"//' -e 's/-.*//'`
+    fi
+    [ -z "$kernel" ] && kernel=unknown
+else
+    kernel=unknown
+fi
+opts="$opts kernel=$kernel"
+
+# Python version
+#
 if which pmpython >/dev/null 2>&1
 then
     if pmpython --version >$tmp.out 2>&1
@@ -172,6 +234,9 @@ then
 else
     opts="$opts py=none"
 fi
+
+# SELinux?
+#
 if which getenforce >/dev/null 2>&1
 then
     opts="$opts se=`getenforce | tr '[A-Z]' '[a-z]'`"

@@ -1,15 +1,15 @@
 /*
  * pmlogrewrite - config-driven stream editor for PCP archives
  *
- * Copyright (c) 2013-2018 Red Hat.
+ * Copyright (c) 2013-2018,2021-2022 Red Hat.
  * Copyright (c) 2011 Ken McDonell.  All Rights Reserved.
  * Copyright (c) 1997-2002 Silicon Graphics, Inc.  All Rights Reserved.
- * 
+ *
  * This program is free software; you can redistribute it and/or modify it
  * under the terms of the GNU General Public License as published by the
  * Free Software Foundation; either version 2 of the License, or (at your
  * option) any later version.
- * 
+ *
  * This program is distributed in the hope that it will be useful, but
  * WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY
  * or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License
@@ -27,9 +27,11 @@
 #include <ctype.h>
 #include <sys/stat.h>
 #include <assert.h>
-#include "pmapi.h"
-#include "libpcp.h"
-#include "logger.h"
+#include "pcp/pmapi.h"
+#include "pcp/libpcp.h"
+#include "pcp/archive.h"
+#include "../libpcp/src/internal.h"
+#include "./logger.h"
 #include <assert.h>
 
 global_t	global;
@@ -38,6 +40,8 @@ metricspec_t	*metric_root;
 textspec_t	*text_root;
 labelspec_t	*label_root;
 int		lineno;
+
+__pmHashCtl	indom_hash = { 0 };
 
 static pmLongOptions longopts[] = {
     PMAPI_OPTIONS_HEADER("Options"),
@@ -49,14 +53,16 @@ static pmLongOptions longopts[] = {
     { "quick", 0, 'q', 0, "quick mode, no output if no change" },
     { "scale", 0, 's', 0, "do scale conversion" },
     { "verbose", 0, 'v', 0, "increased diagnostic verbosity" },
+    { "version", 1, 'V', "N", "output archive in version N [2/3] format" },
     { "warnings", 0, 'w', 0, "emit warnings [default is silence]" },
+    PMOPT_HELP,
     PMAPI_OPTIONS_TEXT(""),
     PMAPI_OPTIONS_TEXT("output-archive is required unless -i is specified"),
     PMAPI_OPTIONS_END
 };
 
 static pmOptions opts = {
-    .short_options = "c:CdD:iqsvw?",
+    .short_options = "c:CdD:iqsvV:w?",
     .long_options = longopts,
     .short_usage = "[options] input-archive [output-archive]",
 };
@@ -86,6 +92,7 @@ int	iflag;				/* -i in-place */
 int	qflag;				/* -q quick or quiet */
 int	sflag;				/* -s scale values */
 int	vflag;				/* -v verbosity */
+int	out_version;			/* -V log version */
 int	wflag;				/* -w emit warnings */
 
 /*
@@ -121,8 +128,8 @@ newvolume(int vol)
     if ((newfp = __pmLogNewFile(outarch.name, vol)) != NULL) {
 	__pmFclose(outarch.archctl.ac_mfp);
 	outarch.archctl.ac_mfp = newfp;
-	outarch.logctl.l_label.ill_vol = outarch.archctl.ac_curvol = vol;
-	__pmLogWriteLabel(outarch.archctl.ac_mfp, &outarch.logctl.l_label);
+	outarch.logctl.label.vol = outarch.archctl.ac_curvol = vol;
+	__pmLogWriteLabel(outarch.archctl.ac_mfp, &outarch.logctl.label);
 	__pmFflush(outarch.archctl.ac_mfp);
     }
     else {
@@ -148,21 +155,28 @@ newvolume(int vol)
 static void
 newlabel(void)
 {
-    __pmLogLabel	*lp = &outarch.logctl.l_label;
+    __pmLogLabel	*lp = &outarch.logctl.label;
 
-    /* copy magic number, pid, host and timezone */
-    lp->ill_magic = inarch.label.ll_magic;
-    lp->ill_pid = inarch.label.ll_pid;
-    if (global.flags & GLOBAL_CHANGE_HOSTNAME)
-	strncpy(lp->ill_hostname, global.hostname, PM_LOG_MAXHOSTLEN);
-    else
-	strncpy(lp->ill_hostname, inarch.label.ll_hostname, PM_LOG_MAXHOSTLEN);
-    lp->ill_hostname[PM_LOG_MAXHOSTLEN-1] = '\0';
-    if (global.flags & GLOBAL_CHANGE_TZ)
-	strncpy(lp->ill_tz, global.tz, PM_TZ_MAXLEN);
-    else
-	strncpy(lp->ill_tz, inarch.label.ll_tz, PM_TZ_MAXLEN);
-    lp->ill_tz[PM_TZ_MAXLEN-1] = '\0';
+    /* create magic number with output version */
+    lp->magic = PM_LOG_MAGIC | outarch.version;
+
+    /* copy pid, host, timezone, etc */
+    // TODO WARN about no-ops for changes to V3 label fields in V2 output?
+    lp->pid = inarch.label.pid;
+    lp->features = (global.flags & GLOBAL_CHANGE_FEATURES) ?
+	global.features : inarch.label.features;
+    if (lp->hostname)
+	free(lp->hostname);
+    lp->hostname = (global.flags & GLOBAL_CHANGE_HOSTNAME) ?
+	global.hostname : inarch.label.hostname;
+    if (lp->timezone)
+	free(lp->timezone);
+    lp->timezone = (global.flags & GLOBAL_CHANGE_TIMEZONE) ?
+	global.timezone : inarch.label.timezone;
+    if (lp->zoneinfo)
+	free(lp->zoneinfo);
+    lp->zoneinfo = (global.flags & GLOBAL_CHANGE_ZONEINFO) ?
+	global.zoneinfo : inarch.label.zoneinfo;
 }
 
 /*
@@ -174,32 +188,32 @@ writelabel(int do_rewind)
     off_t	old_offset;
 
     if (do_rewind) {
-	old_offset = __pmFtell(outarch.logctl.l_tifp);
+	old_offset = __pmFtell(outarch.logctl.tifp);
 	assert(old_offset >= 0);
-	__pmRewind(outarch.logctl.l_tifp);
+	__pmRewind(outarch.logctl.tifp);
     }
-    outarch.logctl.l_label.ill_vol = PM_LOG_VOL_TI;
-    __pmLogWriteLabel(outarch.logctl.l_tifp, &outarch.logctl.l_label);
+    outarch.logctl.label.vol = PM_LOG_VOL_TI;
+    __pmLogWriteLabel(outarch.logctl.tifp, &outarch.logctl.label);
     if (do_rewind)
-	__pmFseek(outarch.logctl.l_tifp, (long)old_offset, SEEK_SET);
+	__pmFseek(outarch.logctl.tifp, (long)old_offset, SEEK_SET);
 
     if (do_rewind) {
-	old_offset = __pmFtell(outarch.logctl.l_mdfp);
+	old_offset = __pmFtell(outarch.logctl.mdfp);
 	assert(old_offset >= 0);
-	__pmRewind(outarch.logctl.l_mdfp);
+	__pmRewind(outarch.logctl.mdfp);
     }
-    outarch.logctl.l_label.ill_vol = PM_LOG_VOL_META;
-    __pmLogWriteLabel(outarch.logctl.l_mdfp, &outarch.logctl.l_label);
+    outarch.logctl.label.vol = PM_LOG_VOL_META;
+    __pmLogWriteLabel(outarch.logctl.mdfp, &outarch.logctl.label);
     if (do_rewind)
-	__pmFseek(outarch.logctl.l_mdfp, (long)old_offset, SEEK_SET);
+	__pmFseek(outarch.logctl.mdfp, (long)old_offset, SEEK_SET);
 
     if (do_rewind) {
 	old_offset = __pmFtell(outarch.archctl.ac_mfp);
 	assert(old_offset >= 0);
 	__pmRewind(outarch.archctl.ac_mfp);
     }
-    outarch.logctl.l_label.ill_vol = 0;
-    __pmLogWriteLabel(outarch.archctl.ac_mfp, &outarch.logctl.l_label);
+    outarch.logctl.label.vol = 0;
+    __pmLogWriteLabel(outarch.archctl.ac_mfp, &outarch.logctl.label);
     if (do_rewind)
 	__pmFseek(outarch.archctl.ac_mfp, (long)old_offset, SEEK_SET);
 }
@@ -214,11 +228,11 @@ nextmeta()
     __pmArchCtl		*acp = inarch.ctxp->c_archctl;
     __pmLogCtl		*lcp = acp->ac_log;
 
-    if ((sts = _pmLogGet(acp, PM_LOG_VOL_META, &inarch.metarec)) < 0) {
+    if ((sts = pmaGetLog(acp, PM_LOG_VOL_META, &inarch.metarec)) < 0) {
 	if (sts != PM_ERR_EOL) {
-	    fprintf(stderr, "%s: Error: _pmLogGet[meta %s]: %s\n",
+	    fprintf(stderr, "%s: Error: pmaGetLog[meta %s]: %s\n",
 		    pmGetProgname(), inarch.name, pmErrStr(sts));
-	    _report(lcp->l_mdfp);
+	    _report(lcp->mdfp);
 	}
 	return -1;
     }
@@ -371,6 +385,15 @@ parseargs(int argc, char *argv[])
 	    vflag++;
 	    break;
 
+	case 'V':	/* output log version */
+	    outarch.version = atoi(opts.optarg);
+	    if (outarch.version != PM_LOG_VERS02 && outarch.version != PM_LOG_VERS03) {
+		pmprintf("%s: Error: unsupported version (%d) requested\n",
+			pmGetProgname(), outarch.version);
+		opts.errors++;
+	    }
+	    break;
+
 	case 'w':	/* print warnings */
 	    wflag = 1;
 	    break;
@@ -489,26 +512,31 @@ reportconfig(void)
 
     printf("PCP Archive Log Rewrite Specifications Summary\n");
     change |= (global.flags != 0);
+    // TODO WARN about no-ops for changes to V3 label fields in V2 output?
     if (global.flags & GLOBAL_CHANGE_HOSTNAME)
-	printf("Hostname:\t%s -> %s\n", inarch.label.ll_hostname, global.hostname);
-    if (global.flags & GLOBAL_CHANGE_TZ)
-	printf("Timezone:\t%s -> %s\n", inarch.label.ll_tz, global.tz);
+	printf("Hostname:\t%s -> %s\n", inarch.label.hostname, global.hostname);
+    if (global.flags & GLOBAL_CHANGE_TIMEZONE)
+	printf("Timezone:\t%s -> %s\n", inarch.label.timezone, global.timezone);
+    if (global.flags & GLOBAL_CHANGE_ZONEINFO)
+	printf("Zoneinfo:\t%s -> %s\n", inarch.label.zoneinfo, global.zoneinfo);
+    if (global.flags & GLOBAL_CHANGE_FEATURES)
+	printf("Features:\t%d -> %d\n", inarch.label.features, global.features);
     if (global.flags & GLOBAL_CHANGE_TIME) {
 	static struct tm	*tmp;
 	char			*sign = "";
-	time_t			time;
-	if (global.time.tv_sec < 0) {
-	    time = (time_t)(-global.time.tv_sec);
+	time_t			ltime;
+	if (global.time.sec < 0) {
+	    ltime = (time_t)(-global.time.sec);
 	    sign = "-";
 	}
 	else
-	    time = (time_t)global.time.tv_sec;
-	tmp = gmtime(&time);
+	    ltime = (time_t)global.time.sec;
+	tmp = gmtime(&ltime);
 	tmp->tm_hour += 24 * tmp->tm_yday;
 	if (tmp->tm_hour < 10)
-	    printf("Delta:\t\t-> %s%02d:%02d:%02d.%06d\n", sign, tmp->tm_hour, tmp->tm_min, tmp->tm_sec, (int)global.time.tv_usec);
+	    printf("Delta:\t\t-> %s%02d:%02d:%02d.%09d\n", sign, tmp->tm_hour, tmp->tm_min, tmp->tm_sec, (int)global.time.nsec);
 	else
-	    printf("Delta:\t\t-> %s%d:%02d:%02d.%06d\n", sign, tmp->tm_hour, tmp->tm_min, tmp->tm_sec, (int)global.time.tv_usec);
+	    printf("Delta:\t\t-> %s%d:%02d:%02d.%09d\n", sign, tmp->tm_hour, tmp->tm_min, tmp->tm_sec, (int)global.time.nsec);
     }
     for (ip = indom_root; ip != NULL; ip = ip->i_next) {
 	int		hdr_done = 0;
@@ -716,14 +744,19 @@ anychange(void)
     int			i;
 
     if (global.flags != 0) {
+    // TODO WARN about no-ops for changes to V3 label fields in V2 output?
 	if (pmDebugOptions.appl3) {
 	    fprintf(stderr, "anychange: global.flags (%d,", global.flags);
 	    if (global.flags & GLOBAL_CHANGE_TIME)
 		fprintf(stderr, " CHANGE_TIME");
 	    if (global.flags & GLOBAL_CHANGE_HOSTNAME)
 		fprintf(stderr, " CHANGE_HOSTNAME");
-	    if (global.flags & GLOBAL_CHANGE_TZ)
-		fprintf(stderr, " CHANGE_TZ");
+	    if (global.flags & GLOBAL_CHANGE_TIMEZONE)
+		fprintf(stderr, " CHANGE_TIMEZONE");
+	    if (global.flags & GLOBAL_CHANGE_ZONEINFO)
+		fprintf(stderr, " CHANGE_ZONEINFO");
+	    if (global.flags & GLOBAL_CHANGE_FEATURES)
+		fprintf(stderr, " CHANGE_FEATURES");
 	    fprintf(stderr, ") != 0\n");
 	}
 	return 1;
@@ -829,24 +862,20 @@ anychange(void)
 }
 
 static int
-fixstamp(struct timeval *tvp)
+fixstamp(__pmTimestamp *tsp)
 {
     if (global.flags & GLOBAL_CHANGE_TIME) {
-	if (global.time.tv_sec > 0) {
-	    pmtimevalInc(tvp, &global.time);
+	if (global.time.sec > 0) {
+	    __pmTimestampInc(tsp, &global.time);
 	    return 1;
 	}
-	else if (global.time.tv_sec < 0) {
+	else if (global.time.sec < 0) {
 	    /*
-	     * parser makes tv_sec < 0 and tv_usec >= 0 ...
-	     * so cannot use pmtimevalDec() here
+	     * parser makes sec < 0 and nsec >= 0 ...
 	     */
-	    tvp->tv_sec += global.time.tv_sec;
-	    tvp->tv_usec -= global.time.tv_usec;
-	    if (tvp->tv_usec < 0) {
-		tvp->tv_sec--;
-		tvp->tv_usec += 1000000;
-	    }
+	    global.time.sec = -global.time.sec;
+	    __pmTimestampDec(tsp, &global.time);
+	    global.time.sec = -global.time.sec;
 	    return 1;
 	}
     }
@@ -879,7 +908,7 @@ link_entries(void)
     char			strbuf[64];
 
     /* Link metricspec_t entries to indomspec_t entries */
-    hcp = &inarch.ctxp->c_archctl->ac_log->l_hashpmid;
+    hcp = &inarch.ctxp->c_archctl->ac_log->hashpmid;
     for (ip = indom_root; ip != NULL; ip = ip->i_next) {
 	change = 0;
 	for (i = 0; i < ip->numinst; i++)
@@ -913,7 +942,7 @@ link_entries(void)
     }
 
     /* Link textspec_t entries to indomspec_t entries */
-    hcp = &inarch.ctxp->c_archctl->ac_log->l_hashtext;
+    hcp = &inarch.ctxp->c_archctl->ac_log->hashtext;
     for (ip = indom_root; ip != NULL; ip = ip->i_next) {
 	change = 0;
 	for (i = 0; i < ip->numinst; i++)
@@ -961,7 +990,7 @@ link_entries(void)
     }
 
     /* Link textspec_t entries to metricspec_t entries */
-    assert(hcp == &inarch.ctxp->c_archctl->ac_log->l_hashtext);
+    assert(hcp == &inarch.ctxp->c_archctl->ac_log->hashtext);
     for (mp = metric_root; mp != NULL; mp = mp->m_next) {
 	if (mp->new_desc.pmid == mp->old_desc.pmid)
 	    continue;
@@ -1004,7 +1033,7 @@ link_entries(void)
     }
 
     /* Link labelspec_t entries to indomspec_t entries */
-    hcp = &inarch.ctxp->c_archctl->ac_log->l_hashlabels;
+    hcp = &inarch.ctxp->c_archctl->ac_log->hashlabels;
     for (ip = indom_root; ip != NULL; ip = ip->i_next) {
 	change = 0;
 	for (i = 0; i < ip->numinst; i++)
@@ -1056,7 +1085,7 @@ link_entries(void)
     }
 
     /* Link labelspec_t entries to metricspec_t entries */
-    assert(hcp == &inarch.ctxp->c_archctl->ac_log->l_hashlabels);
+    assert(hcp == &inarch.ctxp->c_archctl->ac_log->hashlabels);
     for (mp = metric_root; mp != NULL; mp = mp->m_next) {
 	if (mp->new_desc.pmid == mp->old_desc.pmid)
 	    continue;
@@ -1133,7 +1162,7 @@ check_indoms()
     __pmHashNode	*node;
     char		buf[64];
 
-    hcp = &inarch.ctxp->c_archctl->ac_log->l_hashindom;
+    hcp = &inarch.ctxp->c_archctl->ac_log->hashindom;
 
     for (mp = metric_root; mp != NULL; mp = mp->m_next) {
 	if (mp->ip != NULL)
@@ -1149,6 +1178,8 @@ check_indoms()
 		 */
 		for (ip = indom_root; ip != NULL; ip = ip->i_next) {
 		    if (ip->old_indom == mp->old_desc.indom)
+			break;
+		    if (ip->new_indom == mp->new_desc.indom)
 			break;
 		}
 		if (ip == NULL) {
@@ -1356,6 +1387,10 @@ check_output()
 		     */
 		    int		i;
 		    ip = start_indom(mp->new_desc.indom);
+		    if (ip == NULL) {
+			pmsprintf(mess, sizeof(mess), "Botch: InDom %s not found", pmInDomStr(mp->new_desc.indom));
+			yyerror(mess);
+		    }
 		    for (i = 0; i < ip->numinst; i++) {
 			if (mp->one_name != NULL) {
 			    if (inst_name_eq(ip->old_iname[i], mp->one_name) > 0) {
@@ -1396,20 +1431,19 @@ do_newlabelsets(void)
     unsigned int	ident;
     int			nsets;
     pmLabelSet		*labellist = NULL;
-    pmTimeval		stamp;
+    __pmTimestamp	stamp;
     labelspec_t		*lp;
     int			sts;
     char		buf[64];
 
-    out_offset = __pmFtell(outarch.logctl.l_mdfp);
+    out_offset = __pmFtell(outarch.logctl.mdfp);
 
     /*
      * Traverse the list of label change records and emit any new label sets
      * at the globally adjusted start time.
      */
-    stamp.tv_sec = inarch.rp->timestamp.tv_sec;
-    stamp.tv_usec = inarch.rp->timestamp.tv_usec;
-    
+    stamp = inarch.rp->timestamp;	/* struct assignment */
+
     for (lp = label_root; lp != NULL; lp = lp->l_next) {
 	/* Is this a new label record? */
 	if (! ((lp->flags & LABEL_NEW)))
@@ -1417,7 +1451,7 @@ do_newlabelsets(void)
 
 	/*
 	 * Write the record.
-	 * libpcp, via __pmLogPutLabel(), assumes control of the storage pointed
+	 * libpcp, via __pmLogPutLabels(), assumes control of the storage pointed
 	 * to by labellist.
 	 */
 	ident = lp->new_id;
@@ -1442,9 +1476,9 @@ do_newlabelsets(void)
 	    pmPrintLabelSets(stderr, ident, type, labellist, nsets);
 	}
 
-	if ((sts = __pmLogPutLabel(&outarch.archctl, type, ident,
+	if ((sts = __pmLogPutLabels(&outarch.archctl, type, ident,
 				   nsets, labellist, &stamp)) < 0) {
-	    fprintf(stderr, "%s: Error: __pmLogPutLabel: %s: %s\n",
+	    fprintf(stderr, "%s: Error: __pmLogPutLabels: %s: %s\n",
 		    pmGetProgname(),
 		    __pmLabelIdentString(ident, type, buf, sizeof(buf)),
 		    pmErrStr(sts));
@@ -1453,7 +1487,10 @@ do_newlabelsets(void)
 	}
 
 	if (pmDebugOptions.appl0) {
-	    fprintf(stderr, "Metadata: write LabelSet %s @ offset=%ld\n",
+	    fprintf(stderr, "Metadata: write ");
+	    if (outarch.version == PM_LOG_VERS02)
+		fprintf(stderr, "V2 ");
+	    fprintf(stderr, "LabelSet %s @ offset=%ld\n",
 		    __pmLabelIdentString(ident, type, buf, sizeof(buf)), out_offset);
 	}
 
@@ -1463,8 +1500,7 @@ do_newlabelsets(void)
 	     * Any global time adjustment done after the first record is output
 	     * above
 	     */
-	    outarch.logctl.l_label.ill_start.tv_sec = inarch.rp->timestamp.tv_sec;
-	    outarch.logctl.l_label.ill_start.tv_usec = inarch.rp->timestamp.tv_usec;
+	    outarch.logctl.label.start = inarch.rp->timestamp;
 	    /* need to fix start-time in label records */
 	    writelabel(1);
 	    needti = 1;
@@ -1482,10 +1518,11 @@ main(int argc, char **argv)
     int		ti_idx;			/* next slot for input temporal index */
     int		dir_fd = -1;		/* poinless initialization to humour gcc */
     int		doneti = 0;
-    pmTimeval	tstamp = { 0 };		/* for last log record */
+    __pmTimestamp	tstamp = { 0, 0 };	/* for last log record */
     off_t	old_log_offset = 0;	/* log offset before last log record */
     off_t	old_meta_offset;
     int		seen_event = 0;
+    metricspec_t	*mp;
 
     /* process cmd line args */
     if (parseargs(argc, argv) < 0) {
@@ -1508,9 +1545,16 @@ main(int argc, char **argv)
 		    pmGetProgname(), inarch.name);
 	    exit(0);
 	}
-	fprintf(stderr, "%s: Error: cannot open archive \"%s\": %s\n",
-		pmGetProgname(), inarch.name, pmErrStr(inarch.ctx));
-	exit(1);
+	if (inarch.ctx == PM_ERR_FEATURE) {
+	    fprintf(stderr, "%s: Warning: archive \"%s\": unsupported feature bits, other errors may follow ...\n",
+		    pmGetProgname(), inarch.name);
+	    inarch.ctx = pmNewContext(PM_CONTEXT_ARCHIVE | PM_CTXFLAG_NO_FEATURE_CHECK, inarch.name);
+	}
+	if (inarch.ctx < 0) {
+	    fprintf(stderr, "%s: Error: cannot open archive \"%s\": %s\n",
+		    pmGetProgname(), inarch.name, pmErrStr(inarch.ctx));
+	    exit(1);
+	}
     }
     inarch.ctxp = __pmHandleToPtr(inarch.ctx);
     assert(inarch.ctxp != NULL);
@@ -1523,15 +1567,24 @@ main(int argc, char **argv)
      */
     PM_UNLOCK(inarch.ctxp->c_lock);
 
-    if ((sts = pmGetArchiveLabel(&inarch.label)) < 0) {
+    if ((sts = __pmLogLoadLabel(inarch.ctxp->c_archctl->ac_log->mdfp, &inarch.label)) < 0) {
 	fprintf(stderr, "%s: Error: cannot get archive label record (%s): %s\n",
 		pmGetProgname(), inarch.name, pmErrStr(sts));
 	exit(1);
     }
 
-    if ((inarch.label.ll_magic & 0xff) != PM_LOG_VERS02) {
+    inarch.version = (inarch.label.magic & 0xff);
+    if (inarch.version != PM_LOG_VERS02 && inarch.version != PM_LOG_VERS03) {
 	fprintf(stderr,"%s: Error: illegal version number %d in archive (%s)\n",
-		pmGetProgname(), inarch.label.ll_magic & 0xff, inarch.name);
+		pmGetProgname(), inarch.version, inarch.name);
+	exit(1);
+    }
+
+    if (outarch.version == 0)
+	outarch.version = inarch.version;
+    if (outarch.version == PM_LOG_VERS02 && inarch.version == PM_LOG_VERS03) {
+	fprintf(stderr,"%s: Error: cannot create a v2 archive from v3 (%s)\n",
+		pmGetProgname(), inarch.name);
 	exit(1);
     }
 
@@ -1674,9 +1727,9 @@ main(int argc, char **argv)
 
     /* create output log - must be done before writing label */
     outarch.archctl.ac_log = &outarch.logctl;
-    if ((sts = __pmLogCreate("", outarch.name, PM_LOG_VERS02, &outarch.archctl)) < 0) {
-	fprintf(stderr, "%s: Error: __pmLogCreate(%s): %s\n",
-		pmGetProgname(), outarch.name, pmErrStr(sts));
+    if ((sts = __pmLogCreate("", outarch.name, outarch.version, &outarch.archctl)) < 0) {
+	fprintf(stderr, "%s: Error: __pmLogCreate(%s,v%d): %s\n",
+		pmGetProgname(), outarch.name, outarch.version, pmErrStr(sts));
 	/*
 	 * do not cleanup ... if error is EEXIST we should not clobber an
 	 * existing (and persumably) good archive
@@ -1687,8 +1740,140 @@ main(int argc, char **argv)
 
     /* initialize and write label records */
     newlabel();
-    outarch.logctl.l_state = PM_LOG_STATE_INIT;
+    outarch.logctl.state = PM_LOG_STATE_INIT;
     writelabel(0);
+
+    /*
+     * build per-indom reference counts
+     * ... first all metrics in the archive (note metrics with
+     * duplicate names are only counted once because deleting
+     * a metric by any name deletes the metric _and_ all of the
+     * names)
+     */
+    for (i = 0; i < inarch.ctxp->c_archctl->ac_log->hashpmid.hsize; i++) {
+	__pmHashNode	*hp;
+	for (hp = inarch.ctxp->c_archctl->ac_log->hashpmid.hash[i]; hp != NULL; hp = hp->next) {
+	    pmDesc		*dp;
+	    __pmHashNode	*ip;
+	    int			*refp;
+	    dp = (pmDesc *)hp->data;
+	    if (dp->indom == PM_INDOM_NULL)
+		continue;
+	    if ((ip = __pmHashSearch((unsigned int)dp->indom, &indom_hash)) == NULL) {
+		/* first time we've seen this indom */
+		if ((refp = (int *)malloc(sizeof(int))) == NULL) {
+		    /*
+		     * pretty sure we'll die with malloc() failure
+		     * later, but for the moment just ignore this
+		     * indom ... worst result is we don't cull an
+		     * unreferenced indom
+		     */
+		    continue;
+		}
+		*refp = 1;
+		sts = __pmHashAdd((unsigned int)dp->indom, (void *)refp, &indom_hash);
+		if (sts < 0) {
+		    fprintf(stderr, "__pmHashAdd: failed for indom %s: %s\n", pmInDomStr(dp->indom), pmErrStr(sts));
+		    free(refp);
+		    /*
+		     * see comment above about "worst result ..."
+		     */
+		    continue;
+		}
+	    }
+	    else {
+		/* not the first time, bump the refcount */
+		refp = (int *)ip->data;
+		(*refp)++;
+	    }
+	    if (pmDebugOptions.appl1) {
+		fprintf(stderr, "ref++ InDom: %s refcnt: %d (for PMID: %s)\n",
+		    pmInDomStr(dp->indom), *refp, pmIDStr(dp->pmid));
+	    }
+	}
+    }
+    /*
+     * ... next walk the metrics from the config, decrementing the
+     * reference count for any metrics to be deleted and maybe
+     * for metrics that are moving from one indom to another
+     */
+    for (mp = metric_root; mp != NULL; mp = mp->m_next) {
+	if (mp->flags & METRIC_DELETE) {
+	    __pmHashNode	*hp;
+	    int			*refp;
+	    if (mp->old_desc.indom == PM_INDOM_NULL)
+		continue;
+	    if ((hp = __pmHashSearch((unsigned int)mp->old_desc.indom, &indom_hash)) == NULL) {
+		fprintf(stderr, "Botch: InDom: %s (PMID: %s): not in indom_hash table\n",
+		    pmInDomStr(mp->old_desc.indom), pmIDStr(mp->old_desc.pmid));
+		continue;
+	    }
+	    refp = (int *)hp->data;
+	    (*refp)--;
+	    if (pmDebugOptions.appl1) {
+		fprintf(stderr, "delete metric ref-- InDom: %s refcnt: %d (for PMID: %s)\n",
+		    pmInDomStr(mp->old_desc.indom), *refp, pmIDStr(mp->old_desc.pmid));
+	    }
+	}
+	else if (mp->flags & METRIC_CHANGE_INDOM) {
+	    __pmHashNode	*hp;
+	    int			*refp;
+	    if (mp->old_desc.indom != PM_INDOM_NULL) {
+		/* decrement refcount for old indom */
+		if ((hp = __pmHashSearch((unsigned int)mp->old_desc.indom, &indom_hash)) == NULL) {
+		    fprintf(stderr, "Botch: old InDom: %s (PMID: %s): not in indom_hash table\n",
+			pmInDomStr(mp->old_desc.indom), pmIDStr(mp->old_desc.pmid));
+		    continue;
+		}
+		refp = (int *)hp->data;
+		(*refp)--;
+		if (pmDebugOptions.appl1) {
+		    fprintf(stderr, "renumber indom ref-- InDom: %s refcnt: %d (for PMID: %s)\n",
+			pmInDomStr(mp->old_desc.indom), *refp, pmIDStr(mp->old_desc.pmid));
+		}
+	    }
+	    if (mp->new_desc.indom != PM_INDOM_NULL) {
+		pmInDom	indom;
+		/*
+		 * increment refcount for new indom ... wrinkle here is
+		 * that new indom id may have been rewritten and then
+		 * we need to increment the refcount for the corresponding
+		 * input archive indom
+		 */
+		if ((hp = __pmHashSearch((unsigned int)mp->new_desc.indom, &indom_hash)) == NULL) {
+		    indomspec_t		*ip;
+		    /* indom is not used in input archive ... */
+		    /*
+		     * if the indom is not being changed, ip will be NULL
+		     * after this loop
+		     */
+		    for (ip = indom_root; ip != NULL; ip = ip->i_next) {
+			if (ip->new_indom == mp->new_desc.indom)
+			    break;
+		    }
+		    if (ip == NULL) {
+			fprintf(stderr, "Botch: new InDom: %s (PMID: %s): not in indom_root table\n",
+			    pmInDomStr(mp->new_desc.indom), pmIDStr(mp->old_desc.pmid));
+			continue;
+		    }
+		    if ((hp = __pmHashSearch((unsigned int)ip->old_indom, &indom_hash)) == NULL) {
+			fprintf(stderr, "Botch: input InDom: %s (PMID: %s): not in indom_hash table\n",
+			    pmInDomStr(ip->old_indom), pmIDStr(mp->old_desc.pmid));
+			continue;
+		    }
+		    indom = ip->old_indom;
+		}
+		else
+		    indom = mp->new_desc.indom;
+		refp = (int *)hp->data;
+		(*refp)++;
+		if (pmDebugOptions.appl1) {
+		    fprintf(stderr, "renumber indom ref++ InDom: %s refcnt: %d (for PMID: %s)\n",
+			pmInDomStr(indom), *refp, pmIDStr(mp->old_desc.pmid));
+		}
+	    }
+	}
+    }
 
     first_datarec = 1;
     ti_idx = 0;
@@ -1696,15 +1881,15 @@ main(int argc, char **argv)
     /*
      * loop
      *	- get next log record
-     *	- write out new/changed meta data required by this log record
+     *	- write out new/changed metadata required by this log record
      *	- write out log
      *	- do ti update if necessary
      */
     while (1) {
 	static long	in_offset;		/* for -Dappl0 */
 
-	__pmFflush(outarch.logctl.l_mdfp);
-	old_meta_offset = __pmFtell(outarch.logctl.l_mdfp);
+	__pmFflush(outarch.logctl.mdfp);
+	old_meta_offset = __pmFtell(outarch.logctl.mdfp);
 	assert(old_meta_offset >= 0);
 
 	in_offset = __pmFtell(inarch.ctxp->c_archctl->ac_mfp);
@@ -1727,18 +1912,15 @@ main(int argc, char **argv)
 		newvolume(outarch.archctl.ac_curvol+1);
 	}
 	if (pmDebugOptions.appl0) {
-	    struct timeval	stamp;
 	    fprintf(stderr, "Log: read ");
-	    stamp.tv_sec = inarch.rp->timestamp.tv_sec;
-	    stamp.tv_usec = inarch.rp->timestamp.tv_usec;
-	    pmPrintStamp(stderr, &stamp);
+	    __pmPrintTimestamp(stderr, &inarch.rp->timestamp);
 	    fprintf(stderr, " numpmid=%d @ offset=%ld\n", inarch.rp->numpmid, in_offset);
 	}
 
-	if (ti_idx < inarch.ctxp->c_archctl->ac_log->l_numti) {
-	    __pmLogTI	*tip = &inarch.ctxp->c_archctl->ac_log->l_ti[ti_idx];
-	    if (tip->ti_stamp.tv_sec == inarch.rp->timestamp.tv_sec &&
-	        tip->ti_stamp.tv_usec == inarch.rp->timestamp.tv_usec) {
+	if (ti_idx < inarch.ctxp->c_archctl->ac_log->numti) {
+	    __pmLogTI	*tip = &inarch.ctxp->c_archctl->ac_log->ti[ti_idx];
+	    if (tip->stamp.sec == inarch.rp->timestamp.sec &&
+	        tip->stamp.nsec == inarch.rp->timestamp.nsec) {
 		/*
 		 * timestamp on input pmResult matches next temporal index
 		 * entry for input archive ... make sure matching temporal
@@ -1764,21 +1946,33 @@ main(int argc, char **argv)
 	    do_newlabelsets();
 
 	/*
-	 * process metadata until find an indom record with timestamp
-	 * after the current log record, or a metric record for a pmid
-	 * that is not in the current log record
+	 * process metadata until we find an indom or label record with
+	 * timestamp after the current log record, or a metric record
+	 * for a pmid that is not in the current log record
 	 */
 	for ( ; ; ) {
 	    if (stsmeta == 0) {
-		in_offset = __pmFtell(inarch.ctxp->c_archctl->ac_log->l_mdfp);
+		in_offset = __pmFtell(inarch.ctxp->c_archctl->ac_log->mdfp);
 		stsmeta = nextmeta();
 		if (pmDebugOptions.appl0) {
 		    if (stsmeta < 0)
 			fprintf(stderr, "Metadata: read EOF @ offset=%ld\n", in_offset);
 		    else if (stsmeta == TYPE_DESC)
 			fprintf(stderr, "Metadata: read PMID %s @ offset=%ld\n", pmIDStr(ntoh_pmID(inarch.metarec[2])), in_offset);
+		    else if (stsmeta == TYPE_INDOM_V2)
+			fprintf(stderr, "Metadata: read V2 InDom %s @ offset=%ld\n", pmInDomStr(ntoh_pmInDom((unsigned int)inarch.metarec[4])), in_offset);
+		    else if (stsmeta == TYPE_LABEL_V2)
+			fprintf(stderr, "Metadata: read V2 LabelSet @ offset=%ld\n", in_offset);
+		    else if (stsmeta == TYPE_TEXT)
+			fprintf(stderr, "Metadata: read Text @ offset=%ld\n", in_offset);
 		    else if (stsmeta == TYPE_INDOM)
-			fprintf(stderr, "Metadata: read InDom %s @ offset=%ld\n", pmInDomStr(ntoh_pmInDom((unsigned int)inarch.metarec[4])), in_offset);
+			fprintf(stderr, "Metadata: read InDom %s @ offset=%ld\n", pmInDomStr(ntoh_pmInDom((unsigned int)inarch.metarec[5])), in_offset);
+		    else if (stsmeta == TYPE_INDOM_DELTA)
+			fprintf(stderr, "Metadata: read Delta InDom %s @ offset=%ld\n", pmInDomStr(ntoh_pmInDom((unsigned int)inarch.metarec[5])), in_offset);
+		    else if (stsmeta == TYPE_LABEL)
+			fprintf(stderr, "Metadata: read LabelSet @ offset=%ld\n", in_offset);
+		    else
+			fprintf(stderr, "Metadata: read botch type=%d\n", stsmeta);
 		}
 	    }
 	    if (stsmeta < 0) {
@@ -1833,40 +2027,66 @@ main(int argc, char **argv)
 		 */
 		do_desc();
 	    }
-	    else if (stsmeta == TYPE_INDOM) {
-		struct timeval	stamp;
-		pmTimeval	*tvp = (pmTimeval *)&inarch.metarec[2];
-		stamp.tv_sec = ntohl(tvp->tv_sec);
-		stamp.tv_usec = ntohl(tvp->tv_usec);
+	    else if (stsmeta == TYPE_INDOM || stsmeta == TYPE_INDOM_DELTA) {
+		__pmTimestamp	stamp;
+		__pmLoadTimestamp((__int32_t *)&inarch.metarec[2], &stamp);
 		if (fixstamp(&stamp)) {
 		    /* global time adjustment specified */
-		    tvp->tv_sec = htonl(stamp.tv_sec);
-		    tvp->tv_usec = htonl(stamp.tv_usec);
+		    __pmPutTimestamp(&stamp, (__int32_t *)&inarch.metarec[2]);
 		}
 		/* if time of indom > next pmResult stop processing metadata */
-		if (stamp.tv_sec > inarch.rp->timestamp.tv_sec)
+		if (stamp.sec > inarch.rp->timestamp.sec)
 		    break;
-		if (stamp.tv_sec == inarch.rp->timestamp.tv_sec &&
-		    stamp.tv_usec > inarch.rp->timestamp.tv_usec)
+		if (stamp.sec == inarch.rp->timestamp.sec &&
+		    stamp.nsec > inarch.rp->timestamp.nsec)
 		    break;
 		needti = 1;
-		do_indom();
+		do_indom(stsmeta);
 	    }
-	    else if (stsmeta == TYPE_LABEL) {
-		struct timeval	stamp;
-		pmTimeval	*tvp = (pmTimeval *)&inarch.metarec[2];
-		stamp.tv_sec = ntohl(tvp->tv_sec);
-		stamp.tv_usec = ntohl(tvp->tv_usec);
+	    else if (stsmeta == TYPE_INDOM_V2) {
+		__pmTimestamp	stamp;
+		__pmLoadTimeval((__int32_t *)&inarch.metarec[2], &stamp);
 		if (fixstamp(&stamp)) {
 		    /* global time adjustment specified */
-		    tvp->tv_sec = htonl(stamp.tv_sec);
-		    tvp->tv_usec = htonl(stamp.tv_usec);
+		    __pmPutTimeval(&stamp, (__int32_t *)&inarch.metarec[2]);
+		}
+		/* if time of indom > next pmResult stop processing metadata */
+		if (stamp.sec > inarch.rp->timestamp.sec)
+		    break;
+		if (stamp.sec == inarch.rp->timestamp.sec &&
+		    stamp.nsec > inarch.rp->timestamp.nsec)
+		    break;
+		needti = 1;
+		do_indom(stsmeta);
+	    }
+	    else if (stsmeta == TYPE_LABEL) {
+		__pmTimestamp	stamp;
+		__pmLoadTimestamp((__int32_t *)&inarch.metarec[2], &stamp);
+		if (fixstamp(&stamp)) {
+		    /* global time adjustment specified */
+		    __pmPutTimestamp(&stamp, (__int32_t *)&inarch.metarec[2]);
 		}
 		/* if time of label set  > next pmResult stop processing metadata */
-		if (stamp.tv_sec > inarch.rp->timestamp.tv_sec)
+		if (stamp.sec > inarch.rp->timestamp.sec)
 		    break;
-		if (stamp.tv_sec == inarch.rp->timestamp.tv_sec &&
-		    stamp.tv_usec > inarch.rp->timestamp.tv_usec)
+		if (stamp.sec == inarch.rp->timestamp.sec &&
+		    stamp.nsec > inarch.rp->timestamp.nsec)
+		    break;
+		needti = 1;
+		do_labelset();
+	    }
+	    else if (stsmeta == TYPE_LABEL_V2) {
+		__pmTimestamp	stamp;
+		__pmLoadTimeval((__int32_t *)&inarch.metarec[2], &stamp);
+		if (fixstamp(&stamp)) {
+		    /* global time adjustment specified */
+		    __pmPutTimeval(&stamp, (__int32_t *)&inarch.metarec[2]);
+		}
+		/* if time of label set  > next pmResult stop processing metadata */
+		if (stamp.sec > inarch.rp->timestamp.sec)
+		    break;
+		if (stamp.sec == inarch.rp->timestamp.sec &&
+		    stamp.nsec > inarch.rp->timestamp.nsec)
 		    break;
 		needti = 1;
 		do_labelset();
@@ -1876,7 +2096,7 @@ main(int argc, char **argv)
 		do_text();
 	    }
 	    else {
-		fprintf(stderr, "%s: Error: unrecognised meta data type: %d\n",
+		fprintf(stderr, "%s: Error: unrecognised metadata type: %d\n",
 		    pmGetProgname(), stsmeta);
 		abandon();
 		/*NOTREACHED*/
@@ -1888,24 +2108,22 @@ main(int argc, char **argv)
 	if (first_datarec) {
 	    first_datarec = 0;
 	    /* any global time adjustment done after nextlog() above */
-	    outarch.logctl.l_label.ill_start.tv_sec = inarch.rp->timestamp.tv_sec;
-	    outarch.logctl.l_label.ill_start.tv_usec = inarch.rp->timestamp.tv_usec;
+	    outarch.logctl.label.start = inarch.rp->timestamp;
 	    /* need to fix start-time in label records */
 	    writelabel(1);
 	    needti = 1;
 	}
 
-	tstamp.tv_sec = inarch.rp->timestamp.tv_sec;
-	tstamp.tv_usec = inarch.rp->timestamp.tv_usec;
+	tstamp = inarch.rp->timestamp;
 
 	if (needti) {
-	    __pmFflush(outarch.logctl.l_mdfp);
+	    __pmFflush(outarch.logctl.mdfp);
 	    __pmFflush(outarch.archctl.ac_mfp);
-	    new_meta_offset = __pmFtell(outarch.logctl.l_mdfp);
+	    new_meta_offset = __pmFtell(outarch.logctl.mdfp);
 	    assert(new_meta_offset >= 0);
-            __pmFseek(outarch.logctl.l_mdfp, (long)old_meta_offset, SEEK_SET);
+            __pmFseek(outarch.logctl.mdfp, (long)old_meta_offset, SEEK_SET);
             __pmLogPutIndex(&outarch.archctl, &tstamp);
-            __pmFseek(outarch.logctl.l_mdfp, (long)new_meta_offset, SEEK_SET);
+            __pmFseek(outarch.logctl.mdfp, (long)new_meta_offset, SEEK_SET);
 	    needti = 0;
 	    doneti = 1;
         }
@@ -1934,9 +2152,9 @@ main(int argc, char **argv)
 	 * __pmFsync() to make sure new archive is safe before we start
 	 * renaming ...
 	 */
-	if (__pmFsync(outarch.logctl.l_mdfp) < 0) {
+	if (__pmFsync(outarch.logctl.mdfp) < 0) {
 	    fprintf(stderr, "%s: Error: fsync(%d) failed for output metadata file: %s\n",
-		pmGetProgname(), __pmFileno(outarch.logctl.l_mdfp), strerror(errno));
+		pmGetProgname(), __pmFileno(outarch.logctl.mdfp), strerror(errno));
 		abandon();
 		/*NOTREACHED*/
 	}
@@ -1946,9 +2164,9 @@ main(int argc, char **argv)
 		abandon();
 		/*NOTREACHED*/
 	}
-	if (__pmFsync(outarch.logctl.l_tifp) < 0) {
+	if (__pmFsync(outarch.logctl.tifp) < 0) {
 	    fprintf(stderr, "%s: Error: fsync(%d) failed for output index file: %s\n",
-		pmGetProgname(), __pmFileno(outarch.logctl.l_tifp), strerror(errno));
+		pmGetProgname(), __pmFileno(outarch.logctl.tifp), strerror(errno));
 		abandon();
 		/*NOTREACHED*/
 	}
@@ -1971,7 +2189,7 @@ main(int argc, char **argv)
     }
 
     if (pmDebugOptions.pdubuf) {
-	/* dump PDU buffer state ... looking for mem leaks here */
+	/* dump record buffer state ... looking for mem leaks here */
 	(void)__pmFindPDUBuf(-1);
     }
 

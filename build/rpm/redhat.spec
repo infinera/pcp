@@ -1,12 +1,16 @@
 Name:    pcp
-Version: 5.3.0
+Version: 6.0.3
 Release: 1%{?dist}
 Summary: System-level performance monitoring and performance management
 License: GPLv2+ and LGPLv2+ and CC-BY
 URL:     https://pcp.io
 
-%global  bintray https://bintray.com/artifact/download
-Source0: %{bintray}/pcp/source/pcp-%{version}.src.tar.gz
+%global  artifactory https://performancecopilot.jfrog.io/artifactory
+Source0: %{artifactory}/pcp-source-release/pcp-%{version}.src.tar.gz
+
+# The additional linker flags break out-of-tree PMDAs.
+# https://bugzilla.redhat.com/show_bug.cgi?id=2043092
+%undefine _package_note_flags
 
 %if 0%{?fedora} >= 26 || 0%{?rhel} > 7
 %global __python2 python2
@@ -40,13 +44,6 @@ Source0: %{bintray}/pcp/source/pcp-%{version}.src.tar.gz
 %else
 %global disable_perfevent 1
 %endif
-%endif
-
-# libvarlink and pmdapodman
-%if 0%{?fedora} >= 28 || 0%{?rhel} > 7
-%global disable_podman 0
-%else
-%global disable_podman 1
 %endif
 
 # libchan, libhdr_histogram and pmdastatsd
@@ -95,6 +92,17 @@ Source0: %{bintray}/pcp/source/pcp-%{version}.src.tar.gz
 %global disable_bcc 1
 %endif
 
+# support for pmdabpf, check bcc.spec for supported architectures of libbpf-tools
+%if 0%{?fedora} >= 37 || 0%{?rhel} > 8
+%ifarch x86_64 ppc64 ppc64le aarch64
+%global disable_bpf 0
+%else
+%global disable_bpf 1
+%endif
+%else
+%global disable_bpf 1
+%endif
+
 # support for pmdabpftrace, check bpftrace.spec for supported architectures of bpftrace
 %if 0%{?fedora} >= 30 || 0%{?rhel} > 7
 %ifarch x86_64 %{power64} aarch64 s390x
@@ -117,6 +125,13 @@ Source0: %{bintray}/pcp/source/pcp-%{version}.src.tar.gz
 %global disable_json 1
 %endif
 
+# support for pmdamongodb
+%if !%{disable_python2} || !%{disable_python3}
+%global disable_mongodb 0
+%else
+%global disable_mongodb 1
+%endif
+
 # No mssql ODBC driver on non-x86 platforms
 %ifarch x86_64
 %if !%{disable_python2} || !%{disable_python3}
@@ -133,13 +148,6 @@ Source0: %{bintray}/pcp/source/pcp-%{version}.src.tar.gz
 %global disable_nutcracker 0
 %else
 %global disable_nutcracker 1
-%endif
-
-# support for pmdarpm
-%if 0%{?rhel} == 0 || 0%{?rhel} > 5
-%global disable_rpm 0
-%else
-%global disable_rpm 1
 %endif
 
 # Qt development and runtime environment missing components before el6
@@ -199,6 +207,10 @@ Conflicts: librapi < 0.16
 Obsoletes: pcp-pmda-kvm < 4.1.1
 Provides: pcp-pmda-kvm = %{version}-%{release}
 
+# RPM PMDA retired completely
+Obsoletes: pcp-pmda-rpm < 5.3.2
+Obsoletes: pcp-pmda-rpm-debuginfo < 5.3.2
+
 # PCP REST APIs are now provided by pmproxy
 Obsoletes: pcp-webapi-debuginfo < 5.0.0
 Obsoletes: pcp-webapi < 5.0.0
@@ -222,9 +234,6 @@ Obsoletes: pcp-pmda-nvidia < 3.10.5
 BuildRequires: make
 BuildRequires: gcc gcc-c++
 BuildRequires: procps autoconf bison flex
-
-BuildRequires: nss-devel
-BuildRequires: rpm-devel
 BuildRequires: avahi-devel
 BuildRequires: xz-devel
 BuildRequires: zlib-devel
@@ -242,9 +251,6 @@ BuildRequires: python3-setuptools
 BuildRequires: ncurses-devel
 BuildRequires: readline-devel
 BuildRequires: cyrus-sasl-devel
-%if !%{disable_podman}
-BuildRequires: libvarlink-devel
-%endif
 %if !%{disable_statsd}
 # ragel unavailable on RHEL8
 %if 0%{?rhel} == 0
@@ -269,10 +275,11 @@ BuildRequires: perl-generators
 %endif
 BuildRequires: perl-devel perl(strict)
 BuildRequires: perl(ExtUtils::MakeMaker) perl(LWP::UserAgent) perl(JSON)
-BuildRequires: perl(LWP::UserAgent) perl(Time::HiRes) perl(Digest::MD5)
-BuildRequires: man %{_hostname_executable}
+BuildRequires: perl(Time::HiRes) perl(Digest::MD5)
+BuildRequires: perl(XML::LibXML) perl(File::Slurp)
+BuildRequires: %{_hostname_executable}
 %if !%{disable_systemd}
-BuildRequires: systemd-devel systemd-rpm-macros
+BuildRequires: systemd-devel
 %endif
 %if !%{disable_qt}
 BuildRequires: desktop-file-utils
@@ -285,29 +292,28 @@ BuildRequires: qt5-qtsvg-devel
 %endif
 
 Requires: bash xz gawk sed grep findutils which %{_hostname_executable}
+Requires: pcp-libs = %{version}-%{release}
+
 %if !%{disable_selinux}
+# rpm boolean dependencies are supported since RHEL 8
+%if 0%{?fedora} >= 35 || 0%{?rhel} >= 8
+# This ensures that the pcp-selinux package and all its dependencies are
+# not pulled into containers and other systems that do not use SELinux
+Requires: (pcp-selinux = %{version}-%{release} if selinux-policy-targeted)
+%else
 Requires: pcp-selinux = %{version}-%{release}
 %endif
-
-Requires: pcp-libs = %{version}-%{release}
+%endif
 
 %global _confdir        %{_sysconfdir}/pcp
 %global _logsdir        %{_localstatedir}/log/pcp
 %global _pmnsdir        %{_localstatedir}/lib/pcp/pmns
-%global _pmnsexecdir    %{_libexecdir}/pcp/pmns
-%global _tempsdir       %{_localstatedir}/lib/pcp/tmp
 %global _pmdasdir       %{_localstatedir}/lib/pcp/pmdas
 %global _pmdasexecdir   %{_libexecdir}/pcp/pmdas
 %global _testsdir       %{_localstatedir}/lib/pcp/testsuite
-%global _selinuxdir     %{_localstatedir}/lib/pcp/selinux
-%global _selinuxexecdir %{_libexecdir}/pcp/selinux
-%global _logconfdir     %{_localstatedir}/lib/pcp/config/pmlogconf
+%global _ieconfigdir    %{_localstatedir}/lib/pcp/config/pmie
 %global _ieconfdir      %{_localstatedir}/lib/pcp/config/pmieconf
-%global _tapsetdir      %{_datadir}/systemtap/tapset
-%global _bashcompdir    %{_datadir}/bash-completion/completions
-%global _pixmapdir      %{_datadir}/pcp-gui/pixmaps
-%global _hicolordir     %{_datadir}/icons/hicolor
-%global _booksdir       %{_datadir}/doc/pcp-doc
+%global _selinuxdir     %{_datadir}/selinux/packages/targeted
 
 %if 0%{?fedora} >= 20 || 0%{?rhel} >= 8
 %global _with_doc --with-docdir=%{_docdir}/%{name}
@@ -350,12 +356,6 @@ Requires: pcp-libs = %{version}-%{release}
 %global _with_perfevent --with-perfevent=yes
 %endif
 
-%if %{disable_podman}
-%global _with_podman --with-podman=no
-%else
-%global _with_podman --with-podman=yes
-%endif
-
 %if %{disable_statsd}
 %global _with_statsd --with-pmdastatsd=no
 %else
@@ -368,6 +368,12 @@ Requires: pcp-libs = %{version}-%{release}
 %global _with_bcc --with-pmdabcc=yes
 %endif
 
+%if %{disable_bpf}
+%global _with_bpf --with-pmdabpf=no
+%else
+%global _with_bpf --with-pmdabpf=yes
+%endif
+
 %if %{disable_bpftrace}
 %global _with_bpftrace --with-pmdabpftrace=no
 %else
@@ -378,6 +384,12 @@ Requires: pcp-libs = %{version}-%{release}
 %global _with_json --with-pmdajson=no
 %else
 %global _with_json --with-pmdajson=yes
+%endif
+
+%if %{disable_mongodb}
+%global _with_mongodb --with-pmdamongodb=no
+%else
+%global _with_mongodb --with-pmdamongodb=yes
 %endif
 
 %if %{disable_nutcracker}
@@ -422,13 +434,12 @@ else
 fi
 }
 
-%global selinux_handle_policy() %{expand:
-if [ %1 -ge 1 ]
+%global run_pmieconf() %{expand:
+if [ -w "%1" ]
 then
-    %{_libexecdir}/pcp/bin/selinux-setup %{_selinuxdir} install %2
-elif [ %1 -eq 0 ]
-then
-    %{_libexecdir}/pcp/bin/selinux-setup %{_selinuxdir} remove %2
+    pmieconf -c enable "%2"
+else
+    echo "WARNING: Cannot write to %1, skipping pmieconf enable of %2." >&2
 fi
 }
 
@@ -463,6 +474,9 @@ Summary: Performance Co-Pilot run-time libraries
 URL: https://pcp.io
 Requires: pcp-conf = %{version}-%{release}
 
+# prevent conflicting library (libpcp.so.N) installation
+Conflicts: postgresql-pgpool-II
+
 %description libs
 Performance Co-Pilot (PCP) run-time libraries
 
@@ -474,6 +488,9 @@ License: GPLv2+ and LGPLv2+
 Summary: Performance Co-Pilot (PCP) development headers
 URL: https://pcp.io
 Requires: pcp = %{version}-%{release} pcp-libs = %{version}-%{release}
+
+# prevent conflicting library (libpcp.so) installation
+Conflicts: postgresql-pgpool-II-devel
 
 %description libs-devel
 Performance Co-Pilot (PCP) headers for development.
@@ -510,15 +527,12 @@ Requires: pcp-pmda-activemq pcp-pmda-bonding pcp-pmda-dbping pcp-pmda-ds389 pcp-
 Requires: pcp-pmda-elasticsearch pcp-pmda-gpfs pcp-pmda-gpsd pcp-pmda-lustre
 Requires: pcp-pmda-memcache pcp-pmda-mysql pcp-pmda-named pcp-pmda-netfilter pcp-pmda-news
 Requires: pcp-pmda-nginx pcp-pmda-nfsclient pcp-pmda-pdns pcp-pmda-postfix pcp-pmda-postgresql pcp-pmda-oracle
-Requires: pcp-pmda-samba pcp-pmda-slurm pcp-pmda-vmware pcp-pmda-zimbra
+Requires: pcp-pmda-samba pcp-pmda-slurm pcp-pmda-zimbra
 Requires: pcp-pmda-dm pcp-pmda-apache
 Requires: pcp-pmda-bash pcp-pmda-cisco pcp-pmda-gfs2 pcp-pmda-mailq pcp-pmda-mounts
 Requires: pcp-pmda-nvidia-gpu pcp-pmda-roomtemp pcp-pmda-sendmail pcp-pmda-shping pcp-pmda-smart
-Requires: pcp-pmda-hacluster pcp-pmda-lustrecomm pcp-pmda-logger pcp-pmda-docker pcp-pmda-bind2
-Requires: pcp-pmda-sockets
-%if !%{disable_podman}
-Requires: pcp-pmda-podman
-%endif
+Requires: pcp-pmda-hacluster pcp-pmda-lustrecomm pcp-pmda-logger pcp-pmda-denki pcp-pmda-docker pcp-pmda-bind2
+Requires: pcp-pmda-sockets pcp-pmda-podman
 %if !%{disable_statsd}
 Requires: pcp-pmda-statsd
 %endif
@@ -527,6 +541,9 @@ Requires: pcp-pmda-nutcracker
 %endif
 %if !%{disable_bcc}
 Requires: pcp-pmda-bcc
+%endif
+%if !%{disable_bpf}
+Requires: pcp-pmda-bpf
 %endif
 %if !%{disable_bpftrace}
 Requires: pcp-pmda-bpftrace
@@ -537,6 +554,9 @@ Requires: pcp-pmda-libvirt pcp-pmda-lio pcp-pmda-openmetrics pcp-pmda-haproxy
 Requires: pcp-pmda-lmsensors pcp-pmda-netcheck pcp-pmda-rabbitmq
 Requires: pcp-pmda-openvswitch
 %endif
+%if !%{disable_mongodb}
+Requires: pcp-pmda-mongodb
+%endif
 %if !%{disable_mssql}
 Requires: pcp-pmda-mssql 
 %endif
@@ -546,13 +566,8 @@ Requires: pcp-pmda-snmp
 %if !%{disable_json}
 Requires: pcp-pmda-json
 %endif
-%if !%{disable_rpm}
-Requires: pcp-pmda-rpm
-%endif
 Requires: pcp-pmda-summary pcp-pmda-trace pcp-pmda-weblog
-%if !%{disable_python2} || !%{disable_python3}
 Requires: pcp-system-tools
-%endif
 %if !%{disable_qt}
 Requires: pcp-gui
 %endif
@@ -881,7 +896,6 @@ Performance Co-Pilot (PCP) front-end tools for exporting metric values
 to the Zabbix (https://www.zabbix.org/) monitoring software.
 %endif
 
-%if !%{disable_podman}
 #
 # pcp-pmda-podman
 #
@@ -890,13 +904,10 @@ License: GPLv2+
 Summary: Performance Co-Pilot (PCP) metrics for podman containers
 URL: https://pcp.io
 Requires: pcp = %{version}-%{release} pcp-libs = %{version}-%{release}
-Requires: libvarlink
-BuildRequires: libvarlink-devel
 
 %description pmda-podman
 This package contains the PCP Performance Metrics Domain Agent (PMDA) for
-collecting podman container and pod statistics through libvarlink.
-%endif
+collecting podman container and pod statistics via the podman REST API.
 
 %if !%{disable_statsd}
 #
@@ -1121,6 +1132,20 @@ Requires: perl-JSON
 This package contains the PCP Performance Metrics Domain Agent (PMDA) for
 collecting metrics about a GPS Daemon.
 #end pcp-pmda-gpsd
+
+#
+# pcp-pmda-denki
+#
+%package pmda-denki
+License: GPLv2+
+Summary: Performance Co-Pilot (PCP) metrics dealing with electrical power
+URL: https://pcp.io
+Requires: pcp = %{version}-%{release} pcp-libs = %{version}-%{release}
+%description pmda-denki
+This package contains the PCP Performance Metrics Domain Agent (PMDA) for
+collecting metrics related to the electrical power consumed by and inside
+the system.
+# end pcp-pmda-denki
 
 #
 # pcp-pmda-docker
@@ -1386,21 +1411,6 @@ collecting metrics about SNMP.
 %endif
 
 #
-# pcp-pmda-vmware
-#
-%package pmda-vmware
-License: GPLv2+
-Summary: Performance Co-Pilot (PCP) metrics for VMware
-URL: https://pcp.io
-Requires: pcp = %{version}-%{release} pcp-libs = %{version}-%{release}
-Requires: perl-PCP-PMDA = %{version}-%{release}
-
-%description pmda-vmware
-This package contains the PCP Performance Metrics Domain Agent (PMDA) for
-collecting metrics for VMware.
-#end pcp-pmda-vmware
-
-#
 # pcp-pmda-zimbra
 #
 %package pmda-zimbra
@@ -1445,6 +1455,23 @@ Requires: python3-pcp
 This package contains the PCP Performance Metrics Domain Agent (PMDA) for
 extracting performance metrics from eBPF/BCC Python modules.
 # end pcp-pmda-bcc
+%endif
+
+%if !%{disable_bpf}
+#
+# pcp-pmda-bpf
+#
+%package pmda-bpf
+License: ASL 2.0 and GPLv2+
+Summary: Performance Co-Pilot (PCP) metrics from eBPF ELF modules
+URL: https://pcp.io
+Requires: pcp = %{version}-%{release} pcp-libs = %{version}-%{release}
+Requires: libbpf
+BuildRequires: libbpf-devel clang llvm bpftool
+%description pmda-bpf
+This package contains the PCP Performance Metrics Domain Agent (PMDA) for
+extracting performance metrics from eBPF ELF modules.
+# end pcp-pmda-bpf
 %endif
 
 %if !%{disable_bpftrace}
@@ -1724,6 +1751,7 @@ BuildRequires: %{__python2}-requests
 %endif
 Obsoletes: pcp-pmda-prometheus < 5.0.0
 Provides: pcp-pmda-prometheus < 5.0.0
+Obsoletes: pcp-pmda-vmware < 5.3.5
 
 %description pmda-openmetrics
 This package contains the PCP Performance Metrics Domain Agent (PMDA) for
@@ -1768,7 +1796,34 @@ Requires: %{__python2}-pcp
 This package contains the PCP Performance Metrics Domain Agent (PMDA) for
 collecting metrics from simple network checks.
 # end pcp-pmda-netcheck
+%endif
 
+%if !%{disable_mongodb}
+#
+# pcp-pmda-mongodb
+#
+%package pmda-mongodb
+License: GPLv2+
+Summary: Performance Co-Pilot (PCP) metrics for MongoDB
+URL: https://pcp.io
+Requires: pcp = %{version}-%{release} pcp-libs = %{version}-%{release}
+%if !%{disable_python3}
+Requires: python3-pcp
+%if 0%{?rhel} == 0
+Requires: python3-pymongo
+BuildRequires: python3-pymongo
+%endif
+%else
+Requires: %{__python2}-pcp
+%if 0%{?rhel} == 0
+Requires: %{__python2}-pymongo
+BuildRequires: %{__python2}-pymongo
+%endif
+%endif
+%description pmda-mongodb
+This package contains the PCP Performance Metrics Domain Agent (PMDA) for
+collecting metrics from MongoDB.
+# end pcp-pmda-mongodb
 %endif
 
 %if !%{disable_mssql}
@@ -1953,21 +2008,6 @@ This package contains the PCP Performance Metrics Domain Agent (PMDA) for
 collecting metrics about the room temperature.
 # end pcp-pmda-roomtemp
 
-%if !%{disable_rpm}
-#
-# pcp-pmda-rpm
-#
-%package pmda-rpm
-License: GPLv2+
-Summary: Performance Co-Pilot (PCP) metrics for the RPM package manager
-URL: https://pcp.io
-Requires: pcp = %{version}-%{release} pcp-libs = %{version}-%{release}
-%description pmda-rpm
-This package contains the PCP Performance Metrics Domain Agent (PMDA) for
-collecting metrics about the installed RPM packages.
-%endif
-# end pcp-pmda-rpm
-
 #
 # pcp-pmda-sendmail
 #
@@ -2151,7 +2191,6 @@ Performance Metric API (PMAPI) monitor tools and Performance
 Metric Domain Agent (PMDA) collector tools written in Python3.
 %endif
 
-%if !%{disable_python2} || !%{disable_python3}
 #
 # pcp-system-tools
 #
@@ -2159,23 +2198,24 @@ Metric Domain Agent (PMDA) collector tools written in Python3.
 License: GPLv2+
 Summary: Performance Co-Pilot (PCP) System and Monitoring Tools
 URL: https://pcp.io
+Requires: pcp = %{version}-%{release} pcp-libs = %{version}-%{release}
+%if !%{disable_python2} || !%{disable_python3}
 %if !%{disable_python3}
 Requires: python3-pcp = %{version}-%{release}
 %else
 Requires: %{__python2}-pcp = %{version}-%{release}
 %endif
-Requires: pcp = %{version}-%{release} pcp-libs = %{version}-%{release}
 %if !%{disable_dstat}
 # https://fedoraproject.org/wiki/Packaging:Guidelines "Renaming/Replacing Existing Packages"
 Provides: dstat = %{version}-%{release}
 Provides: /usr/bin/dstat
 Obsoletes: dstat <= 0.8
 %endif
+%endif
 
 %description system-tools
 This PCP module contains additional system monitoring tools written
 in the Python language.
-%endif
 
 %if !%{disable_qt}
 #
@@ -2244,10 +2284,14 @@ interface rules, type enforcement and file context adjustments for an
 updated policy package.
 %endif
 
+
 %prep
 %setup -q
 
 %build
+# the buildsubdir macro gets defined in %%setup and is apparently only available in the next step (i.e. the %%build step)
+%global __strip %{_builddir}/%{?buildsubdir}/build/rpm/custom-strip
+
 # fix up build version
 _build=`echo %{release} | sed -e 's/\..*$//'`
 sed -i "/PACKAGE_BUILD/s/=[0-9]*/=$_build/" VERSION.pcp
@@ -2255,7 +2299,7 @@ sed -i "/PACKAGE_BUILD/s/=[0-9]*/=$_build/" VERSION.pcp
 %if !%{disable_python2} && 0%{?default_python} != 3
 export PYTHON=python%{?default_python}
 %endif
-%configure %{?_with_initd} %{?_with_doc} %{?_with_dstat} %{?_with_ib} %{?_with_podman} %{?_with_statsd} %{?_with_perfevent} %{?_with_bcc} %{?_with_bpftrace} %{?_with_json} %{?_with_snmp} %{?_with_nutcracker} %{?_with_python2}
+%configure %{?_with_initd} %{?_with_doc} %{?_with_dstat} %{?_with_ib} %{?_with_statsd} %{?_with_perfevent} %{?_with_bcc} %{?_with_bpf} %{?_with_bpftrace} %{?_with_json} %{?_with_mongodb} %{?_with_snmp} %{?_with_nutcracker} %{?_with_python2}
 make %{?_smp_mflags} default_pcp
 
 %install
@@ -2287,9 +2331,11 @@ sed -i -e '/platformsz.h/d' $DIST_MANIFEST
 
 %if %{disable_mssql}
 # remove pmdamssql on platforms lacking MSODBC driver packages.
+rm -fr $RPM_BUILD_ROOT/%{_confdir}/mssql
+rm -fr $RPM_BUILD_ROOT/%{_confdir}/pmieconf/mssql
+rm -fr $RPM_BUILD_ROOT/%{_ieconfdir}/mssql
 rm -fr $RPM_BUILD_ROOT/%{_pmdasdir}/mssql
 rm -fr $RPM_BUILD_ROOT/%{_pmdasexecdir}/mssql
-rm -fr $RPM_BUILD_ROOT/%{_confdir}/mssql
 %endif
 
 %if !%{disable_qt}
@@ -2357,8 +2403,10 @@ grep -E 'pcp\/(examples|demos)|(etc/pcp|pcp/pmdas)\/(sample|simple|trivial|txmon
 # Note: /etc/pcp.{conf,env,sh} are %%config but not noreplace
 # and are treated specially below.
 cat >confpath.list <<EOF
+etc/zabbix/zabbix_agentd.d/
 etc/sysconfig/
 etc/cron.d/
+etc/sasl2/
 etc/pcp/
 EOF
 
@@ -2374,7 +2422,7 @@ total_manifest() {
     awk '{print $NF}' $DIST_MANIFEST
 }
 basic_manifest() {
-    total_manifest | cull '/pcp-doc/|/testsuite/|/man/|/examples/'
+    total_manifest | cull '/pcp-doc/|/testsuite/|/man/|pcp/examples/'
 }
 
 #
@@ -2383,16 +2431,16 @@ basic_manifest() {
 # Likewise, for the pcp-pmda and pcp-testsuite subpackages.
 #
 total_manifest | keep 'tutorials|/html/|pcp-doc|man.*\.[1-9].*' | cull 'out' >pcp-doc-files
-total_manifest | keep 'testsuite|etc/systemd/system' >pcp-testsuite-files
+total_manifest | keep 'testsuite|pcpqa|etc/systemd/system|libpcp_fault|pcp/fault.h' >pcp-testsuite-files
 
 basic_manifest | keep "$PCP_GUI|pcp-gui|applications|pixmaps|hicolor" | cull 'pmtime.h' >pcp-gui-files
-basic_manifest | keep 'selinux' | cull 'tmp|GNUselinuxdefs' >pcp-selinux-files
+basic_manifest | keep 'selinux' | cull 'tmp|testsuite' >pcp-selinux-files
 basic_manifest | keep 'zeroconf|daily[-_]report|/sa$' >pcp-zeroconf-files
-basic_manifest | grep -E -e 'pmiostat|pmrep|dstat|pcp2csv' \
+basic_manifest | grep -E -e 'pmiostat|pmrep|dstat|htop|pcp2csv' \
    -e 'pcp-atop|pcp-dmcache|pcp-dstat|pcp-free|pcp-htop' \
    -e 'pcp-ipcs|pcp-iostat|pcp-lvmcache|pcp-mpstat' \
    -e 'pcp-numastat|pcp-pidstat|pcp-shping|pcp-tapestat' \
-   -e 'pcp-uptime|pcp-verify' | \
+   -e 'pcp-uptime|pcp-verify|pcp-ss|pcp-ps' | \
    cull 'selinux|pmlogconf|pmieconf|pmrepconf' >pcp-system-tools-files
 
 basic_manifest | keep 'sar2pcp' >pcp-import-sar2pcp-files
@@ -2416,11 +2464,13 @@ basic_manifest | keep '(etc/pcp|pmdas)/bash(/|$)' >pcp-pmda-bash-files
 basic_manifest | keep '(etc/pcp|pmdas)/bcc(/|$)' >pcp-pmda-bcc-files
 basic_manifest | keep '(etc/pcp|pmdas)/bind2(/|$)' >pcp-pmda-bind2-files
 basic_manifest | keep '(etc/pcp|pmdas)/bonding(/|$)' >pcp-pmda-bonding-files
+basic_manifest | keep '(etc/pcp|pmdas)/bpf(/|$)' >pcp-pmda-bpf-files
 basic_manifest | keep '(etc/pcp|pmdas)/bpftrace(/|$)' >pcp-pmda-bpftrace-files
 basic_manifest | keep '(etc/pcp|pmdas)/cifs(/|$)' >pcp-pmda-cifs-files
 basic_manifest | keep '(etc/pcp|pmdas)/cisco(/|$)' >pcp-pmda-cisco-files
 basic_manifest | keep '(etc/pcp|pmdas)/dbping(/|$)' >pcp-pmda-dbping-files
 basic_manifest | keep '(etc/pcp|pmdas|pmieconf)/dm(/|$)' >pcp-pmda-dm-files
+basic_manifest | keep '(etc/pcp|pmdas)/denki(/|$)' >pcp-pmda-denki-files
 basic_manifest | keep '(etc/pcp|pmdas)/docker(/|$)' >pcp-pmda-docker-files
 basic_manifest | keep '(etc/pcp|pmdas)/ds389log(/|$)' >pcp-pmda-ds389log-files
 basic_manifest | keep '(etc/pcp|pmdas)/ds389(/|$)' >pcp-pmda-ds389-files
@@ -2443,7 +2493,8 @@ basic_manifest | keep '(etc/pcp|pmdas)/memcache(/|$)' >pcp-pmda-memcache-files
 basic_manifest | keep '(etc/pcp|pmdas)/mailq(/|$)' >pcp-pmda-mailq-files
 basic_manifest | keep '(etc/pcp|pmdas)/mic(/|$)' >pcp-pmda-mic-files
 basic_manifest | keep '(etc/pcp|pmdas)/mounts(/|$)' >pcp-pmda-mounts-files
-basic_manifest | keep '(etc/pcp|pmdas)/mssql(/|$)' >pcp-pmda-mssql-files
+basic_manifest | keep '(etc/pcp|pmdas)/mongodb(/|$)' >pcp-pmda-mongodb-files
+basic_manifest | keep '(etc/pcp|pmdas|pmieconf)/mssql(/|$)' >pcp-pmda-mssql-files
 basic_manifest | keep '(etc/pcp|pmdas)/mysql(/|$)' >pcp-pmda-mysql-files
 basic_manifest | keep '(etc/pcp|pmdas)/named(/|$)' >pcp-pmda-named-files
 basic_manifest | keep '(etc/pcp|pmdas)/netfilter(/|$)' >pcp-pmda-netfilter-files
@@ -2454,7 +2505,7 @@ basic_manifest | keep '(etc/pcp|pmdas)/nginx(/|$)' >pcp-pmda-nginx-files
 basic_manifest | keep '(etc/pcp|pmdas)/nutcracker(/|$)' >pcp-pmda-nutcracker-files
 basic_manifest | keep '(etc/pcp|pmdas)/nvidia(/|$)' >pcp-pmda-nvidia-files
 basic_manifest | keep '(etc/pcp|pmdas)/openmetrics(/|$)' >pcp-pmda-openmetrics-files
-basic_manifest | keep '(etc/pcp|pmdas)/openvswitch(/|$)' >pcp-pmda-openvswitch-files
+basic_manifest | keep '(etc/pcp|pmdas|pmieconf)/openvswitch(/|$)' >pcp-pmda-openvswitch-files
 basic_manifest | keep '(etc/pcp|pmdas)/oracle(/|$)' >pcp-pmda-oracle-files
 basic_manifest | keep '(etc/pcp|pmdas)/pdns(/|$)' >pcp-pmda-pdns-files
 basic_manifest | keep '(etc/pcp|pmdas)/perfevent(/|$)' >pcp-pmda-perfevent-files
@@ -2479,23 +2530,22 @@ basic_manifest | keep '(etc/pcp|pmdas)/systemd(/|$)' >pcp-pmda-systemd-files
 basic_manifest | keep '(etc/pcp|pmdas)/trace(/|$)' >pcp-pmda-trace-files
 basic_manifest | keep '(etc/pcp|pmdas)/unbound(/|$)' >pcp-pmda-unbound-files
 basic_manifest | keep '(etc/pcp|pmdas)/weblog(/|$)' >pcp-pmda-weblog-files
-basic_manifest | keep '(etc/pcp|pmdas)/vmware(/|$)' >pcp-pmda-vmware-files
 basic_manifest | keep '(etc/pcp|pmdas)/zimbra(/|$)' >pcp-pmda-zimbra-files
 basic_manifest | keep '(etc/pcp|pmdas)/zswap(/|$)' >pcp-pmda-zswap-files
 
 rm -f packages.list
 for pmda_package in \
     activemq apache \
-    bash bcc bind2 bonding bpftrace \
+    bash bcc bind2 bonding bpf bpftrace \
     cifs cisco \
-    dbping docker dm ds389 ds389log \
+    dbping denki docker dm ds389 ds389log \
     elasticsearch \
     gfs2 gluster gpfs gpsd \
     hacluster haproxy \
     infiniband \
     json \
     libvirt lio lmsensors logger lustre lustrecomm \
-    mailq memcache mic mounts mssql mysql \
+    mailq memcache mic mounts mongodb mssql mysql \
     named netcheck netfilter news nfsclient nginx \
     nutcracker nvidia \
     openmetrics openvswitch oracle \
@@ -2505,7 +2555,6 @@ for pmda_package in \
     sockets statsd summary systemd \
     unbound \
     trace \
-    vmware \
     weblog \
     zimbra zswap ; \
 do \
@@ -2558,6 +2607,9 @@ $1 == "d" {
             if (match ($5, "'$PCP_RUN_DIR'")) {
                 printf ("%%%%ghost ") >> f;
             }
+            if (match ($5, "'$PCP_VAR_DIR'/testsuite")) {
+                $3 = $4 = "pcpqa";
+            }
             printf ("%%%%dir %%%%attr(%s,%s,%s) %s\n", $2, $3, $4, $5) >> f
           }
 $1 == "f" && $6 ~ "etc/pcp\\.conf" { printf ("%%%%config ") >> f; }
@@ -2569,6 +2621,9 @@ $1 == "f" {
                     printf ("%%%%config(noreplace) ") >> f;
                     break;
                 }
+            }
+            if (match ($6, "'$PCP_VAR_DIR'/testsuite")) {
+                $3 = $4 = "pcpqa";
             }
             if (match ($6, "'$PCP_MAN_DIR'") || match ($6, "'$PCP_DOC_DIR'")) {
                 printf ("%%%%doc ") >> f;
@@ -2623,21 +2678,33 @@ done
 %endif
 
 %pre testsuite
-test -d %{_testsdir} || mkdir -p -m 755 %{_testsdir}
+%if !%{disable_selinux}
+%selinux_relabel_pre -s targeted
+%endif
+%if 0%{?fedora} >= 32 || 0%{?rhel} >= 9
+echo u pcpqa - \"PCP Quality Assurance\" %{_testsdir} /bin/bash | \
+  systemd-sysusers --replace=/usr/lib/sysusers.d/pcp-testsuite.conf -
+%else
 getent group pcpqa >/dev/null || groupadd -r pcpqa
 getent passwd pcpqa >/dev/null || \
   useradd -c "PCP Quality Assurance" -g pcpqa -d %{_testsdir} -M -r -s /bin/bash pcpqa 2>/dev/null
+%endif
+test -d %{_testsdir} || mkdir -p -m 755 %{_testsdir}
 chown -R pcpqa:pcpqa %{_testsdir} 2>/dev/null
 exit 0
 
 %post testsuite
+%if !%{disable_selinux}
+PCP_SELINUX_DIR=%{_selinuxdir}
+semodule -r pcpqa >/dev/null 2>&1 || true
+%selinux_modules_install -s targeted "$PCP_SELINUX_DIR/pcp-testsuite.pp.bz2"
+%selinux_relabel_post -s targeted
+%endif
 chown -R pcpqa:pcpqa %{_testsdir} 2>/dev/null
 %if 0%{?rhel}
 %if !%{disable_systemd}
-    systemctl restart pmcd >/dev/null 2>&1
-    systemctl restart pmlogger >/dev/null 2>&1
-    systemctl enable pmcd >/dev/null 2>&1
-    systemctl enable pmlogger >/dev/null 2>&1
+    systemctl restart pmcd pmlogger >/dev/null 2>&1
+    systemctl enable pmcd pmlogger >/dev/null 2>&1
 %else
     /sbin/chkconfig --add pmcd >/dev/null 2>&1
     /sbin/chkconfig --add pmlogger >/dev/null 2>&1
@@ -2647,16 +2714,24 @@ chown -R pcpqa:pcpqa %{_testsdir} 2>/dev/null
 %endif
 exit 0
 
+%if !%{disable_selinux}
+%postun testsuite
+if [ $1 -eq 0 ]; then
+    %selinux_modules_uninstall -s targeted pcp-testsuite
+    %selinux_relabel_post -s targeted
+fi
+%endif
+
 %pre
+%if 0%{?fedora} >= 32 || 0%{?rhel} >= 9
+echo u pcp - \"Performance Co-Pilot\" %{_localstatedir}/lib/pcp | \
+  systemd-sysusers --replace=/usr/lib/sysusers.d/pcp.conf -
+%else
 getent group pcp >/dev/null || groupadd -r pcp
 getent passwd pcp >/dev/null || \
   useradd -c "Performance Co-Pilot" -g pcp -d %{_localstatedir}/lib/pcp -M -r -s /sbin/nologin pcp
-exit 0
-
-%if !%{disable_rpm}
-%preun pmda-rpm
-%{pmda_remove "$1" "rpm"}
 %endif
+exit 0
 
 %if !%{disable_systemd}
 %preun pmda-systemd
@@ -2673,10 +2748,8 @@ exit 0
 %{pmda_remove "$1" "perfevent"}
 %endif
 
-%if !%{disable_podman}
 %preun pmda-podman
 %{pmda_remove "$1" "podman"}
-%endif
 
 %if !%{disable_statsd}
 %preun pmda-statsd
@@ -2728,6 +2801,9 @@ exit 0
 
 %preun pmda-dbping
 %{pmda_remove "$1" "dbping"}
+
+%preun pmda-denki
+%{pmda_remove "$1" "denki"}
 
 %preun pmda-docker
 %{pmda_remove "$1" "docker"}
@@ -2788,9 +2864,6 @@ exit 0
 %preun pmda-samba
 %{pmda_remove "$1" "samba"}
 
-%preun pmda-vmware
-%{pmda_remove "$1" "vmware"}
-
 %preun pmda-zimbra
 %{pmda_remove "$1" "zimbra"}
 
@@ -2800,6 +2873,11 @@ exit 0
 %if !%{disable_bcc}
 %preun pmda-bcc
 %{pmda_remove "$1" "bcc"}
+%endif
+
+%if !%{disable_bpf}
+%preun pmda-bpf
+%{pmda_remove "$1" "bpf"}
 %endif
 
 %if !%{disable_bpftrace}
@@ -2828,6 +2906,11 @@ exit 0
 
 %preun pmda-lmsensors
 %{pmda_remove "$1" "lmsensors"}
+
+%if !%{disable_mongodb}
+%preun pmda-mongodb
+%{pmda_remove "$1" "mongodb"}
+%endif
 
 %if !%{disable_mssql}
 %preun pmda-mssql
@@ -2893,35 +2976,14 @@ exit 0
 %preun pmda-weblog
 %{pmda_remove "$1" "weblog"}
 
-%if !%{disable_systemd}
-%preun zeroconf
-if [ "$1" -eq 0 ]
-then
-    %systemd_preun pmlogger_daily_report.timer
-    %systemd_preun pmlogger_daily_report.service
-    %systemd_preun pmlogger_daily_report-poll.timer
-    %systemd_preun pmlogger_daily_report-poll.service
-fi
-%endif
-
 %preun
 if [ "$1" -eq 0 ]
 then
     # stop daemons before erasing the package
     %if !%{disable_systemd}
-       %systemd_preun pmlogger.service
-       %systemd_preun pmie.service
-       %systemd_preun pmproxy.service
-       %systemd_preun pmcd.service
-       %systemd_preun pmie_daily.timer
-       %systemd_preun pmlogger_daily.timer
-       %systemd_preun pmlogger_daily-poll.timer
-       %systemd_preun pmlogger_check.timer
+       %systemd_preun pmlogger_check.timer pmlogger_daily.timer pmlogger_farm_check.timer pmlogger_farm_check.service pmlogger_farm.service pmlogger.service pmie_check.timer pmie_daily.timer pmie_farm_check.timer pmie_farm_check.service pmie_farm.service pmie.service pmproxy.service pmfind.service pmcd.service
 
-       systemctl stop pmlogger.service >/dev/null 2>&1
-       systemctl stop pmie.service >/dev/null 2>&1
-       systemctl stop pmproxy.service >/dev/null 2>&1
-       systemctl stop pmcd.service >/dev/null 2>&1
+       systemctl stop pmlogger.service pmie.service pmproxy.service pmfind.service pmcd.service >/dev/null 2>&1
     %else
        /sbin/service pmlogger stop >/dev/null 2>&1
        /sbin/service pmie stop >/dev/null 2>&1
@@ -2943,6 +3005,7 @@ fi
 PCP_PMDAS_DIR=%{_pmdasdir}
 PCP_SYSCONFIG_DIR=%{_sysconfdir}/sysconfig
 PCP_PMCDCONF_PATH=%{_confdir}/pmcd/pmcd.conf
+PCP_PMIECONFIG_DIR=%{_ieconfigdir}
 # auto-install important PMDAs for RH Support (if not present already)
 for PMDA in dm nfsclient openmetrics ; do
     if ! grep -q "$PMDA/pmda$PMDA" "$PCP_PMCDCONF_PATH"
@@ -2950,18 +3013,12 @@ for PMDA in dm nfsclient openmetrics ; do
         %{install_file "$PCP_PMDAS_DIR/$PMDA" .NeedInstall}
     fi
 done
-# increase default pmlogger recording frequency
-sed -i 's/^\#\ PMLOGGER_INTERVAL.*/PMLOGGER_INTERVAL=10/g' "$PCP_SYSCONFIG_DIR/pmlogger"
 # auto-enable these usually optional pmie rules
-pmieconf -c enable dmthin
+%{run_pmieconf "$PCP_PMIECONFIG_DIR" dmthin}
 %if 0%{?rhel}
 %if !%{disable_systemd}
-    systemctl restart pmcd >/dev/null 2>&1
-    systemctl restart pmlogger >/dev/null 2>&1
-    systemctl restart pmie >/dev/null 2>&1
-    systemctl enable pmcd >/dev/null 2>&1
-    systemctl enable pmlogger >/dev/null 2>&1
-    systemctl enable pmie >/dev/null 2>&1
+    systemctl restart pmcd pmlogger pmie >/dev/null 2>&1
+    systemctl enable pmcd pmlogger pmie >/dev/null 2>&1
 %else
     /sbin/chkconfig --add pmcd >/dev/null 2>&1
     /sbin/chkconfig --add pmlogger >/dev/null 2>&1
@@ -2972,30 +3029,24 @@ pmieconf -c enable dmthin
 %endif
 %endif
 
-%if !%{disable_selinux}
-%post selinux
-%{selinux_handle_policy "$1" "pcpupstream"}
-
-%triggerin selinux -- docker-selinux
-%{selinux_handle_policy "$1" "pcpupstream-docker"}
-
-%triggerin selinux -- container-selinux
-%{selinux_handle_policy "$1" "pcpupstream-container"}
-%endif
-
 %post
 PCP_PMNS_DIR=%{_pmnsdir}
 PCP_LOG_DIR=%{_logsdir}
 %{install_file "$PCP_PMNS_DIR" .NeedRebuild}
 %{install_file "$PCP_LOG_DIR/pmlogger" .NeedRewrite}
 %if !%{disable_systemd}
+    # clean up any stale symlinks for deprecated pm*-poll services
+    rm -f %{_sysconfdir}/systemd/system/pm*.requires/pm*-poll.* >/dev/null 2>&1 || true
+
     %systemd_postun_with_restart pmcd.service
     %systemd_post pmcd.service
     %systemd_postun_with_restart pmlogger.service
     %systemd_post pmlogger.service
     %systemd_postun_with_restart pmie.service
     %systemd_post pmie.service
-    systemctl condrestart pmproxy.service >/dev/null 2>&1
+    %systemd_postun_with_restart pmproxy.service
+    %systemd_post pmproxy.service
+    %systemd_post pmfind.service
 %else
     /sbin/chkconfig --add pmcd >/dev/null 2>&1
     /sbin/service pmcd condrestart
@@ -3016,14 +3067,22 @@ PCP_LOG_DIR=%{_logsdir}
 %endif
 
 %if !%{disable_selinux}
-%preun selinux
-%{selinux_handle_policy "$1" "pcpupstream"}
+%pre selinux
+%selinux_relabel_pre -s targeted
 
-%triggerun selinux -- docker-selinux
-%{selinux_handle_policy "$1" "pcpupstream-docker"}
+%post selinux
+PCP_SELINUX_DIR=%{_selinuxdir}
+semodule -r pcpupstream-container >/dev/null 2>&1 || true
+semodule -r pcpupstream-docker >/dev/null 2>&1 || true
+semodule -r pcpupstream >/dev/null 2>&1 || true
+%selinux_modules_install -s targeted "$PCP_SELINUX_DIR/pcp.pp.bz2"
+%selinux_relabel_post -s targeted
 
-%triggerun selinux -- container-selinux
-%{selinux_handle_policy "$1" "pcpupstream-container"}
+%postun selinux
+if [ $1 -eq 0 ]; then
+    %selinux_modules_uninstall -s targeted pcp
+    %selinux_relabel_post -s targeted
+fi
 %endif
 
 %files -f pcp-files.rpm
@@ -3042,6 +3101,7 @@ PCP_LOG_DIR=%{_logsdir}
 
 %if !%{disable_selinux}
 %files selinux -f pcp-selinux-files.rpm
+%ghost %verify(not md5 size mode mtime) %{_sharedstatedir}/selinux/targeted/active/modules/200/pcp
 %endif
 
 %if !%{disable_qt}
@@ -3049,15 +3109,12 @@ PCP_LOG_DIR=%{_logsdir}
 %endif
 
 %files testsuite -f pcp-testsuite-files.rpm
-%defattr(-,pcpqa,pcpqa)
 
 %if !%{disable_infiniband}
 %files pmda-infiniband -f pcp-pmda-infiniband-files.rpm
 %endif
 
-%if !%{disable_podman}
 %files pmda-podman -f pcp-pmda-podman-files.rpm
-%endif
 
 %if !%{disable_statsd}
 %files pmda-statsd -f pcp-pmda-statsd-files.rpm
@@ -3116,10 +3173,10 @@ PCP_LOG_DIR=%{_logsdir}
 
 %files pmda-slurm -f pcp-pmda-slurm-files.rpm
 
-%files pmda-vmware -f pcp-pmda-vmware-files.rpm
-
 %files pmda-zimbra -f pcp-pmda-zimbra-files.rpm
 %endif
+
+%files pmda-denki -f pcp-pmda-denki-files.rpm
 
 %files pmda-docker -f pcp-pmda-docker-files.rpm
 
@@ -3153,6 +3210,10 @@ PCP_LOG_DIR=%{_logsdir}
 %files pmda-bcc -f pcp-pmda-bcc-files.rpm
 %endif
 
+%if !%{disable_bpf}
+%files pmda-bpf -f pcp-pmda-bpf-files.rpm
+%endif
+
 %if !%{disable_bpftrace}
 %files pmda-bpftrace -f pcp-pmda-bpftrace-files.rpm
 %endif
@@ -3169,6 +3230,10 @@ PCP_LOG_DIR=%{_logsdir}
 %files pmda-haproxy -f pcp-pmda-haproxy-files.rpm
 
 %files pmda-lmsensors -f pcp-pmda-lmsensors-files.rpm
+
+%if !%{disable_mongodb}
+%files pmda-mongodb -f pcp-pmda-mongodb-files.rpm
+%endif
 
 %if !%{disable_mssql}
 %files pmda-mssql -f pcp-pmda-mssql-files.rpm
@@ -3239,9 +3304,6 @@ PCP_LOG_DIR=%{_logsdir}
 
 %files pmda-roomtemp -f pcp-pmda-roomtemp-files.rpm
 
-%if !%{disable_rpm}
-%files pmda-rpm -f pcp-pmda-rpm-files.rpm
-%endif
 %files pmda-sendmail -f pcp-pmda-sendmail-files.rpm
 
 %files pmda-shping -f pcp-pmda-shping-files.rpm
@@ -3295,18 +3357,61 @@ PCP_LOG_DIR=%{_logsdir}
 %files -n python3-pcp -f python3-pcp.list.rpm
 %endif
 
-%if !%{disable_python2} || !%{disable_python3}
 %files system-tools -f pcp-system-tools-files.rpm
-%endif
 
 %files zeroconf -f pcp-zeroconf-files.rpm
 
 %changelog
+* Mon Apr 17 2023 Nathan Scott <nathans@redhat.com> - 6.0.3-1
+- Currently work-in-progress.
+
+* Sun Feb 12 2023 Nathan Scott <nathans@redhat.com> - 6.0.2-1
+- Fix pcp-dstat swap device handling with -f (BZ 2168774)
+- Update to latest PCP sources.
+
+* Thu Oct 27 2022 Nathan Scott <nathans@redhat.com> - 6.0.1-1
+- Resolve a BPF module related build failure (BZ 2132998)
+- Update to latest PCP sources.
+
+* Wed Aug 31 2022 Nathan Scott <nathans@redhat.com> - 6.0.0-1
+- Add libpcp/postgresql-pgpool-II-devel conflict (BZ 2100185)
+- Remove an invalid path from pmie unit file (BZ 2079793)
+- Update to latest PCP sources.
+
+* Tue Apr 05 2022 Nathan Scott <nathans@redhat.com> - 5.3.7-1
+- Add disk.wwid aggregated multipath metrics (BZ 1293444)
+- Update to latest PCP sources.
+
+* Wed Feb 02 2022 Nathan Scott <nathans@redhat.com> - 5.3.6-1
+- Update to latest PCP sources.
+
+* Wed Nov 10 2021 Nathan Scott <nathans@redhat.com> - 5.3.5-1
+- Fix pmlogger services systemd killmode warning (BZ 1897945)
+- Fix python PMDA interface for python 3.10 (BZ 2020038)
+- Update to latest PCP sources.
+
+* Fri Oct 08 2021 Nathan Scott <nathans@redhat.com> - 5.3.4-1
+- Update to latest PCP sources.
+
+* Wed Sep 15 2021 Nathan Scott <nathans@redhat.com> - 5.3.3-1
+- Update to latest PCP sources.
+
+* Tue Sep 14 2021 Sahana Prasad <sahana@redhat.com> - 5.3.2-2
+- Rebuilt with OpenSSL 3.0.0
+
+* Fri Jul 30 2021 Mark Goodwin <mgoodwin@redhat.com> - 5.3.2-1
+- Update to latest PCP sources.
+
+* Fri Jun 04 2021 Nathan Scott <nathans@redhat.com> - 5.3.1-1
+- Fix selinux violations for pmdakvm on debugfs (BZ 1929259)
+- Update to latest PCP sources.
+
 * Fri Apr 16 2021 Nathan Scott <nathans@redhat.com> - 5.3.0-1
-- https://github.com/performancecopilot/pcp/projects/1
+- Added conditional lockdown policy access by pmdakvm (BZ 1929259)
+- Update to latest PCP sources.
 
 * Mon Feb 08 2021 Andreas Gerstmayr <agerstmayr@redhat.com> - 5.2.5-2
-- fixed typo in specfile (pcp-testsuite requires pcp-pmda-hacluster
+- Fixed typo in specfile (pcp-testsuite requires pcp-pmda-hacluster
   and pcp-pmda-sockets instead of pcp-pmdas-hacluster etc.)
 
 * Mon Feb 08 2021 Nathan Scott <nathans@redhat.com> - 5.2.5-1

@@ -1,19 +1,19 @@
 #
 # Common sh(1) procedures to be used in PCP rc scripts
 #
-# Copyright (c) 2014-2015 Red Hat.
+# Copyright (c) 2014-2015,2019-2022 Red Hat.
 # Copyright (c) 2000,2003 Silicon Graphics, Inc.  All Rights Reserved.
-# 
+#
 # This program is free software; you can redistribute it and/or modify it
 # under the terms of the GNU General Public License as published by the
 # Free Software Foundation; either version 2 of the License, or (at your
 # option) any later version.
-# 
+#
 # This program is distributed in the hope that it will be useful, but
 # WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY
 # or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License
 # for more details.
-# 
+#
 
 # source the PCP configuration environment variables
 . $PCP_DIR/etc/pcp.env
@@ -482,4 +482,57 @@ mkdir_and_chown()
 
     # oops
     return 1
+}
+
+# Shell API function to add or migrate a pid to a systemd service
+# Usage: migrate_pid_service [-v] pid servicename
+# e.g. migrate_pid_service $pid pmlogger_farm.service
+# No output even on failure unless the -v flag is given.
+# Removal is automatic when a process exits or migrates.
+migrate_pid_service()
+{
+    local verbose=false
+    local iam=migrate_pid_service
+    local sts=1
+
+    [ "$1" = "-v" ] && verbose=true && shift
+
+    # noop on non-systemd platforms
+    if [ ! -x /run/systemd/system ]; then
+	$verbose && echo "$iam: ignored, not using systemd"
+    	return $sts
+    fi
+
+    # get cgroup filesystem mount path - handles v1, v2
+    cgroot=`mount | $PCP_AWK_PROG '/^cgroup/ {print $3; exit}'`
+
+    # Get cgroup slice. This also handles libpod, VMs using machine slice.
+    cgslice=`systemctl status $2 | $PCP_AWK_PROG '/CGroup:/ {print $2}'`
+
+    # get a path to cgroup.procs with write access
+    for namespace in "" /unified /systemd /pids /memory; do
+	cgprocs=${cgroot}${namespace}${cgslice}/cgroup.procs
+	if [ ! -e "$cgprocs" ]; then
+	    $verbose && echo "$iam: couldn't find cgroup.procs for service \"$2\", using namespace \"$namespace\""
+	    continue
+	fi
+
+	if [ ! -w "$cgprocs" ]; then
+	    $verbose && echo "$iam: no write access to \"$cgprocs\" for service \"$2\" using namespace \"$namespace\""
+	    continue
+	fi
+
+	if ! echo $1 >>"$cgprocs" 2>/dev/null; then
+	    $verbose && echo "$iam: failed to add pid $1 to service \"$2\" using namespace \"$namespace\""
+	    $verbose && echo $cgprocs && echo $1 >>"$cgprocs"
+	    continue
+	fi
+
+	# success
+	$verbose && echo "$iam: added pid $1 to service \"$2\" using namespace \"$namespace\""
+	sts=0
+	break
+    done
+
+    return $sts
 }

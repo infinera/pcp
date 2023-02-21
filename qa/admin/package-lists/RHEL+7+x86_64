@@ -6,13 +6,13 @@ Coin3-devel
 Net::SNMP cpan
 SoQt-devel
 Spreadsheet::Read cpan
-Spreadsheet::ReadSXC cpan
 Spreadsheet::WriteExcel cpan
 Spreadsheet::XLSX cpan
 audit
 autoconf
 bash
 bc
+bcc-tools
 bind-utils
 bison
 coreutils
@@ -50,6 +50,7 @@ libvirt-python
 lm_sensors
 mailx
 make
+man-db
 mandoc
 mariadb
 memcached
@@ -57,11 +58,8 @@ mesa-dri-drivers
 ncurses-devel
 net-tools
 nmap
-nspr-devel
-nss-devel
-nss-tools
-openssl
-openssl-devel
+openssl11
+openssl11-devel
 perl
 perl-CPAN
 perl-DBD-MySQL
@@ -102,7 +100,6 @@ ragel
 readline-devel
 redis
 rpm-build
-rpm-devel
 rrdtool
 rrdtool-perl
 sed

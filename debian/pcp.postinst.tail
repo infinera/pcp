@@ -20,8 +20,6 @@ chown pcp:pcp /var/lib/pcp/tmp
 chmod 775 /var/lib/pcp/tmp
 chown pcp:pcp /var/log/pcp
 chmod 775 /var/log/pcp
-chown pcp:pcp /etc/pcp/nssdb
-chmod 775 /etc/pcp/nssdb
 
 # must match src/pmcd/GNUmakefile
 chown pcp:pcp /var/log/pcp/pmcd
@@ -82,13 +80,21 @@ chmod 755 /etc/pcp/pmlogger
 chown root:root /etc/pcp/pmlogger/control
 chmod 644 /etc/pcp/pmlogger/control
 
-do_systemd=true
-which deb-systemd-helper >/dev/null 2>&1 || do_systemd=false
+do_systemd_helper=true
+which deb-systemd-helper >/dev/null 2>&1 || do_systemd_helper=false
+do_systemctl=true
+which systemctl >/dev/null 2>&1 || do_systemctl=false
 # only need to check pmcd.service, if it is here they will all
 # be here
-[ -f /lib/systemd/system/pmcd.service ] || do_systemd=false
+if [ -f /lib/systemd/system/pmcd.service ]
+then
+    :
+else
+    do_systemd_helper=false
+    do_systemctl=false
+fi
 
-if $do_systemd
+if $do_systemd_helper
 then
     deb-systemd-helper enable pmcd.service >/dev/null
     deb-systemd-helper enable pmlogger.service >/dev/null
@@ -106,7 +112,12 @@ then
     update-rc.d pmproxy defaults >/dev/null
 fi
 
-if which invoke-rc.d >/dev/null 2>&1
+if $do_systemctl
+then
+    systemctl daemon-reload >/dev/null
+    systemctl start pmcd.service >/dev/null
+    systemctl start pmlogger.service >/dev/null
+elif which invoke-rc.d >/dev/null 2>&1
 then
     invoke-rc.d pmcd start
     invoke-rc.d pmlogger start
@@ -114,3 +125,5 @@ else
     /etc/init.d/pmcd start
     /etc/init.d/pmlogger start
 fi
+
+exit 0

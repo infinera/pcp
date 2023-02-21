@@ -106,3 +106,54 @@ those tests *alot*.  An ideal test is one that:
    o  before running, test for situations where it cannot run - such
       as unsupported platforms/configurations - use _notrun() here.
 
+
+# Vendoring
+
+To keep track of the vendored code origin and changes, it is strongly advised
+to use git subtrees when vendoring 3rd party code. The advantage of using git
+subtrees instead of git submodules is that with git subtree the vendored code
+is stored inside the PCP repository, instead of merely linking to a specific
+commit of the remote repository.
+
+Example usage:
+```
+# Vendor a new library
+git subtree add --prefix vendor/github.com/redis/hiredis \
+  https://github.com/redis/hiredis.git v1.0.0 --squash
+
+# Pull changes from the remote repository
+git subtree pull --prefix vendor/github.com/redis/hiredis \
+  https://github.com/redis/hiredis.git v1.0.1 --squash
+
+# Push modifications of vendored sources to the remote repository
+# Note: the commit(s) are split automatically, i.e. if one commit modifies
+# both PCP and vendored sources, the commit pushed to the remote repository
+# only contains updated files from the vendored directory
+git subtree push --prefix vendor/github.com/redis/hiredis \
+  https://github.com/andreasgerstmayr/hiredis.git some-updates
+```
+
+Example vendoring a subdirectory of a remote repository:
+```
+# Initial vendoring
+git remote add bcc https://github.com/iovisor/bcc.git
+git fetch bcc
+git checkout bcc/master
+git subtree split --prefix libbpf-tools --branch bcc-libbpf-tools-split
+git checkout main
+git subtree add --prefix vendor/github.com/iovisor/bcc/libbpf-tools bcc-libbpf-tools-split --squash
+
+# Pull changes from the remote repository
+git fetch bcc
+git checkout bcc/master
+git subtree split --prefix libbpf-tools --branch bcc-libbpf-tools-split
+git checkout main
+git subtree merge --prefix vendor/github.com/iovisor/bcc/libbpf-tools bcc-libbpf-tools-split --squash
+```
+
+**Note:** All modifications of vendored code should be pushed upstream. The
+goal is to be a good open source citizen and contribute changes back, and to
+keep the differences minimal in order to ease future updates of vendored code.
+
+**All bugs and CVEs of a vendored library in turn become responsibilities of the
+PCP maintainers as well** (and fixes must be pushed upstream).

@@ -15,6 +15,7 @@ echo "QA output created by $seq"
 
 pminfo proc.nprocs >/dev/null 2>&1 || _notrun "proc PMDA not installed"
 [ $PCP_PLATFORM = linux ] || _notrun "Linux proc test, only works with Linux"
+_check_64bit_platform "Test needs 64-bit machine to match /proc test data"
 
 status=1	# failure is the default!
 $sudo rm -rf $tmp.* $seq.full
@@ -46,7 +47,7 @@ do
     base=`basename $tgz`
 
     echo "== Extracting subtrees for later use - $base" | tee -a $seq.full
-    trees=`pminfo proc | awk -F. '{ print $2 }' | sort -u | egrep -v 'nproc'`
+    trees=`pminfo proc | awk -F. '{ print $2 }' | sort -u | grep -E -v 'nproc'`
     echo $trees >> $here/$seq.full
 
     echo "== Checking namespace and metric numbering - $base"

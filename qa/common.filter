@@ -33,6 +33,8 @@ _filter_pmcd_log()
 	-e '/get_scsi_sn:/d' \
 	-e '/refresh_proc_scsi/d' \
 	-e '/Info: CleanupAgent/d' \
+	-e '/Info: OpenSSL /d' \
+	-e '/Using cipher /d' \
 	-e '/using .* kmem interface/d' \
 	-e '/pmcd_wait failed: exit status:/d' \
 	-e '/Failed to create avahi client:/d' \
@@ -157,13 +159,15 @@ _filter_pmproxy_log()
         -e '/^\(Log for pmproxy on\) [^ ][^ ]*/s//\1 HOST/' \
 	-e '/^pmproxy: PID/s/=.*/= PID/' \
 	-e 's/pmproxy([1-9][0-9]*) Error:/pmproxy(PID) Error:/' \
-	-e '/^pmproxy: Signalled (signal=[1-9][0-9]*).*/d' \
+	-e '/^pmproxy: Signalled (signal[=][1-9][0-9]*).*/d' \
 	-e '/^pmproxy: disabled time series,.*(missing)/d' \
 	-e '/Error: unsupported redis server (got v/d' \
+	-e '/Info: TLS configured in pmproxy.conf/d' \
 	-e '/Failed to create avahi client:/d' \
 	-e '/Info: connected to .*redis.*/d' \
-	-e '/Info: OpenSSL .*/d' \
 	-e '/Info: .* setup$/d' \
+	-e '/Info: OpenSSL /d' \
+	-e '/Using cipher /d' \
     #end
 }
 
@@ -175,14 +179,18 @@ _filter_pmlogger_log()
 	-e 's/[A-Z][a-z][a-z] [A-Z][a-z][a-z]  *[0-9][0-9]* [0-9][0-9]:[0-9][0-9]:[0-9][0-9] [0-9][0-9][0-9][0-9]$/DATE/' \
 	-e 's/[A-Z][a-z][a-z] [A-Z][a-z][a-z]  *[0-9][0-9]* [0-9][0-9]:[0-9][0-9]:[0-9][0-9]/DATE/' \
 	-e 's/pmlogger([1-9][0-9]*) Error:/pmlogger(PID) Error:/' \
-	-e '/^pmlogger: Signalled (signal=[1-9][0-9]*).*/d' \
+	-e 's/pmlogger([1-9][0-9]*) Info:/pmlogger(PID) Info:/' \
 	-e '/^preprocessor cmd: /d' \
         -e '/^\(Log for pmlogger on\) [^ ][^ ]*/s//\1 HOST/' \
 	-e '/^Starting logger/s/host ".*/host "HOST"/' \
 	-e '/^Archive basename: /s/:.*/: ARCHIVE/' \
 	-e '/^pmlc request/s/ from .*:/ from HOST:/' \
 	-e '/^__pmLogCreate(/s/([^,]*,/(HOST,/' \
-    # end
+	-e '/^pmlogger: Signalled (signal[=][1-9][0-9]*).*/d' \
+    | $PCP_AWK_PROG '
+BEGIN						{ skip = 0 }
+/^-- Added by .* when SaveLogs dir found/	{ skip = 1 }
+skip == 0					{ print }'
 }
 
 # pmie log file
@@ -201,12 +209,12 @@ _filter_pmie_log()
 }
 _show_pmie_exit()
 {
-    fgrep "evaluator exiting" | \
+    grep -F "evaluator exiting" | \
 	sed -e 's/.* Info: evaluator exiting/pmie: note - evaluator exiting/g'
 }
 _show_pmie_errors()
 {
-    egrep -v '^Log finished |^Log for pmie on ' \
+    grep -E -v '^Log finished |^Log for pmie on ' \
 	| $PCP_AWK_PROG '{ if (NF > 0) print }' \
 	| sed \
 	    -e 's/.*Info: evaluator exiting/pmie: note - evaluator exiting/g' \
@@ -220,10 +228,20 @@ _filter_pmdumplog()
     sed \
 	-e 's/[A-Z][a-z][a-z] [A-Z][a-z][a-z]  *[0-9][0-9]* [0-9][0-9]:[0-9][0-9]:[0-9][0-9] [0-9][0-9][0-9][0-9]$/DATE/' \
 	-e 's/[A-Z][a-z][a-z] [A-Z][a-z][a-z]  *[0-9][0-9]* [0-9][0-9]:[0-9][0-9]:[0-9][0-9]\.[0-9][0-9]*[0-9] [0-9][0-9][0-9][0-9]$/DATE/' \
-	-e '/[0-9][0-9]:[0-9][0-9]:[0-9][0-9]/s/[^ ]*/TIMESTAMP/' \
+	-e 's/[0-9][0-9]:[0-9][0-9]:[0-9][0-9]\.[0-9][0-9]*/TIMESTAMP/' \
+	-e 's/[0-9][0-9]:[0-9][0-9]:[0-9][0-9]/TIMESTAMP/' \
 	-e '/^\(Performance metrics from host\) [^ ][^ ]*/s//\1 HOST/' \
 	-e '/^archive:/s/\(  *\).*/\1ARCHIVE/' \
-	-e '/^host:/s/\(  *\).*/\1HOST/'
+	-e '/^host:/s/\(  *\).*/\1HOST/' \
+    | if [ $# -eq 1 -a X"$1" = "X--any-version" ]
+    then
+	sed \
+	    -e '/(Log Format Version [0-9][0-9]*)/s/ [23])/ OK)/' \
+	    -e 's/^			Log Vol/		Log Vol/' \
+	# end
+    else
+	cat
+    fi
 }
 
 # pmdumptext
@@ -256,10 +274,12 @@ _filter_optional_pmdas()
 	-e '/pmdabcc/d' \
 	-e '/pmdabind2/d' \
 	-e '/pmdabonding/d' \
+	-e '/pmdabpf/d' \
 	-e '/pmdabpftrace/d' \
 	-e '/pmdabrocade/d' \
 	-e '/pmdacisco/d' \
 	-e '/pmdadbping/d' \
+	-e '/pmdadenki/d' \
 	-e '/pmdadm/d' \
 	-e '/pmdadmf/d' \
 	-e '/pmdadocker/d' \
@@ -269,6 +289,7 @@ _filter_optional_pmdas()
 	-e '/pmdaespping/d' \
 	-e '/pmdagfs2/d' \
 	-e '/pmdagluster/d' \
+	-e '/pmdahacluster/d' \
 	-e '/pmdahippi/d' \
 	-e '/pmdahotproc/d' \
 	-e '/pmdaib/d' \
@@ -291,6 +312,7 @@ _filter_optional_pmdas()
 	-e '/pmdamemcache/d' \
 	-e '/pmdammv/d' \
 	-e '/pmdamounts/d' \
+	-e '/pmdamongodb/d' \
 	-e '/pmdampi/d' \
 	-e '/pmdamssql/d' \
 	-e '/pmdamysql/d' \
@@ -310,6 +332,7 @@ _filter_optional_pmdas()
 	-e '/pmdaopenmetrics/d' \
 	-e '/pmdaoracle/d' \
 	-e '/pmdaoraping/d' \
+	-e '/pmdaoverhead/d' \
 	-e '/pmdapdns/d' \
 	-e '/pmdapmcd/d' \
 	-e '/pmdaproc/d' \
@@ -326,6 +349,7 @@ _filter_optional_pmdas()
 	-e '/pmda_simple/d' \
 	-e '/pmdasimple/d' \
 	-e '/pmdasmart/d' \
+	-e '/pmdasockets/d' \
 	-e '/pmdasnia/d' \
 	-e '/pmdasnmp/d' \
 	-e '/pmdasmart/d' \
@@ -357,13 +381,17 @@ _filter_optional_pmdas()
 _filter_optional_pmda_instances()
 {
     sed \
+	-e '/inst \[3 or "proc"]/d' \
 	-e '/inst \[4 or "pmproxy"]/d' \
 	-e '/inst \[10 or "trace"]/d' \
+	-e '/inst \[11 or "xfs"]/d' \
 	-e '/inst \[15 or "sendmail"]/d' \
+	-e '/inst \[19 or "shping"]/d' \
         -e '/inst \[22 or "weblog"]/d' \
 	-e '/inst \[24 or "redis"]/d' \
 	-e '/inst \[28 or "news"]/d' \
 	-e '/inst \[33 or "podman"]/d' \
+	-e '/inst \[35 or "mongodb"]/d' \
 	-e '/inst \[57 or "statsd"]/d' \
 	-e '/inst \[60 or "linux"]/d' \
 	-e '/inst \[62 or "nfsclient"]/d' \
@@ -384,13 +412,18 @@ _filter_optional_pmda_instances()
 	-e '/inst \[123 or "rpm"]/d' \
 	-e '/inst \[127 or "perfevent"]/d' \
 	-e '/inst \[129 or "dm"]/d' \
+	-e '/inst \[139 or "openbsd"]/d' \
         -e '/inst \[140 or "libvirt"]/d' \
         -e '/inst \[151 or "bpftrace"]/d' \
         -e '/inst \[153 or "zfs"]/d' \
+        -e '/inst \[156 or "denki"]/d' \
+        -e '/inst \[158 or "overhead"]/d' \
 	-e '/inst \[142 or "lio"]/d' \
 	-e '/inst \[144 or "openmetrics"]/d' \
 	-e '/inst \[149 or "bcc"]/d' \
         -e '/inst \[152 or "netcheck"]/d' \
+	-e '/inst \[154 or "sockets"]/d' \
+	-e '/inst \[157 or "bpf"]/d' \
 	-e '/inst \[250 or "trivial"]/d' \
 
     # end
@@ -410,6 +443,7 @@ _filter_top_pmns()
 	-e '/^    bcc /d' \
 	-e '/^    bind2 /d' \
 	-e '/^    bonding /d' \
+	-e '/^    bpf /d' \
 	-e '/^    bpftrace /d' \
 	-e '/^    brocade /d' \
 	-e '/^    broken /d' \
@@ -447,6 +481,7 @@ _filter_top_pmns()
 	-e '/^    mailq /d' \
 	-e '/^    memcache /d' \
 	-e '/^    mmv /d' \
+	-e '/^    mongodb /d' \
 	-e '/^    mpi /d' \
 	-e '/^    mssql /d' \
 	-e '/^    mysql /d' \
@@ -503,12 +538,13 @@ _filter_top_pmns()
     #end
 }
 
-# handle pmDumpResult() output
+# handle pmDumpResult() and pmDumpHighResResult() output
 #
 _filter_dumpresult()
 {
     sed \
 	-e '/pmResult/s/ .* numpmid/ ... numpmid/' \
+	-e '/pmHighResResult/s/ .* numpmid/ ... numpmid/' \
 	-e '/[0-9][0-9]:[0-9][0-9]:[0-9][0-9]/s/[^ ]*/TIMESTAMP/' \
 	-e '/value /{
 s/\(value.*\) 0x[0-9a-f][0-9a-f]*/\1 HEXNUMBER/
@@ -714,7 +750,7 @@ _filter_pmproxy_stop()
 _sort_pmdumplog_d()
 {
     cat >$tmp.tmp
-    egrep '(^Descriptions)|(^$)' $tmp.tmp
+    grep -E '(^Descriptions)|(^$)' $tmp.tmp
     $PCP_AWK_PROG <$tmp.tmp '
 /^Descriptions/		{ next }
 NF == 0			{ next }
@@ -748,15 +784,27 @@ Updating the Performance Metrics Name Space (PMNS) ...
     | _filter_pcp_start
 }
 
+# and of course sed(1) on OpenBSD has to be different ...
+#
 _filter_pmda_remove()
 {
     _filter_pmda_install |
     sed \
 	-e '/Removing files/d' \
 	-e '/Job for pmcd.service canceled/d' \
-	-e '/Updating the PMCD control file/c\
+    | case "$PCP_PLATFORM"
+      in
+        openbsd)
+	    sed -e '/Updating the PMCD control file/c\
+Updating the PMCD control file, and notifying PMCD ...\
+[...removing files...]\
+'
+	    ;;
+	*)
+	    sed -e '/Updating the PMCD control file/c\
 Updating the PMCD control file, and notifying PMCD ...\
 [...removing files...]'
+      esac
 }
 
 # Make sure that quotes which span multiple lines get appended onto
@@ -776,7 +824,7 @@ _quote_filter()
 		    line[line_num++] = $0
 		    if (inquote) {      
 			inquote = 0
-			for(i=0;i<=line_num;i++){
+			for (i = 0; i <= line_num; i++){
 			    printf("%s\\n", line[i])
 			}       
 			printf("\n")
@@ -815,7 +863,7 @@ _inst_value_filter()
    $PCP_AWK_PROG '
 	function print_line() {
 	    if (line_num > 0) {
-		for(i=0;i<line_num-1;i++){
+		for(i = 0; i < line_num-1; i++){
 		    printf("%s\\n", line[i])
 		}       
 		printf("%s", line[line_num-1]);
@@ -833,7 +881,19 @@ $1 == "inst" && $2 ~ /^\[/ {
 	# proc metric 
 	/"$/ && line_num > 0 {
 	    line[line_num++] = $0
-	    print_line()
+	    # count quotes (") ... need to end on an even number ...
+	    # this could easily be defeated by backslash quoting or
+	    # even nested quoting, but these are unlikely in proc
+	    # metric values, even for psinfo.environ or psinfo.psargs
+	    #
+	    nq = 0
+	    for (x = 0; x < line_num; x++) {
+		nq += gsub(/"/, "\"", line[x])
+	    }
+	    if ((nq % 2) == 0) {
+		# balanced quotes we are done accumulating
+		print_line()
+	    }
 	    next
 	}
 	( (/proc\./ && /numval/ && /valfmt/) || /^proc\./ ) \
@@ -875,6 +935,7 @@ _filter_torture_api()
 	-e '/^    cihb /d' \
 	-e '/^    cms /d' \
 	-e '/^    cxfs /d' \
+	-e '/^    denki /d' \
 	-e '/^    ds389 /d' \
 	-e '/^    dynamic /d' \
 	-e '/^    engr /d' \
@@ -899,6 +960,7 @@ _filter_torture_api()
 	-e '/^    numa /d' \
 	-e '/^    nvidia /d' \
 	-e '/^    origin /d' \
+	-e '/^    overhead /d' \
 	-e '/^    pdns /d' \
 	-e '/^    p76 /d' \
 	-e '/^    process /d' \
@@ -988,3 +1050,51 @@ _instances_filter_exact()
 {
     grep "value $1" > /dev/null && echo OK
 }
+
+# remove valgrind output for "possibly lost" memory, e.g.
+#
+# 4 bytes in 1 blocks are possibly lost in loss record 7 of 723
+# at 0x483B7F3: malloc (in /usr/lib/x86_64-linux-gnu/valgrind/vgpreload_memcheck-amd64-linux.so)
+# ...
+# {
+#    <insert_a_suppression_name_here>
+#    Memcheck:Leak
+#    match-leak-kinds: possible
+#    fun:malloc
+# ...
+# }
+#
+_filter_valgrind_possibly()
+{
+    $PCP_AWK_PROG '
+/blocks are possibly lost in loss record/	{ skip = 1 }
+skip == 1 && $1 == "}"				{ skip = 0; next }
+skip == 1					{ next }
+						{ print }' \
+    | sed \
+	-e '/ERROR SUMMARY/s/[0-9][0-9]*/N/g' \
+    # end
+}
+
+# strip out this sort of stuff ...
+# run: schedule eval (1660671537.224214) > now (1660671536.724049) + delta (0.500000) ... reset
+# Task dump @ 0x55a8b08e8940
+#   nth=0 delta=0.500 tick=4 next=(nil) prev=(nil)
+#   eval time: Wed Aug 17 03:38:57.224214 2022
+#   retry delta: N/A host: bozo-vm.localdomain
+#   via=local: (up)
+#   rules:
+#     expr_1
+#     expr_2
+#
+_filter_slow_pmie()
+{
+    sed \
+	-e '/^run: schedule eval/d' \
+    | $PCP_AWK_PROG '
+BEGIN				{ skip = 0 }
+$1 == "Task" && $2 == "dump"	{ skip = 1; next }
+skip == 1 && /^[^ ]/		{ skip = 0 }
+skip == 0			{ print }'
+}
+

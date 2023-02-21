@@ -42,6 +42,7 @@ signal=$PCP_BINADM_DIR/pmsignal
 log=$PCP_PMCDLOG_PATH
 _needclean=true
 LOCALHOST=`hostname`
+LOGGING_DIR="$PCP_ARCHIVE_DIR"
 
 _filter_log()
 {
@@ -79,13 +80,6 @@ interrupt()
     _restore_auto_restart pmcd
     exit
 }
-
-if [ -d $PCP_LOG_DIR/pmlogger ]
-then
-    LOGGING_DIR=$PCP_LOG_DIR/pmlogger
-else
-    LOGGING_DIR=$PCP_LOG_DIR
-fi
 
 cleanup()
 {
@@ -160,6 +154,12 @@ then
 freebsd	85	dso	freebsd_init	$PCP_PMDAS_DIR/freebsd/pmda_freebsd.so
 pmcd	2	dso	pmcd_init	$PCP_PMDAS_DIR/pmcd/pmda_pmcd.so
 End-of-File
+elif [ $PCP_PLATFORM = openbsd ]
+then
+    cat >>$tmp  <<End-of-File
+openbsd	139	dso	openbsd_init	$PCP_PMDAS_DIR/openbsd/pmda_openbsd.so
+pmcd	2	dso	pmcd_init	$PCP_PMDAS_DIR/pmcd/pmda_pmcd.so
+End-of-File
 else
     echo "Error - need pmcd.conf setup for PCP_PLATFORM $PCP_PLATFORM"
     exit 1
@@ -227,7 +227,7 @@ do
 	ls -l `dirname $log`
 	cat ${log}.prev >>$seq.full
 	exit
-    elif [ `egrep '^Host access' $log | wc -l` = 2 ]
+    elif [ `grep -E '^Host access' $log | wc -l` = 2 ]
     then
 	break
     fi

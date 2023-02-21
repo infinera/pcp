@@ -9,11 +9,57 @@ sts=1  # presume failure, in case of an unexpected early exit
 tmp=`mktemp -d /tmp/pcp-build-check-statics.XXXXXXXXX` || exit 1
 trap "rm -rf $tmp; exit \$sts" 0 1 2 3 15
 
-debug=false
-#debug=true
+if [ $# -gt 0 -a "X$1" = X-d ]
+then
+    debug=true
+    shift
+else
+    debug=false
+fi
 
-NM=nm
-which gcc-nm >/dev/null 2>&1 && NM=gcc-nm
+if which readelf >/dev/null 2>&1
+then
+    # prefer readelf(1) over nm(1) as the former reports local symbols
+    # even when LTO (via -flto=... to gcc(1)) is in play, while the latter
+    # refuses to report local (==static in this context) symbols whrn LTO
+    # is in play
+    #
+    NM=''
+    readelf=true
+else
+    readelf=false
+    NM=nm
+    which gcc-nm >/dev/null 2>&1 && NM=gcc-nm
+fi
+
+# run readelf and mangle output to look like it came from nm, or run nm
+# if readelf not available
+#
+_nm()
+{
+    if $readelf
+    then
+	# use readelf(1) but turn lines like
+	#  38: 00000000000000a0     8 OBJECT  LOCAL  DEFAULT    4 xconfirm 
+	# 246: 0000000000000000     8 OBJECT  GLOBAL DEFAULT  137 pmProgname
+	#
+	# into classical nm(1) format like
+	# 00000000000000a0 b xconfirm
+	# 0000000000000000 B pmProgname
+	#
+	readelf --wide --symbols "$1" 2>/dev/null \
+	| awk '
+$4 != "OBJECT"			{ next }
+$8 ~ /__FUNCTION__.*/		{ next }
+$8 ~ /__PRETTY_FUNCTION__.*/	{ next }
+$8 ~ /__func__\.[0-9].*/	{ next }
+$8 ~ /CSWTCH\.[0-9].*/		{ next }
+$5 == "LOCAL"			{ print $2,"b",$8 }
+$5 == "GLOBAL"			{ print $2,"B",$8 }'
+    else
+	$NM "$1"
+    fi
+}
 
 # Note
 #    Really want to make this run on as many platforms as possible ...
@@ -45,31 +91,36 @@ in
 		echo "Error: no access.o to check"
 		exit
 	    fi
-	    rm -f $tmp/tmp
-	    dirs=/usr/bin
-	    [ -d /usr/gnu ] && dirs="$dirs /usr/gnu"
-	    [ -d /usr/opt ] && dirs="$dirs /usr/opt"
-	    find $dirs -name nm \
-	    | while read nm
-	    do
-		echo $nm >>$tmp/try
-		if $nm access.o | grep ' T __pmAccAddAccount' >/dev/null 2>&1
-		then
-		    echo $nm >$tmp/tmp
-		    break
-		fi
-	    done
-	    if [ -f $tmp/tmp ]
+	    if $readelf
 	    then
-		NM=`cat $tmp/tmp`
+		:
 	    else
-		echo "Error: cannot find a version of nm(1) below that produces classic format output ..."
-		cat $tmp/try
-		exit
+		rm -f $tmp/tmp
+		dirs=/usr/bin
+		[ -d /usr/gnu ] && dirs="$dirs /usr/gnu"
+		[ -d /usr/opt ] && dirs="$dirs /usr/opt"
+		find $dirs -name nm \
+		| while read nm
+		do
+		    echo $nm >>$tmp/try
+		    if $nm access.o | grep ' T __pmAccAddAccount' >/dev/null 2>&1
+		    then
+			echo $nm >$tmp/tmp
+			break
+		    fi
+		done
+		if [ -f $tmp/tmp ]
+		then
+		    NM=`cat $tmp/tmp`
+		else
+		    echo "Error: cannot find a version of nm(1) below that produces classic format output ..."
+		    cat $tmp/try
+		    exit
+		fi
 	    fi
 	    ;;
 
-    freebsd|netbsd|openbsd|solaris)
+    openbsd|freebsd|netbsd|solaris)
 	    ;;
     *)
 	    echo "Warning: check-statics skipped for PCP_PLATFORM=$PCP_PLATFORM"
@@ -78,6 +129,7 @@ in
 	    ;;
 esac
 
+$debug && echo readelf=$readelf
 $debug && echo NM=$NM
 
 obj=''
@@ -126,6 +178,8 @@ access.o
     szuserlist			# single-threaded PM_SCOPE_ACL
     userlist			# single-threaded PM_SCOPE_ACL
 accounts.o
+    namebuf			# no unsafe side-effects, see notes in accounts.c
+    namebuflen			# no unsafe side-effects, see notes in accounts.c
 AF.o
     AF_lock			# local mutex
     afid			# single-threaded PM_SCOPE_AF
@@ -165,11 +219,12 @@ discovery.o
     def_timeout			# guarded by __pmLock_extcall mutex
 config.o
     ?__pmNativeConfig		# const
-    config_lock		# local mutex
+    config_lock			# local mutex
     state			# guarded by config_lock
     ?features			# const
     ?pcp_dir			# one-trip initialization then read-only
     ?init			# one-trip initialization then read-only
+    arch_features		# guarded by __pmLock_extcall mutex
 connectlocal.o
     atexit_installed		# guarded by __pmLock_libpcp mutex
     buffer			# assert safe, see notes in connectlocal.c
@@ -266,6 +321,10 @@ derive_parser.tab.o
     ?.LpmRegisterDerivedMetric.fmt	# static string (FreeBSD gcc)
     ?pmRegisterDerivedMetric.fmt	# static string (FreeBSD 10.2 gcc)
 desc.o
+e_index.o
+e_indom.o
+e_labels.o
+e_loglabel.o
 endian.o
 err.o
     err_lock			# local mutex
@@ -289,7 +348,6 @@ fetchlocal.o
     splitmax			# single-threaded PM_SCOPE_DSO_PMDA
 fetch.o
 fetchgroup.o
-freeresult.o
 getdate.tab.o
     MilitaryTable         	# const
     OtherTable         		# const
@@ -311,6 +369,8 @@ getdate.tab.o
 getopt.o
     ?paths                	# const, may be optimized away
     ?fallback                	# const, may be optimized away
+getopt2.o
+getopt3.o
 hash.o
 help.o
 instance.o
@@ -334,7 +394,7 @@ ipc.o
     __pmLastUsedFd		# guarded by ipc_lock mutex
     ipcentrysize		# guarded by ipc_lock mutex
     ipctablecount		# guarded by ipc_lock mutex
-jsonsl.o
+deps/jsonsl/jsonsl.o
     Allowed_Escapes		# const
     Allowed_Whitespace		# const
     Escape_Equivs		# const
@@ -376,14 +436,29 @@ secureserver.o
     secureserver_lock		# local mutex
     secure_server		# guarded by secureserver_lock mutex
 secureconnect.o
+    secureclient_lock		# local mutex
     common_callbacks		# const
-    initialized			# single-threaded
+    setup			# single-threaded
+    tls				# guarded by secureclient_lock mutex
 optfetch.o
     optfetch_lock		# local mutex
     optcost			# guarded by optfetch_lock mutex
 p_attr.o
 p_creds.o
 p_desc.o
+p_error.o
+p_fetch.o
+p_idlist.o
+p_instance.o
+p_label.o
+    ?type			# const
+p_lcontrol.o
+p_lrequest.o
+p_lstatus.o
+p_pmns.o
+p_profile.o
+p_result.o
+p_text.o
 pdubuf.o
     pdubuf_lock		# local mutex
     buf_tree			# guarded by pdubuf_lock mutex
@@ -402,18 +477,8 @@ pdu.o
     inctrs			# diag counters, no atomic updates
     outctrs			# diag counters, no atomic updates
     maxsize			# guarded by pdu_lock mutex
-p_error.o
-p_profile.o
-p_result.o
-profile.o
-p_text.o
-p_fetch.o
-p_instance.o
-p_label.o
-    ?type			# const
-p_lcontrol.o
-p_lrequest.o
-p_lstatus.o
+    tracebuf			# guarded by pdu_lock mutex
+    tracenext			# guarded by pdu_lock mutex
 pmns.o
     pmns_lock			# local mutex
     lineno			# guarded by pmns_lock mutex
@@ -441,11 +506,10 @@ pmns.o
     ?__emutls_t.curr_pmns	# thread private for OpenBSD
     locerr			# no unsafe side-effects, see notes in pmns.c
     argp			# guarded by exec_lock
-p_pmns.o
-p_profile.o
-p_result.o
 profile.o
-p_text.o
+result.o
+    result_lock			# local mutex
+    result_pool			# guarded by result_lock mutex
 rtime.o
     ?wdays			# const
     ?months			# const
@@ -520,6 +584,7 @@ util.o
     ?get			# sbrk(0) hack for Mac OS X, safe
     ?highwater			# sbrk(0) hack for Mac OS X, safe
     ?pick			# sbrk(0) hack for Mac OS X, safe
+    text_start			# no unsage side-effects, see notes in util.c
 deprecated.o
 strings.o
 ?win32.o
@@ -561,7 +626,7 @@ do
 		# extras from the last object code file
 		sed <$tmp/out \
 		    -e 's/^[^ ]* //' \
-		    -e "s/^\(.\) \(.*\)/$obj: \1 \2 : Error: additional symbol/"
+		    -e "s!^\(.\) \(.*\)!$obj: \1 \2 : Error: additional symbol!"
 		touch $tmp/fail
 	    fi
 	fi
@@ -591,6 +656,12 @@ do
 		# + strip  r __func__.NNN lines
 		# for NetBSD
 		# + strip  r CSWTCH.NNN lines
+		# for OpenBSD (with clang C compiler)
+		# + strip  b .L.str.NNN lines
+		# + strip  b .LSSH.NNN lines
+		# + strip  b .L__func__.<funcname> lines
+		# + strip  b .L__const.<structname>.<member> lines
+		# + strip  b .Lswitch.table.<funcname> lines
 		# for Solaris (OpenIndiana with suncc)
 		# + remove symbol mangling so
 		#   0000000000000058 B .XA$BAABAJVtXUrj.userlist
@@ -603,21 +674,33 @@ do
 		# + strip .bss, .data, .picdata and .rodata lines
 		#
 		skip_file=false
-		$NM $line \
-		| sed -n >$tmp/out \
+		_nm $line >$tmp/tmp
+		if $debug
+		then
+		    echo "=== _nm output for $line"
+		    cat $tmp/tmp
+		fi
+		sed -n <$tmp/tmp >$tmp/out \
 		    -e '/ S ___i686.get_pc_thunk.[bc]x/d' \
 		    -e '/ [sS] .*\.eh$/d' \
 		    -e '/ [sS] .*\.stv$/d' \
 		    -e '/ s .*_\.[0-9][0-9]*$/d' \
 		    -e '/ s LC[0-9][0-9]*$/d' \
-		    -e '/ s L_\.str[0-9][0-9]*$/d' \
 		    -e '/ s L_\.str$/d' \
+		    -e '/ s L_\.str[0-9][0-9]*$/d' \
 		    -e '/ r \.L\.str[0-9][0-9]*$/d' \
 		    -e '/ r \.L\.str$/d' \
 		    -e '/ s L___func__\./d' \
 		    -e '/ r \.LCPI./d' \
 		    -e '/ s l_switch\./d' \
 		    -e '/ s .*\$tlv\$init$/d' \
+		    -e '/ b \.L\.str$/d' \
+		    -e '/ b \.L\.str\.[0-9][0-9]*$/d' \
+		    -e '/ b \.LSSH$/d' \
+		    -e '/ b \.LSSH\.[0-9][0-9]*$/d' \
+		    -e '/ b \.L__func__\./d' \
+		    -e '/ b \.L__const\./d' \
+		    -e '/ b \.Lswitch\.table\./d' \
 		    -e 's/b \([_a-zA-Z][_a-zA-Z0-9]*\)\.b$/b \1/' \
 		    -e 's/b \([_a-zA-Z][_a-zA-Z0-9]*\)\.[0-9]*.[0b]$/b \1/' \
 		    -e 's/\([bds] \).*\.\([_a-zA-Z]\)/\1\2/' \
@@ -648,6 +731,11 @@ do
 		    -e '/ [dDbBCsSrR] /p' \
 		# end
 		obj=$line
+		if $debug
+		then
+		    echo "=== post-sed filtering for $line"
+		    cat $tmp/out
+		fi
 	    else
 		case "$line"
 		in

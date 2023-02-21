@@ -31,7 +31,7 @@ void *__pmLock_extcall;
 
 #ifdef PM_MULTI_THREAD
 typedef struct {
-    void	*lock;
+    void	*dbg_lock;
     int		count;
 } lockdbg_t;
 
@@ -88,31 +88,6 @@ SetupDebug(void)
 }
 
 #ifdef PM_MULTI_THREAD
-static void
-mybacktrace(void)
-{
-#ifdef HAVE_BACKTRACE
-#define MAX_TRACE_DEPTH 32
-    void	*backaddr[MAX_TRACE_DEPTH];
-    int		sts;
-    sts = backtrace(backaddr, MAX_TRACE_DEPTH);
-    if (sts > 0) {
-	char	**symbols;
-	symbols = backtrace_symbols(backaddr, MAX_TRACE_DEPTH);
-	if (symbols != NULL) {
-	    int		i;
-	    fprintf(stderr, "backtrace:\n");
-	    for (i = 0; i < sts; i++)
-		fprintf(stderr, "  %s\n", symbols[i]);
-	    free(symbols);
-	}
-    }
-#endif /* HAVE_BACKTRACE */
-    return;
-}
-#endif /* PM_MULTI_THREAD */
-
-#ifdef PM_MULTI_THREAD
 #ifdef PM_MULTI_THREAD_DEBUG
 static char
 *lockname(void *lock)
@@ -153,12 +128,16 @@ static char
 	return "pmns";
     else if (__pmIsAFLock(lock))
 	return "AF";
+    else if (__pmIsSecureclientLock(lock))
+	return "secureclient";
     else if (__pmIsSecureserverLock(lock))
 	return "secureserver";
     else if (__pmIsConnectLock(lock))
 	return "connect";
     else if (__pmIsExecLock(lock))
 	return "exec";
+    else if (__pmIsresultLock(lock))
+	return "result";
     else if (lock == (void *)&__pmLock_extcall)
 	return "global_extcall";
     else if ((ctxid = __pmIsContextLock(lock)) != -1) {
@@ -166,7 +145,7 @@ static char
 	return locknamebuf;
     }
     else if ((ctxlist = __pmIsLogCtlLock(lock)) != NULL) {
-	pmsprintf(locknamebuf, sizeof(locknamebuf), "l_lock[handle(s) %s]", ctxlist);
+	pmsprintf(locknamebuf, sizeof(locknamebuf), "lock[handle(s) %s]", ctxlist);
 	free(ctxlist);
 	return locknamebuf;
     }
@@ -222,14 +201,14 @@ again:
 	hp = __pmHashSearch((unsigned int)key, &hashctl);
 	while (hp != NULL) {
 	    ldp = (lockdbg_t *)hp->data;
-	    if (ldp->lock == lock)
+	    if (ldp->dbg_lock == lock)
 		break;
 	    hp = hp->next;
 	}
 	if (hp == NULL) {
 	    char	errmsg[PM_MAXERRMSGLEN];
 	    ldp = (lockdbg_t *)malloc(sizeof(lockdbg_t));
-	    ldp->lock = lock;
+	    ldp->dbg_lock = lock;
 	    ldp->count = 0;
 	    sts = __pmHashAdd((unsigned int)key, (void *)ldp, &hashctl);
 	    if (sts == 1) {
@@ -273,7 +252,7 @@ again:
 	}
 	fputc('\n', stderr);
 	if (pmDebugOptions.desperate)
-	    mybacktrace();
+	    __pmDumpStack();
     }
 }
 #else
@@ -401,6 +380,8 @@ __pmInitLocks(void)
 	 */
 	init_pmns_lock();
 	init_AF_lock();
+	init_result_lock();
+	init_secureclient_lock();
 	init_secureserver_lock();
 	init_connect_lock();
 	init_exec_lock();
@@ -476,7 +457,7 @@ __pmLock(void *lock, const char *file, int line)
 	fprintf(stderr, "%s:%d: __pmLock(%p) failed: %s\n", file, line, lock, pmErrStr(sts));
 #endif
 #ifdef BUILD_WITH_LOCK_ASSERTS
-	mybacktrace();
+	__pmDumpStack();
 	abort();
 #endif
     }
@@ -569,7 +550,7 @@ __pmUnlock(void *lock, const char *file, int line)
 	fprintf(stderr, "%s:%d: __pmUnlock(%p) failed: %s\n", file, line, lock, pmErrStr(sts));
 #endif
 #ifdef BUILD_WITH_LOCK_ASSERTS
-	mybacktrace();
+	__pmDumpStack();
 	abort();
 #endif
     }

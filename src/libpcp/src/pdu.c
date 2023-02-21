@@ -1,12 +1,12 @@
 /*
- * Copyright (c) 2012-2015 Red Hat.
+ * Copyright (c) 2012-2015,2017,2021 Red Hat.
  * Copyright (c) 1995-2005 Silicon Graphics, Inc.  All Rights Reserved.
- * 
+ *
  * This library is free software; you can redistribute it and/or modify it
  * under the terms of the GNU Lesser General Public License as published
  * by the Free Software Foundation; either version 2.1 of the License, or
  * (at your option) any later version.
- * 
+ *
  * This library is distributed in the hope that it will be useful, but
  * WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY
  * or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU Lesser General Public
@@ -17,6 +17,7 @@
  * maxsize - monotonic increasing and rarely changes, so use pdu_lock
  * 	mutex to protect updates, but allow reads without locking
  * 	as seeing an unexpected newly updated value is benign
+ * tracebuf and tracenext - protected by pdu_lock
  *
  * On success, the result parameter from __pmGetPDU() points into a PDU
  * buffer that is pinned from the call to __pmFindPDUBuf().  It is the
@@ -55,13 +56,26 @@ __pmIsPduLock(void *lock)
 
 /*
  * Performance Instrumentation
- *  ... counts binary PDUs received and sent by low 4 bits of PDU type
+ *  ... counts binary PDUs received and sent by PDU type (actually type
+ *      minus PDU_START so array is indexed from 0)
+ *  ... trace buffer of recent PDUs successfully sent and received
  */
 
 static unsigned int	inctrs[PDU_MAX+1];
 static unsigned int	outctrs[PDU_MAX+1];
 PCP_DATA unsigned int	*__pmPDUCntIn = inctrs;
 PCP_DATA unsigned int	*__pmPDUCntOut = outctrs;
+
+typedef struct {
+    int		fd;
+    int		xmit;		/* 1 for xmit, 0 for recv */
+    int		type;
+    int		len;
+} trace_t;
+
+#define NUMTRACE 8
+static trace_t		tracebuf[NUMTRACE];
+static unsigned int	tracenext;
 
 static int		mypid = -1;
 static int              ceiling = PDU_CHUNK * 64;
@@ -71,6 +85,50 @@ static int		req_wait_done;
 
 #define HEADER	-1
 #define BODY	0
+
+static void
+trace_insert(int fd, int xmit, __pmPDUHdr *php)
+{
+    unsigned int	p;
+    PM_LOCK(pdu_lock);
+    p = (tracenext++) % NUMTRACE;
+    tracebuf[p].fd = fd;
+    tracebuf[p].xmit = xmit;
+    tracebuf[p].type = php->type;
+    tracebuf[p].len = php->len;
+    PM_UNLOCK(pdu_lock);
+}
+
+/*
+ * Report recent PDUs
+ */
+void
+__pmDumpPDUTrace(FILE *f)
+{
+    unsigned int	i;
+    unsigned int	p;
+    char		strbuf[20];
+
+    PM_LOCK(pdu_lock);
+    if (tracenext < NUMTRACE)
+	i = 0;
+    else
+	i = tracenext - NUMTRACE;
+    if (i == tracenext)
+	fprintf(f, "__pmDumpPDUTrace: no PDUs so far\n");
+    else {
+	fprintf(f, "__pmDumpPDUTrace: recent PDUs ...\n");
+	for ( ; i < tracenext; i++) {
+	    p = i % NUMTRACE;
+	    fprintf(f, "[%d] %s", i, tracebuf[p].xmit ? "xmit" : "recv");
+	    fprintf(f, " fd=%d type=%s len=%d\n",
+		tracebuf[p].fd,
+		__pmPDUTypeStr_r(tracebuf[p].type, strbuf, sizeof(strbuf)),
+		tracebuf[p].len);
+	}
+    }
+    PM_UNLOCK(pdu_lock);
+}
 
 int
 __pmSetRequestTimeout(double timeout)
@@ -308,11 +366,16 @@ __pmPDUTypeStr_r(int type, char *buf, int buflen)
     case PDU_PMNS_CHILD:	res = "PMNS_CHILD"; break;
     case PDU_PMNS_TRAVERSE:	res = "PMNS_TRAVERSE"; break;
     case PDU_LOG_CONTROL:	res = "LOG_CONTROL"; break;
+    case PDU_LOG_STATUS_V2:	res = "LOG_STATUS_V2"; break;
     case PDU_LOG_STATUS:	res = "LOG_STATUS"; break;
     case PDU_LOG_REQUEST:	res = "LOG_REQUEST"; break;
     case PDU_ATTR:		res = "ATTR"; break;
     case PDU_LABEL_REQ:		res = "LABEL_REQ"; break;
     case PDU_LABEL:		res = "LABEL"; break;
+    case PDU_HIGHRES_FETCH:	res = "HIGHRES_FETCH"; break;
+    case PDU_HIGHRES_RESULT:	res = "HIGHRES_RESULT"; break;
+    case PDU_DESC_IDS:		res = "DESC_IDS"; break;
+    case PDU_DESCS:		res = "DESCS"; break;
     default:			res = NULL; break;
     }
     if (res)
@@ -366,6 +429,7 @@ __pmXmitPDU(int fd, __pmPDU *pdubuf)
     int		socketipc = __pmSocketIPC(fd);
     int		off = 0;
     int		len;
+    int		sts;
     __pmPDUHdr	*php = (__pmPDUHdr *)pdubuf;
 
     if (fd < 0)
@@ -386,8 +450,8 @@ __pmXmitPDU(int fd, __pmPDU *pdubuf)
 
 	if (mypid == -1)
 	    mypid = (int)getpid();
-	fprintf(stderr, "[%d]pmXmitPDU: %s fd=%d len=%d",
-		mypid, __pmPDUTypeStr_r(php->type, strbuf, sizeof(strbuf)), fd, php->len);
+	fprintf(stderr, "[%d]%s: %s fd=%d len=%d", mypid, "pmXmitPDU",
+		__pmPDUTypeStr_r(php->type, strbuf, sizeof(strbuf)), fd, php->len);
 	for (j = 0; j < jend; j++) {
 	    if ((j % 8) == 0)
 		fprintf(stderr, "\n%03d: ", j);
@@ -407,8 +471,17 @@ __pmXmitPDU(int fd, __pmPDU *pdubuf)
 	p += off;
 
 	n = socketipc ? __pmSend(fd, p, len-off, 0) : write(fd, p, len-off);
-	if (n < 0)
+	if (n < 0) {
+	    if (pmDebugOptions.pdu) {
+		if (socketipc)
+		    fprintf(stderr, "%s: socket __pmSend() result %d != %d\n",
+				    "__pmXmitPDU", n, len-off);
+		else
+		    fprintf(stderr, "%s: non-socket write() result %d != %d\n",
+				    "__pmXmitPDU", n, len-off);
+	    }
 	    break;
+	}
 	off += n;
     }
     php->len = ntohl(php->len);
@@ -417,16 +490,45 @@ __pmXmitPDU(int fd, __pmPDU *pdubuf)
 
     if (off != len) {
 	if (socketipc) {
-	    if (__pmSocketClosed())
+	    sts = -neterror();
+	    if (__pmSocketClosed()) {
+		if (pmDebugOptions.pdu)
+		    fprintf(stderr, "%s: PM_ERR_IPC because __pmSocketClosed() "
+				    "(maybe error %d from oserror())\n",
+				    "__pmXmitPDU", oserror());
 		return PM_ERR_IPC;
-	    return neterror() ? -neterror() : PM_ERR_IPC;
+	    }
+	    if (sts != 0) {
+		if (pmDebugOptions.pdu)
+		    fprintf(stderr, "%s: error %d from neterror()\n",
+				    "__pmXmitPDU", sts);
+		return sts;
+	    }
+	    else {
+		if (pmDebugOptions.pdu)
+		    fprintf(stderr, "%s: PM_ERR_IPC on socket path, reason unknown\n",
+				    "__pmXmitPDU");
+		return PM_ERR_IPC;
+	    }
 	}
-	return oserror() ? -oserror() : PM_ERR_IPC;
+	sts = -oserror();
+	if (sts != 0) {
+	    if (pmDebugOptions.pdu)
+		fprintf(stderr, "%s: error %d from oserror()\n", "__pmXmitPDU", sts);
+	    return sts;
+	}
+	else {
+	    if (pmDebugOptions.pdu)
+		fprintf(stderr, "%s: PM_ERR_IPC on non-socket path, reason unknown\n",
+				"__pmXmitPDU");
+	    return PM_ERR_IPC;
+	}
     }
 
     __pmOverrideLastFd(fd);
     if (php->type >= PDU_START && php->type <= PDU_FINISH)
 	__pmPDUCntOut[php->type-PDU_START]++;
+    trace_insert(fd, 1, php);
 
     return off;
 }
@@ -443,7 +545,7 @@ __pmGetPDU(int fd, int mode, int timeout, __pmPDU **result)
     __pmPDU		*pdubuf_prev;
     __pmPDUHdr		*php;
 
-PM_FAULT_RETURN(PM_FAULT_TIMEOUT);
+PM_FAULT_RETURN(PM_ERR_TIMEOUT);
 
     if ((pdubuf = __pmFindPDUBuf(maxsize)) == NULL)
 	return -oserror();
@@ -456,7 +558,9 @@ PM_FAULT_RETURN(PM_FAULT_TIMEOUT);
 	if (len == -1) {
 	    if (! __pmSocketClosed()) {
 		char	errmsg[PM_MAXERRMSGLEN];
-		pmNotifyErr(LOG_ERR, "__pmGetPDU: fd=%d hdr read: len=%d: %s", fd, len, pmErrStr_r(-oserror(), errmsg, sizeof(errmsg)));
+		pmNotifyErr(LOG_ERR, "%s: fd=%d hdr read: len=%d: %s",
+			    "__pmGetPDU", fd, len,
+			    pmErrStr_r(-oserror(), errmsg, sizeof(errmsg)));
 	    }
 	}
 	else if (len >= (int)sizeof(php->len)) {
@@ -469,18 +573,21 @@ PM_FAULT_RETURN(PM_FAULT_TIMEOUT);
 	     */
 	    goto check_read_len;	/* continue, do not return */
 	}
-	else if (len == PM_ERR_TIMEOUT || len == -EINTR) {
+	else if (len == PM_ERR_TIMEOUT || len == PM_ERR_TLS || len == -EINTR) {
 	    __pmUnpinPDUBuf(pdubuf);
 	    return len;
 	}
 	else if (len < 0) {
 	    char	errmsg[PM_MAXERRMSGLEN];
-	    pmNotifyErr(LOG_ERR, "__pmGetPDU: fd=%d hdr read: len=%d: %s", fd, len, pmErrStr_r(len, errmsg, sizeof(errmsg)));
+	    pmNotifyErr(LOG_ERR, "%s: fd=%d hdr read: len=%d: %s",
+			"__pmGetPDU", fd, len,
+			pmErrStr_r(len, errmsg, sizeof(errmsg)));
 	    __pmUnpinPDUBuf(pdubuf);
 	    return PM_ERR_IPC;
 	}
 	else if (len > 0) {
-	    pmNotifyErr(LOG_ERR, "__pmGetPDU: fd=%d hdr read: bad len=%d", fd, len);
+	    pmNotifyErr(LOG_ERR, "%s: fd=%d hdr read: bad len=%d",
+			"__pmGetPDU", fd, len);
 	    __pmUnpinPDUBuf(pdubuf);
 	    return PM_ERR_IPC;
 	}
@@ -499,7 +606,8 @@ check_read_len:
 	 * PDU length indicates insufficient bytes for a PDU header
 	 * ... looks like DOS attack like PV 935490
 	 */
-	pmNotifyErr(LOG_ERR, "__pmGetPDU: fd=%d illegal PDU len=%d in hdr", fd, php->len);
+	pmNotifyErr(LOG_ERR, "%s: fd=%d illegal PDU len=%d in hdr",
+		    "__pmGetPDU", fd, php->len);
 	__pmUnpinPDUBuf(pdubuf);
 	return PM_ERR_IPC;
     }
@@ -510,9 +618,16 @@ check_read_len:
 	 * (note, pmcd and pmdas have to be able to _send_ large PDUs,
 	 * e.g. for a pmResult or instance domain enquiry)
 	 */
-	pmNotifyErr(LOG_ERR, "__pmGetPDU: fd=%d bad PDU len=%d in hdr exceeds maximum client PDU size (%d)",
-		      fd, php->len, ceiling);
-
+	if (len < (int)(sizeof(php->len) + sizeof(php->type)))
+	    /* PDU too short to provide a valid type */
+	    pmNotifyErr(LOG_ERR, "%s: fd=%d bad PDU len=%d in hdr "
+			"exceeds maximum client PDU size (%d)",
+			"__pmGetPDU", fd, php->len, ceiling);
+	else
+	    pmNotifyErr(LOG_ERR, "%s: fd=%d type=0x%x bad PDU len=%d in hdr "
+			"exceeds maximum client PDU size (%d)",
+			"__pmGetPDU", fd, (unsigned)ntohl(php->type),
+			php->len, ceiling);
 	__pmUnpinPDUBuf(pdubuf);
 	return PM_ERR_TOOBIG;
     }
@@ -554,19 +669,25 @@ check_read_len:
 	    }
 	    else if (len < 0) {
 		char	errmsg[PM_MAXERRMSGLEN];
-		pmNotifyErr(LOG_ERR, "__pmGetPDU: fd=%d data read: len=%d: %s", fd, len, pmErrStr_r(-oserror(), errmsg, sizeof(errmsg)));
+		pmNotifyErr(LOG_ERR, "%s: fd=%d data read: len=%d: %s",
+			    "__pmGetPDU", fd, len,
+			    pmErrStr_r(-oserror(), errmsg, sizeof(errmsg)));
 	    }
 	    else
-		pmNotifyErr(LOG_ERR, "__pmGetPDU: fd=%d data read: have %d, want %d, got %d", fd, have, need, len);
+		pmNotifyErr(LOG_ERR, "%s: fd=%d data read: have %d, want %d, got %d",
+			    "__pmGetPDU", fd, have, need, len);
 	    /*
 	     * only report header fields if you've read enough bytes
 	     */
 	    if (len > 0)
 		have += len;
 	    if (have >= (int)(sizeof(php->len)+sizeof(php->type)+sizeof(php->from)))
-		pmNotifyErr(LOG_ERR, "__pmGetPDU: PDU hdr: len=0x%x type=0x%x from=0x%x", php->len, (unsigned)ntohl(php->type), (unsigned)ntohl(php->from));
+		pmNotifyErr(LOG_ERR, "%s: PDU hdr: len=0x%x type=0x%x from=0x%x",
+			    "__pmGetPDU", php->len, (unsigned)ntohl(php->type),
+			    (unsigned)ntohl(php->from));
 	    else if (have >= (int)(sizeof(php->len)+sizeof(php->type)))
-		pmNotifyErr(LOG_ERR, "__pmGetPDU: PDU hdr: len=0x%x type=0x%x", php->len, (unsigned)ntohl(php->type));
+		pmNotifyErr(LOG_ERR, "%s: PDU hdr: len=0x%x type=0x%x",
+			    "__pmGetPDU", php->len, (unsigned)ntohl(php->type));
 	    __pmUnpinPDUBuf(pdubuf);
 	    return PM_ERR_IPC;
 	}
@@ -579,7 +700,8 @@ check_read_len:
 	 * PDU type is bad ... could be a possible mem leak attack like
 	 * https://bugzilla.redhat.com/show_bug.cgi?id=841319
 	 */
-	pmNotifyErr(LOG_ERR, "__pmGetPDU: fd=%d illegal PDU type=%d in hdr", fd, php->type);
+	pmNotifyErr(LOG_ERR, "%s: fd=%d illegal PDU type=%d in hdr",
+			"__pmGetPDU", fd, php->type);
 	__pmUnpinPDUBuf(pdubuf);
 	return PM_ERR_IPC;
     }
@@ -597,8 +719,10 @@ check_read_len:
 
 	if (mypid == -1)
 	    mypid = (int)getpid();
-	fprintf(stderr, "[%d]pmGetPDU: %s fd=%d len=%d from=%d",
-		mypid, __pmPDUTypeStr_r(php->type, strbuf, sizeof(strbuf)), fd, php->len, php->from);
+	fprintf(stderr, "[%d]%s: %s fd=%d len=%d from=%d",
+			mypid, "pmGetPDU",
+			__pmPDUTypeStr_r(php->type, strbuf, sizeof(strbuf)),
+			fd, php->len, php->from);
 	for (j = 0; j < jend; j++) {
 	    if ((j % 8) == 0)
 		fprintf(stderr, "\n%03d: ", j);
@@ -608,6 +732,7 @@ check_read_len:
     }
     if (php->type >= PDU_START && php->type <= PDU_FINISH)
 	__pmPDUCntIn[php->type-PDU_START]++;
+    trace_insert(fd, 0, php);
 
     /*
      * Note php points into the PDU buffer pdubuf that remains pinned
@@ -636,4 +761,34 @@ __pmSetPDUCntBuf(unsigned *in, unsigned *out)
 {
     __pmPDUCntIn = in;
     __pmPDUCntOut = out;
+}
+
+/*
+ * report PDU counts
+ */
+void
+__pmDumpPDUCnt(FILE *f)
+{
+    int			i;
+    unsigned int	pduin = 0;
+    unsigned int	pduout = 0;
+
+    for (i = 0; i <= PDU_MAX; i++) {
+	if (__pmPDUCntIn[i] != 0 || __pmPDUCntOut[i] != 0)
+	    break;
+    }
+    if (i > PDU_MAX) {
+	fprintf(f, "PDU stats ... no PDU activity\n");
+	return;
+    }
+    fprintf(f, "PDU stats ...\n");
+    fprintf(f, "%-20.20s %6s %6s\n", "Type", "Xmit", "Recv");
+    for (i = 0; i <= PDU_MAX; i++) {
+	pduin += __pmPDUCntIn[i];
+	pduout += __pmPDUCntOut[i];
+	if (__pmPDUCntIn[i] == 0 && __pmPDUCntOut[i] == 0)
+	    continue;
+	fprintf(f, "%-20.20s %6d %6d\n", __pmPDUTypeStr(i+PDU_START), __pmPDUCntOut[i], __pmPDUCntIn[i]);
+    }
+    fprintf(f, "%-20.20s %6d %6d\n", "Total", pduout, pduin);
 }

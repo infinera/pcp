@@ -1,15 +1,15 @@
 /*
  * pmval - simple performance metrics value dumper
  *
- * Copyright (c) 2014-2015 Red Hat.
+ * Copyright (c) 2014-2015,2022 Red Hat.
  * Copyright (c) 2008-2009 Aconex.  All Rights Reserved.
  * Copyright (c) 1995-2001 Silicon Graphics, Inc.  All Rights Reserved.
- * 
+ *
  * This program is free software; you can redistribute it and/or modify it
  * under the terms of the GNU General Public License as published by the
  * Free Software Foundation; either version 2 of the License, or (at your
  * option) any later version.
- * 
+ *
  * This program is distributed in the hope that it will be useful, but
  * WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY
  * or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License
@@ -33,13 +33,15 @@ static pmLongOptions longopts[] = {
     { "verbose", 0, 'v', 0, "increase diagnostic output" },
     { "width", 1, 'w', "N", "set the width of each column of output" },
     { "filter", 1, 'x', "VALUE", "store to the metric before fetching (filter)" },
+    { "timestamp", 0, 'X', 0, "include date and microseconds in reported timestamps" },
     PMAPI_OPTIONS_END
 };
 
 static int override(int, pmOptions *);
 static pmOptions opts = {
+    .version = PMAPI_VERSION_3,
     .flags = PM_OPTFLAG_DONE | PM_OPTFLAG_BOUNDARIES | PM_OPTFLAG_STDOUT_TZ,
-    .short_options = PMAPI_OPTIONS "df:i:K:LrU:vw:x:",
+    .short_options = PMAPI_OPTIONS "df:i:K:LrU:vw:x:X",
     .long_options = longopts,
     .short_usage = "[options] metricname",
     .override = override,
@@ -63,6 +65,7 @@ static pmTime *		pmtime;
 static pmTimeControls	controls;
 static Context		context;
 static int		reporting;	/* set once reporting values starts */
+static int		Xflag;
 
 /*
  * Compare two InstPair's on their id fields.
@@ -228,31 +231,62 @@ initapi(Context *x, pmMetricSpec *msp, int argc, char **argv)
     }
 }
 
+/* print the timestamp (various precisions) for archives */
+static void
+mytimestamp(struct timespec *stamp)
+{
+    time_t		sec = stamp->tv_sec;
+    struct tm		tmp;
+
+    pmLocaltime(&sec, &tmp);
+    if (!Xflag) {
+	printf("%02d:%02d:%02d.%03d",
+			tmp.tm_hour, tmp.tm_min, tmp.tm_sec,
+			(int)stamp->tv_nsec / 1000000);
+    } else {
+	char		timebuf[32];	/* for pmCtime result + .xxx */
+	char	       *ddmm;
+	char	       *yr;
+
+	ddmm = pmCtime(&sec, timebuf);
+	ddmm[10] = '\0';
+	yr = &ddmm[20];
+	if (Xflag == 1)
+	    printf("%s %02d:%02d:%02d.%06d %4.4s", ddmm,
+			tmp.tm_hour, tmp.tm_min, tmp.tm_sec,
+			(int)stamp->tv_nsec / 1000, yr);
+	else /* -XX highest resolution - nanoseconds */
+	    printf("%s %02d:%02d:%02d.%09d %4.4s", ddmm,
+			tmp.tm_hour, tmp.tm_min, tmp.tm_sec,
+			(int)stamp->tv_nsec, yr);
+    }
+}
+
 /* Fetch metric values. */
 static int
 getvals(Context *x,		/* in - full pm description */
-        pmResult **vs)		/* alloc - pm values */
+        pmHighResResult **vs)		/* alloc - pm values */
 {
-    pmResult	*r;
-    int		e;
-    int		i;
+    pmHighResResult	*r;
+    int			e;
+    int			i;
 
     if (rawArchive) {
 	/*
-	 * for -U mode, read until we find either a pmResult with the
+	 * for -U mode, read until we find either a pmHighResResult with the
 	 * pmid we are after, or a mark record
 	 */
 	for ( ; ; ) {
-	    e = pmFetchArchive(&r);
+	    e = pmFetchHighResArchive(&r);
 	    if (e < 0)
 		break;
 
 	    if (r->numpmid == 0) {
 		if (opts.guiflag || opts.context == PM_CONTEXT_ARCHIVE)
-		    pmPrintStamp(stdout, &r->timestamp);
+		    mytimestamp(&r->timestamp);
 		printf("  Archive logging suspended\n");
 		reporting = 0;
-		pmFreeResult(r);
+		pmFreeHighResResult(r);
 		return -1;
 	    }
 
@@ -262,11 +296,11 @@ getvals(Context *x,		/* in - full pm description */
 	    }
 	    if (i != r->numpmid)
 		break;
-	    pmFreeResult(r);
+	    pmFreeHighResResult(r);
 	}
     }
     else {
-	e = pmFetch(1, &(x->pmid), &r);
+	e = pmFetchHighRes(1, &(x->pmid), &r);
 	i = 0;
     }
 
@@ -288,27 +322,27 @@ getvals(Context *x,		/* in - full pm description */
     if (opts.guiflag)
 	pmTimeStateAck(&controls, pmtime);
 
-    if (pmtimevalToReal(&r->timestamp) > pmtimevalToReal(&opts.finish)) {
-	pmFreeResult(r);
+    if (pmtimespecToReal(&r->timestamp) > pmtimespecToReal(&opts.finish)) {
+	pmFreeHighResResult(r);
 	return -2;
     }
 
     e = r->vset[i]->numval;
     if (e == 0) {
 	if (opts.guiflag || opts.context == PM_CONTEXT_ARCHIVE) {
-	    pmPrintStamp(stdout, &r->timestamp);
+	    mytimestamp(&r->timestamp);
 	    printf("  ");
 	}
 	if (!rawEvents)
 	    printf("No values available\n");
 	else if (rawEvents && verbose)
 	    printf("%s: No values available\n", x->metric);
-	pmFreeResult(r);
+	pmFreeHighResResult(r);
 	return -1;
     }
     else if (e < 0) {
 	if (rawEvents && e == PM_ERR_NOTCONN) {
-	    pmFreeResult(r);
+	    pmFreeHighResResult(r);
 	    exit(EXIT_SUCCESS);
 	}
 	else if (rawArchive) {
@@ -318,7 +352,7 @@ getvals(Context *x,		/* in - full pm description */
 	    fprintf(stderr, "\n%s: pmFetch: %s\n",
 			pmGetProgname(), pmErrStr(r->vset[i]->numval));
 	}
-	pmFreeResult(r);
+	pmFreeHighResResult(r);
 	return -1;
     }
 
@@ -380,7 +414,7 @@ printhdr(Context *x)
 	printf("host:      %s\n", x->hostname);
 	time = opts.origin.tv_sec;
 	printf("start:     %s", pmCtime(&time, tbfr));
-	if (opts.finish.tv_sec != INT_MAX) {
+	if (opts.finish.tv_sec != PM_MAX_TIME_T) {
 	    time = opts.finish.tv_sec;
 	    printf("end:       %s", pmCtime(&time, tbfr));
 	}
@@ -428,7 +462,7 @@ footer:
     else printf("samples:   %d\n", opts.samples);
     if ((opts.samples > 1) &&
 	(opts.context != PM_CONTEXT_ARCHIVE || amode == PM_MODE_INTERP))
-	printf("interval:  %1.2f sec\n", pmtimevalToReal(&opts.interval));
+	printf("interval:  %1.2f sec\n", pmtimespecToReal(&opts.interval));
 }
 
 /* Print instance identifier names as column labels. */
@@ -466,8 +500,14 @@ printlabels(Context *x)
 
     putchar('\n');
     for (i = 0; i < n; i++) {
-	if ((opts.guiflag || opts.context == PM_CONTEXT_ARCHIVE) && i == 0)
-	    printf("            ");
+	if ((opts.guiflag || opts.context == PM_CONTEXT_ARCHIVE) && i == 0) {
+	    if (Xflag > 1)
+		printf("%*c", 34, ' ');
+	    else if (Xflag == 1)
+		printf("%*c", 31, ' ');
+	    else
+		printf("%*c", 12, ' ');
+	}
 	if (rawCounter || (x->desc.sem != PM_SEM_COUNTER) || style != 0)
 	    printf("%*.*s ", cols, cols, pairs->name);
 	else {
@@ -542,7 +582,7 @@ printreal(double v, int sem, int minwidth)
 
 /* Print performance metric values */
 static void
-printvals(Context *x, pmValueSet *vset, int cols)
+printvals(Context *x, pmValueSet *vset)
 {
     int 	i, j;
     pmAtomValue	av;
@@ -675,16 +715,15 @@ printrate(int     valfmt,	/* from pmValueSet */
 /* Print performance metric rates */
 static void
 printrates(Context *x,
-	   pmValueSet *vset1, struct timeval stamp1,	/* current values */
-	   pmValueSet *vset2, struct timeval stamp2,	/* previous values */
-	   int cols)
+	   pmValueSet *vset1, struct timespec stamp1,	/* current values */
+	   pmValueSet *vset2, struct timespec stamp2)	/* previous values */
 {
     int     i, j, k;
     double  delta;
 
     /* compute delta from timestamps and convert units */
     delta = x->scale *
-	    (pmtimevalToReal(&stamp1) - pmtimevalToReal(&stamp2));
+	    (pmtimespecToReal(&stamp1) - pmtimespecToReal(&stamp2));
 
     /* null instance domain */
     if (x->desc.indom == PM_INDOM_NULL) {
@@ -736,13 +775,13 @@ printrates(Context *x,
 }
 
 static void
-printtime(struct timeval *tv)
+printtime(struct timespec *ts)
 {
     char	tbfr[26];
     char	*tp;
     time_t	time;
 
-    time = tv->tv_sec;
+    time = ts->tv_sec;
     tp = pmCtime(&time, tbfr);
     /*
      * tp -> Ddd Mmm DD HH:MM:SS YYYY\n
@@ -817,11 +856,11 @@ getinstance(char *p)
 }
 
 static int
-override(int opt, pmOptions *opts)
+override(int opt, pmOptions *optsp)
 {
     /* need to distinguish between zero argument or not requested */
     if (opt == 's') {
-	if (atoi(opts->optarg) == 0)
+	if (atoi(optsp->optarg) == 0)
 	    nosamples = 1;
     }
     return 0;	/* continue on with using the common code, always */
@@ -903,6 +942,13 @@ initfilters(Context *x, int conntype)
     pmFreeResult(result);
 }
 
+static inline void
+timespec2val(struct timespec *in, struct timeval *out)
+{
+    out->tv_sec = in->tv_sec;
+    out->tv_usec = in->tv_nsec / 1000;
+}
+
 int
 main(int argc, char *argv[])
 {
@@ -918,8 +964,8 @@ main(int argc, char *argv[])
     char        *endnum;
     char        *errmsg;
     pmMetricSpec *msp = NULL;
-    pmResult    *rslt1;		/* current values */
-    pmResult    *rslt2 = NULL;	/* previous values */
+    pmHighResResult *rslt1;		/* current values */
+    pmHighResResult *rslt2 = NULL;	/* previous values */
 
     setlinebuf(stdout);
     context.iall = 1;
@@ -979,6 +1025,10 @@ main(int argc, char *argv[])
 
 	case 'x':
 	    context.filter = opts.optarg;
+	    break;
+
+	case 'X':	/* report Ddd Mmm DD <timestamp> YYYY */
+	    Xflag++;
 	    break;
 
 	default:
@@ -1109,8 +1159,8 @@ main(int argc, char *argv[])
     if (!opts.guiport)
 	opts.guiport = -1;
     if (!opts.finish.tv_sec)
-	opts.finish.tv_sec = INT_MAX;
-    if (opts.interval.tv_sec == 0 && opts.interval.tv_usec == 0)
+	opts.finish.tv_sec = PM_MAX_TIME_T;
+    if (opts.interval.tv_sec == 0 && opts.interval.tv_nsec == 0)
 	opts.interval.tv_sec = 1;
 
     initapi(&context, msp, argc, argv);
@@ -1119,14 +1169,14 @@ main(int argc, char *argv[])
 
     if (!(opts.guiflag || opts.guiport != -1) &&
 	opts.samples < 0 &&
-	opts.finish.tv_sec != INT_MAX &&
+	opts.finish.tv_sec != PM_MAX_TIME_T &&
 	amode != PM_MODE_FORW) {
 	double start, finish, origin, delta;
 
-	start  = pmtimevalToReal(&opts.start);
-	finish = pmtimevalToReal(&opts.finish);
-	origin = pmtimevalToReal(&opts.origin);
-	delta  = pmtimevalToReal(&opts.interval);
+	start  = pmtimespecToReal(&opts.start);
+	finish = pmtimespecToReal(&opts.finish);
+	origin = pmtimespecToReal(&opts.origin);
+	delta  = pmtimespecToReal(&opts.interval);
 
 	opts.samples = (int) ((finish - origin) / delta);
 	if (opts.samples < 0)
@@ -1169,16 +1219,29 @@ main(int argc, char *argv[])
     }
 
     if (opts.guiflag || opts.guiport != -1) {
+	struct timeval interval, origin, start, finish;
+
+	timespec2val(&opts.interval, &interval);
+	timespec2val(&opts.origin, &origin);
+	timespec2val(&opts.start, &start);
+	timespec2val(&opts.finish, &finish);
+
 	/* set up pmtime control */
 	pmWhichZone(&opts.timezone);
-	pmtime = pmTimeStateSetup(&controls, opts.context, opts.guiport,
-				  opts.interval, opts.origin, opts.start,
-				  opts.finish, opts.timezone, tzlabel);
+	pmtime = pmTimeStateSetup(&controls,
+				  opts.context, opts.guiport,
+				  interval, origin, start, finish,
+				  opts.timezone, tzlabel);
 	controls.stepped = timestep;
 	opts.guiflag = 1;	/* we're using pmtime control from here on */
     }
-    else if (opts.context == PM_CONTEXT_ARCHIVE) /* no time control, go it alone */
-	pmTimeStateMode(amode, opts.interval, &opts.origin);
+    else if (opts.context == PM_CONTEXT_ARCHIVE) { /* no time control, go it alone */
+	struct timeval interval, origin;
+
+	timespec2val(&opts.interval, &interval);
+	timespec2val(&opts.origin, &origin);
+	pmTimeStateMode(amode, interval, &origin);
+    }
 
     forever = (opts.samples < 0 || opts.guiflag);
 
@@ -1195,7 +1258,7 @@ main(int argc, char *argv[])
 
     /* wait till time for first sample */
     if (opts.context != PM_CONTEXT_ARCHIVE)
-	__pmtimevalPause(opts.start);
+	__pmtimespecPause(opts.start);
 
     /* main loop fetching and printing sample values */
     while (forever || (opts.samples-- > 0)) {
@@ -1215,7 +1278,7 @@ main(int argc, char *argv[])
 		    printlabels(&context);
 		if (rawEvents) {
 		    if (opts.guiflag || opts.context == PM_CONTEXT_ARCHIVE) {
-			pmPrintStamp(stdout, &rslt2->timestamp);
+			mytimestamp(&rslt2->timestamp);
 			printf("  ");
 		    }
 		    printevents(&context, rslt2->vset[idx2], cols);
@@ -1225,14 +1288,14 @@ main(int argc, char *argv[])
 		else if (rawCounter || (context.desc.sem != PM_SEM_COUNTER)) {
 		    /* not doing rate conversion, report this value immediately */
 		    if (opts.guiflag || opts.context == PM_CONTEXT_ARCHIVE)
-			pmPrintStamp(stdout, &rslt2->timestamp);
-		    printvals(&context, rslt2->vset[idx2], cols);
+			mytimestamp(&rslt2->timestamp);
+		    printvals(&context, rslt2->vset[idx2]);
 		    reporting = 1;
 		    continue;
 		}
 		else if (no_values || reporting) {
 		    if (opts.guiflag || opts.context == PM_CONTEXT_ARCHIVE) {
-			pmPrintStamp(stdout, &rslt2->timestamp);
+			mytimestamp(&rslt2->timestamp);
 			printf("  ");
 		    }
 		    printf("No values available\n");
@@ -1251,7 +1314,7 @@ main(int argc, char *argv[])
 
 	/* wait till time for sample */
 	if (!opts.guiflag && (pauseFlag || opts.context != PM_CONTEXT_ARCHIVE))
-	    __pmtimevalSleep(opts.interval);
+	    __pmtimespecSleep(opts.interval);
 
 	if (havePrev == 0)
 	    continue;	/* keep trying to get the previous sample */
@@ -1282,33 +1345,35 @@ main(int argc, char *argv[])
 
 	/* print values */
 	if (opts.guiflag || opts.context == PM_CONTEXT_ARCHIVE) {
-	    pmPrintStamp(stdout, &rslt1->timestamp);
+	    mytimestamp(&rslt1->timestamp);
 	    if (rawEvents)
 		printf("  ");
 	}
 	if (rawEvents)
 	    printevents(&context, rslt1->vset[idx1], cols);
 	else if (rawCounter || (context.desc.sem != PM_SEM_COUNTER))
-	    printvals(&context, rslt1->vset[idx1], cols);
+	    printvals(&context, rslt1->vset[idx1]);
 	else
 	    printrates(&context, rslt1->vset[idx1], rslt1->timestamp,
-		       rslt2->vset[idx2], rslt2->timestamp, cols);
+		       rslt2->vset[idx2], rslt2->timestamp);
 	reporting = 1;
 
 	/*
 	 * discard previous and save current result, so this value
 	 * becomes the previous value at the next iteration
 	 */
-	pmFreeResult(rslt2);
+	pmFreeHighResResult(rslt2);
 	rslt2 = rslt1;
 	idx2 = idx1;
     }
 
     /* make valgrind happy */
     if (rslt2 != NULL)
-	pmFreeResult(rslt2);
+	pmFreeHighResResult(rslt2);
     if (msp != NULL)
 	pmFreeMetricSpec(msp);
+
+    pmDestroyContext(ctx);
 
     /*
      * All serious error conditions have explicit exit() calls, so

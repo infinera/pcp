@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2014 Red Hat.
+ * Copyright (c) 2014,2022 Red Hat.
  * Copyright (c) 1995-2003 Silicon Graphics, Inc.  All Rights Reserved.
  * Copyright (c) 2017 Ken McDonell.  All Rights Reserved.
  * 
@@ -30,7 +30,6 @@ int		meta_state = STATE_MISSING;
 int		log_state = STATE_MISSING;
 int		mark_count;
 int		result_count;
-__pmLogLabel	log_label;
 
 static char	*archbasename;	/* after basename() */
 
@@ -84,7 +83,7 @@ dumpLabel(void)
     pmPrintStamp(stderr, &label.ll_start);
     fprintf(stderr, " %4.4s\n", yr);
 
-    if (opts.finish.tv_sec == INT_MAX) {
+    if (opts.finish.tv_sec == PM_MAX_TIME_T) {
         /* pmGetArchiveEnd() failed! */
         fprintf(stderr, "  ending     UNKNOWN\n");
     }
@@ -171,6 +170,7 @@ main(int argc, char *argv[])
     char		*archpathname;	/* from the command line */
     char		*archdirname;	/* after dirname() */
     char		archname[MAXPATHLEN];	/* full pathname to base of archive name */
+    char		*tmp;
 
     while ((c = pmGetOptions(argc, argv, &opts)) != EOF) {
 	switch (c) {
@@ -207,7 +207,8 @@ main(int argc, char *argv[])
     __pmEndOptions(&opts);
 
     archpathname = argv[opts.optind];
-    archbasename = strdup(basename(strdup(archpathname)));
+    archbasename = strdup(basename((tmp = strdup(archpathname))));
+    free(tmp);
     /*
      * treat foo.index, foo.meta, foo.NNN along with any supported
      * compressed file suffixes as all equivalent
@@ -229,7 +230,8 @@ main(int argc, char *argv[])
 	    __pmLogBaseName(archbasename);
     }
 
-    archdirname = dirname(strdup(archpathname));
+    tmp = strdup(archpathname);
+    archdirname = dirname(tmp);
     if (vflag)
 	fprintf(stderr, "Scanning for components of archive \"%s\"\n", archpathname);
     nfile = scandir(archdirname, &namelist, filter, NULL);
@@ -255,7 +257,9 @@ main(int argc, char *argv[])
 	if (pass0(path) == STS_FATAL)
 	    /* unrepairable or unrepaired error */
 	    sts = STS_FATAL;
+	free(namelist[i]);
     }
+    free(namelist);
     if (meta_state == STATE_MISSING) {
 	fprintf(stderr, "%s%c%s.meta: missing metadata file\n", archdirname, sep, archbasename);
 	sts = STS_FATAL;
@@ -313,7 +317,7 @@ main(int argc, char *argv[])
 
     if (index_state == STATE_BAD) {
 	/* prevent subsequent use of bad temporal index */
-	ctxp->c_archctl->ac_log->l_numti = 0;
+	ctxp->c_archctl->ac_log->numti = 0;
     }
 
     sts = pass2(ctxp, archname);
@@ -328,5 +332,6 @@ main(int argc, char *argv[])
 	    fprintf(stderr, "Processed %d <mark> records\n", mark_count);
     }
 
+    free(tmp);
     return 0;
 }

@@ -368,10 +368,10 @@ pmGetPMNSLocation_ctx(__pmContext *ctxp)
 		    break;
 
 		case PM_CONTEXT_ARCHIVE:
-		    version = ctxp->c_archctl->ac_log->l_label.ill_magic & 0xff;
-		    if (version == PM_LOG_VERS02) {
+		    version = __pmLogVersion(ctxp->c_archctl->ac_log);
+		    if (version >= PM_LOG_VERS02) {
 			pmns_location = PMNS_ARCHIVE;
-			PM_TPD(curr_pmns) = ctxp->c_archctl->ac_log->l_pmns; 
+			PM_TPD(curr_pmns) = ctxp->c_archctl->ac_log->pmns; 
 		    }
 		    else {
 			pmNotifyErr(LOG_ERR, "pmGetPMNSLocation: bad archive "
@@ -1848,7 +1848,6 @@ pmLookupName_ctx(__pmContext *ctxp, int derive_locked, int numpmid, const char *
     	sts = (sts == 0 ? numpmid - nfail : sts);
 
 	if (pmDebugOptions.pmns) {
-	    int		i;
 	    char	strbuf[20];
 	    fprintf(stderr, "pmLookupName(%d, ...) using local PMNS returns %d and ...\n",
 		numpmid, sts);
@@ -1865,6 +1864,10 @@ pmLookupName_ctx(__pmContext *ctxp, int derive_locked, int numpmid, const char *
 	/*
 	 * PMNS_REMOTE so there must be a current host context
 	 */
+	int	base = 0;	/* doing pmidlist[base]...pmidlist[base+num-1] */
+	int	num;		/* in the next batch */
+	int	num_ok = 0;
+
 	assert(c_type == PM_CONTEXT_HOST);
 	if (pmDebugOptions.pmns) {
 	    fprintf(stderr, "pmLookupName: request_names ->");
@@ -1872,50 +1875,103 @@ pmLookupName_ctx(__pmContext *ctxp, int derive_locked, int numpmid, const char *
 		fprintf(stderr, " [%d] %s", i, namelist[i]);
 	    fputc('\n', stderr);
 	}
-	sts = __pmSendNameList(ctxp->c_pmcd->pc_fd, __pmPtrToHandle(ctxp),
-		numpmid, namelist, NULL);
-	if (sts < 0)
-	    sts = __pmMapErrno(sts);
-	else {
-	    __pmPDU	*pb;
-	    int		pinpdu;
 
-PM_FAULT_POINT("libpcp/" __FILE__ ":1", PM_FAULT_TIMEOUT);
-	    pinpdu = sts = __pmGetPDU(ctxp->c_pmcd->pc_fd, ANY_SIZE,
-				    ctxp->c_pmcd->pc_tout_sec, &pb);
-	    if (sts == PDU_PMNS_IDS) {
-		/* Note:
-		 * pmLookupName may return an error even though
-		 * it has a valid list of ids.
-		 * This is why we need op_status.
-		 */
-		int op_status; 
-		sts = __pmDecodeIDList(pb, numpmid, pmidlist, &op_status);
-		if (sts >= 0)
-		    sts = op_status;
+	/*
+	 * Avoid false DoS response from pmcd ...
+	 * pmcd has a hard 64 Kbyte max PDU length, so we need to be sure
+	 * we do not exceed this; this may involve multiple PDU roundtrips
+	 * below and some stitching together of the result.
+	 *
+	 * As of Oct 2021, a typical PMNS contains 4000 names with a
+	 * total size of of a little over 100 Kbytes.  The average name
+	 * length (including NULL-byte termination) is about 30 chars,
+	 * and the longest name is 63 chars, namely:
+	 * perfevent.hwcounters.msr.cpu_thermal_margin.snapshot.dutycycle
+	 * 
+	 * If we are asked to look up less that 500 names, we use the
+	 * fast path with one PDU round-trip.  Otherwise the expected
+	 * length of the outgoing PDU is used to determine where we need
+	 * to break the list of names and do one PDU round-trip per
+	 * sublist.
+	 */
+	while (base < numpmid) {
+	    if (numpmid < 500) {
+		/* fast path */
+		num = numpmid;
 	    }
-	    else if (sts == PDU_ERROR)
-		__pmDecodeError(pb, &sts);
-	    else if (sts != PM_ERR_TIMEOUT)
-		sts = PM_ERR_IPC;
-
-	    if (pinpdu > 0)
-		__pmUnpinPDUBuf(pb);
-
-	    if (sts >= 0)
-		nfail = numpmid - sts;
-	    if (pmDebugOptions.pmns) {
-		char	strbuf[20];
-		char	errmsg[PM_MAXERRMSGLEN];
-		fprintf(stderr, "pmLookupName: receive_names <-");
-		if (sts >= 0) {
-		    for (i = 0; i < numpmid; i++)
-			fprintf(stderr, " [%d] %s", i, pmIDStr_r(pmidlist[i], strbuf, sizeof(strbuf)));
-		    fputc('\n', stderr);
+	    else {
+		/* PDU size is:
+		 * [__pmPDUHdr]
+		 * [nstrbytes] + [numstatus] + [numnames]
+		 * [namelen] [name] ...
+		 */ 
+		size_t	length;
+		size_t	sum_length = sizeof(__pmPDUHdr) + 3*sizeof(int);
+		int	j;
+		for (j = base; j < numpmid; j++) {
+		    length = sizeof(int) + PM_PDU_SIZE_BYTES(strlen(namelist[j]));
+		    if (sum_length + length > 63*1024)
+			break;
+		    sum_length += length;
 		}
-	    else
-		fprintf(stderr, " %s\n", pmErrStr_r(sts, errmsg, sizeof(errmsg)));
+		num = j - base;
+		if (pmDebugOptions.pmns) {
+		    fprintf(stderr, "pmNameLookup: do sublist [%d] %s ... [%d] %s\n", base, namelist[base], base+num-1, namelist[base+num-1]);
+		}
 	    }
+	    sts = __pmSendNameList(ctxp->c_pmcd->pc_fd, __pmPtrToHandle(ctxp),
+		    num, &namelist[base], NULL);
+	    if (sts < 0) {
+		sts = __pmMapErrno(sts);
+		break;
+	    }
+	    else {
+		__pmPDU	*pb;
+		int		pinpdu;
+
+PM_FAULT_POINT("libpcp/" __FILE__ ":1", PM_FAULT_CALL);
+		pinpdu = sts = __pmGetPDU(ctxp->c_pmcd->pc_fd, ANY_SIZE,
+					ctxp->c_pmcd->pc_tout_sec, &pb);
+		if (sts == PDU_PMNS_IDS) {
+		    /* Note:
+		     * pmLookupName may return an error even though
+		     * it has a valid list of ids.
+		     * This is why we need op_status.
+		     */
+		    int op_status; 
+		    sts = __pmDecodeIDList(pb, num, &pmidlist[base], &op_status);
+		    if (sts >= 0) {
+			sts = op_status;
+			num_ok += op_status;
+		    }
+		}
+		else if (sts == PDU_ERROR)
+		    __pmDecodeError(pb, &sts);
+		else if (sts != PM_ERR_TIMEOUT)
+		    sts = PM_ERR_IPC;
+
+		if (pinpdu > 0)
+		    __pmUnpinPDUBuf(pb);
+
+		if (sts < 0)
+		    break;
+	    }
+	    base += num;
+	}
+
+	if (sts >= 0)
+	    nfail = numpmid - num_ok;
+	if (pmDebugOptions.pmns) {
+	    char	strbuf[20];
+	    char	errmsg[PM_MAXERRMSGLEN];
+	    fprintf(stderr, "pmLookupName: receive_names <-");
+	    if (sts >= 0) {
+		for (i = 0; i < numpmid; i++)
+		    fprintf(stderr, " [%d] %s", i, pmIDStr_r(pmidlist[i], strbuf, sizeof(strbuf)));
+		fputc('\n', stderr);
+	    }
+	else
+	    fprintf(stderr, " %s\n", pmErrStr_r(sts, errmsg, sizeof(errmsg)));
 	}
     }
 
@@ -2022,7 +2078,7 @@ GetChildrenStatusRemote(__pmContext *ctxp, const char *name,
 	__pmPDU		*pb;
 	int		pinpdu;
 
-PM_FAULT_POINT("libpcp/" __FILE__ ":2", PM_FAULT_TIMEOUT);
+PM_FAULT_POINT("libpcp/" __FILE__ ":2", PM_FAULT_CALL);
 	pinpdu = n = __pmGetPDU(ctxp->c_pmcd->pc_fd, ANY_SIZE, 
 				ctxp->c_pmcd->pc_tout_sec, &pb);
 	if (n == PDU_PMNS_NAMES) {
@@ -2468,7 +2524,7 @@ receive_namesbyid(__pmContext *ctxp, char ***namelist)
     __pmPDU	*pb;
     int		pinpdu;
 
-PM_FAULT_POINT("libpcp/" __FILE__ ":3", PM_FAULT_TIMEOUT);
+PM_FAULT_POINT("libpcp/" __FILE__ ":3", PM_FAULT_CALL);
     pinpdu = n = __pmGetPDU(ctxp->c_pmcd->pc_fd, ANY_SIZE, 
 			    ctxp->c_pmcd->pc_tout_sec, &pb);
     
@@ -2987,7 +3043,7 @@ TraversePMNS(const char *name, void(*func)(const char *), void(*func_r)(const ch
 	    char	**namelist;
 	    int		pinpdu;
 
-PM_FAULT_POINT("libpcp/" __FILE__ ":4", PM_FAULT_TIMEOUT);
+PM_FAULT_POINT("libpcp/" __FILE__ ":4", PM_FAULT_CALL);
 	    pinpdu = sts = __pmGetPDU(ctxp->c_pmcd->pc_fd, ANY_SIZE, 
 				      TIMEOUT_DEFAULT, &pb);
 
@@ -3136,7 +3192,7 @@ pmTrimNameSpace(void)
 	     * (2) clear the marks for those metrics defined in the archive
 	     */
 	    mark_all(PM_TPD(curr_pmns), 1);
-	    hcp = &ctx_ctl.ctxp->c_archctl->ac_log->l_hashpmid;
+	    hcp = &ctx_ctl.ctxp->c_archctl->ac_log->hashpmid;
 
 	    for (i = 0; i < hcp->hsize; i++) {
 		for (hp = hcp->hash[i]; hp != NULL; hp = hp->next) {

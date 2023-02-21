@@ -27,7 +27,6 @@ $PCP_BINADM_DIR/telnet-probe -c '::1' $port2 \
     && _notrun "Someone already listening on IPv6 port $port2"
 # (technically, this is a TOCTTOU race condition)
 
-
 status=1	# failure is the default!
 $sudo rm -rf $tmp.* $seq.full
 
@@ -37,7 +36,9 @@ _cleanup()
 {
     [ -z "$pmcd_pid" ] || $sudo $signal $pmcd_pid
     [ -z "$socat_pid" ] || $sudo $signal $socat_pid
+    export PMCD_PORT=$port1
     _wait_pmcd_end
+    unset PMCD_PORT
     _service pcp restart 2>&1 \
     | _filter_pcp_start \
     | sed -e '/Waiting for pmcd to terminate/d'
@@ -67,11 +68,10 @@ _filter_pmie()
 
 # see also qa/283 for "pmcd -p" testing.
 _service pmcd stop >/dev/null 2>&1
-# allow time to cleanup and close all sockets
-sleep 3
+# wait for cleanup and closing all sockets
+_wait_pmcd_end
 
 rm -f $seq.full
-
 
 echo "=== starting pmcd on port $port1 ===" |tee -a $seq.full
 cat >$tmp.sh <<END
@@ -84,15 +84,33 @@ END
 # Filter the stderr of this using a temp file
 pmcd_pid=`$sudo sh $tmp.sh 2>$tmp.tmp`
 cat $tmp.tmp 1>&2
-sleep 1
-
+export PMCD_PORT=$port1
+_wait_for_pmcd
+unset PMCD_PORT
 
 echo "=== starting socat on port $port2 ===" |tee -a $seq.full
 
 # Filter the stderr of this using a temp file
-socat -d -d TCP-LISTEN:$port2,fork TCP:localhost:$port1 2>$tmp.socat &
+socat -d -d TCP-LISTEN:$port2,fork TCP:localhost:$port1 2>>$tmp.err &
 socat_pid=$!
-sleep 1
+rm -f $tmp.socat
+i=0
+while [ ! -f $tmp.socat -a $i -lt 10 ]
+do
+    sleep 2
+    if $PCP_BINADM_DIR/telnet-probe -cv localhost $port1 2>>$seq.full
+    then
+	touch $tmp.socat
+    else
+	i=`expr $i + 1`
+    fi
+done
+cat $tmp.err >>$seq.full
+if [ ! -f $tmp.socat ]
+then
+    echo "Failed to get socat started ... see $seq.full"
+    exit
+fi
 
 cat >$tmp.pmie <<END
 delta = 1sec;

@@ -29,6 +29,12 @@ refresh_proc_slabinfo(pmInDom slab_indom, proc_slabinfo_t *slabinfo)
     int i, sts = 0, indom_change = 0;
     static int major_version = -1;
     static int minor_version = 0;
+    static int setup;
+
+    if (!setup) {
+	pmdaCacheOp(slab_indom, PMDA_CACHE_LOAD);
+	setup = 1;
+    }
 
     for (pmdaCacheOp(slab_indom, PMDA_CACHE_WALK_REWIND);;) {
 	if ((i = pmdaCacheOp(slab_indom, PMDA_CACHE_WALK_NEXT)) < 0)
@@ -110,7 +116,8 @@ refresh_proc_slabinfo(pmInDom slab_indom, proc_slabinfo_t *slabinfo)
 		break;
 	    }
 
-	    sbuf.total_size = sbuf.pages_per_slab * sbuf.num_active_slabs;
+	    sbuf.total_size = sbuf.pages_per_slab;	/* a 32 to 64 bit copy */
+	    sbuf.total_size *= sbuf.num_active_slabs;	/* safe multiplication */
 	    sbuf.total_size <<= _pm_pageshift;
 	}
 	else if (major_version == 2 && minor_version >= 0 && minor_version <= 1) {

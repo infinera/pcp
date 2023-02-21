@@ -1,12 +1,12 @@
 /*
- * Copyright (c) 2017-2020 Red Hat.
+ * Copyright (c) 2017-2022 Red Hat.
  * Copyright (c) 2010 Ken McDonell.  All Rights Reserved.
- * 
+ *
  * This library is free software; you can redistribute it and/or modify it
  * under the terms of the GNU Lesser General Public License as published
  * by the Free Software Foundation; either version 2.1 of the License, or
  * (at your option) any later version.
- * 
+ *
  * This library is distributed in the hope that it will be useful, but
  * WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY
  * or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU Lesser General Public
@@ -18,7 +18,7 @@
 #include "import.h"
 #include "private.h"
 
-static pmTimeval	stamp;
+static __pmTimestamp	stamp;
 
 static int
 check_context_start(pmi_context *current)
@@ -42,18 +42,18 @@ check_context_start(pmi_context *current)
 
     acp = &current->archctl;
     acp->ac_log = &current->logctl;
-    sts = __pmLogCreate(host, current->archive, PM_LOG_VERS02, acp);
+    sts = __pmLogCreate(host, current->archive, current->version, acp);
     if (sts < 0)
 	return sts;
 
     lcp = &current->logctl;
-    if (current->timezone == NULL) {
-	char	tzbuf[PM_TZ_MAXLEN];
-	pmstrncpy(lcp->l_label.ill_tz, sizeof(lcp->l_label.ill_tz), __pmTimezone_r(tzbuf, sizeof(tzbuf)));
+    if (current->timezone != NULL) {
+	free(lcp->label.timezone);
+	lcp->label.timezone = strdup(current->timezone);
+	free(lcp->label.zoneinfo);
+	lcp->label.zoneinfo = NULL;
     }
-    else
-	pmstrncpy(lcp->l_label.ill_tz, sizeof(lcp->l_label.ill_tz), current->timezone);
-    pmNewZone(lcp->l_label.ill_tz);
+    pmNewZone(lcp->label.timezone);
     current->state = CONTEXT_ACTIVE;
 
     /*
@@ -62,16 +62,15 @@ check_context_start(pmi_context *current)
      * metadata) ... this code is stolen from logputresult() in
      * libpcp
      */
-    lcp->l_label.ill_start.tv_sec = stamp.tv_sec;
-    lcp->l_label.ill_start.tv_usec = stamp.tv_usec;
-    lcp->l_label.ill_vol = PM_LOG_VOL_TI;
-    __pmLogWriteLabel(lcp->l_tifp, &lcp->l_label);
-    lcp->l_label.ill_vol = PM_LOG_VOL_META;
-    __pmLogWriteLabel(lcp->l_mdfp, &lcp->l_label);
-    lcp->l_label.ill_vol = 0;
-    __pmLogWriteLabel(acp->ac_mfp, &lcp->l_label);
-    lcp->l_state = PM_LOG_STATE_INIT;
-    __pmLogPutIndex(&current->archctl, &stamp);
+    lcp->label.start.sec = stamp.sec;
+    lcp->label.start.nsec = stamp.nsec;
+    lcp->label.vol = PM_LOG_VOL_TI;
+    __pmLogWriteLabel(lcp->tifp, &lcp->label);
+    lcp->label.vol = PM_LOG_VOL_META;
+    __pmLogWriteLabel(lcp->mdfp, &lcp->label);
+    lcp->label.vol = 0;
+    __pmLogWriteLabel(acp->ac_mfp, &lcp->label);
+    lcp->state = PM_LOG_STATE_INIT;
 
     return 0; /* ok */
 }
@@ -82,11 +81,19 @@ check_indom(pmi_context *current, pmInDom indom, int *needti)
     int		i;
     int		sts = 0;
     __pmArchCtl	*acp = &current->archctl;
+    int		type = current->version == PM_LOG_VERS03 ? TYPE_INDOM : TYPE_INDOM_V2;
+    __pmLogInDom	lid;
 
     for (i = 0; i < current->nindom; i++) {
 	if (indom == current->indom[i].indom) {
 	    if (current->indom[i].meta_done == 0) {
-		if ((sts = __pmLogPutInDom(acp, current->indom[i].indom, &stamp, current->indom[i].ninstance, current->indom[i].inst, current->indom[i].name)) < 0)
+		lid.stamp = stamp;
+		lid.indom = current->indom[i].indom;
+		lid.numinst = current->indom[i].ninstance;
+		lid.instlist = current->indom[i].inst;
+		lid.namelist = current->indom[i].name;
+		lid.alloc = 0;
+		if ((sts = __pmLogPutInDom(acp, type, &lid)) < 0)
 		    return sts;
 
 		current->indom[i].meta_done = 1;
@@ -128,7 +135,7 @@ check_metric(pmi_context *current, pmID pmid, int *needti)
 }
 
 static void
-newvolume(pmi_context *current, pmTimeval *tvp)
+newvolume(pmi_context *current)
 {
     __pmFILE		*newfp;
     __pmArchCtl		*acp = &current->archctl;
@@ -145,40 +152,46 @@ newvolume(pmi_context *current, pmTimeval *tvp)
 
     __pmFclose(acp->ac_mfp);
     acp->ac_mfp = newfp;
-    lcp->l_label.ill_vol = acp->ac_curvol = nextvol;
-    __pmLogWriteLabel(acp->ac_mfp, &lcp->l_label);
+    lcp->label.vol = acp->ac_curvol = nextvol;
+    __pmLogWriteLabel(acp->ac_mfp, &lcp->label);
     __pmFflush(acp->ac_mfp);
 }
 
+static off_t	flushsize = 100000;
+
 int
-_pmi_put_result(pmi_context *current, pmResult *result)
+_pmi_put_result(pmi_context *current, __pmResult *result)
 {
     int		sts;
     __pmPDU	*pb;
     __pmArchCtl	*acp = &current->archctl;
+    __pmLogCtl	*lcp = &current->logctl;
     int		k;
     int		needti;
-    char	*p = getenv("PCP_LOGIMPORT_MAXLOGSZ");
+    char	*p;
+    static __uint64_t	max_logsz = 0;
     unsigned long off;
-    unsigned long max_logsz = p ? strtoul(p, NULL, 10) : 0x7fffffff;
+    off_t	old_meta_offset;
 
     /*
      * some front-end tools use lazy discovery of instances and/or process
      * data in non-deterministic order ... it is simpler for everyone if
      * we sort the values into ascending instance order.
      */
-    pmSortInstances(result);
+    __pmSortInstances(result);
 
-    stamp.tv_sec = result->timestamp.tv_sec;
-    stamp.tv_usec = result->timestamp.tv_usec;
+    stamp = result->timestamp;	/* struct assignment */
 
     /* One time processing for the start of the context. */
     sts = check_context_start(current);
     if (sts < 0)
 	return sts;
 
+    old_meta_offset = __pmFtell(lcp->mdfp);;
+
     __pmOverrideLastFd(__pmFileno(acp->ac_mfp));
-    if ((sts = __pmEncodeResult(__pmFileno(acp->ac_mfp), result, &pb)) < 0)
+    sts = __pmEncodeResult(acp->ac_log, result, &pb);
+    if (sts < 0)
 	return sts;
 
     needti = 0;
@@ -189,19 +202,45 @@ _pmi_put_result(pmi_context *current, pmResult *result)
 	    return sts;
 	}
     }
-    if (needti) {
-	__pmLogPutIndex(acp, &stamp);
+
+    if (max_logsz == 0) {
+	if ((p = getenv("PCP_LOGIMPORT_MAXLOGSZ")) != NULL)
+	    max_logsz = strtoull(p, NULL, 10);
+	else if (current->version >= PM_LOG_VERS03)
+	    max_logsz = LONGLONG_MAX;
+	else  /* PM_LOG_VERS02 */
+	    max_logsz = 0x7fffffff;
     }
 
     off = __pmFtell(acp->ac_mfp) + ((__pmPDUHdr *)pb)->len - sizeof(__pmPDUHdr) + 2*sizeof(int);
-    if (off >= max_logsz)
-    	newvolume(current, (pmTimeval *)&pb[3]);
-    if ((sts = __pmLogPutResult2(acp, pb)) < 0) {
-	__pmUnpinPDUBuf(pb);
-	return sts;
+    if (off >= max_logsz) {
+    	newvolume(current);
+	flushsize = 100000;
+	needti = 1;
     }
 
+    if (needti || __pmFtell(acp->ac_mfp) + ((__pmPDUHdr *)pb)->len - sizeof(__pmPDUHdr) + 2*sizeof(int) > flushsize) {
+	/*
+	 * need new temporal index entry ... seek pointers need to be
+	 * _before_ this pmResult and associated metadata (if any)
+	 */
+	off_t	new_meta_offset;
+	__pmFflush(lcp->mdfp);
+	new_meta_offset = __pmFtell(lcp->mdfp);;
+	__pmFseek(lcp->mdfp, old_meta_offset, SEEK_SET);
+	 __pmLogPutIndex(acp, &stamp);
+	/* and restore metadata seek pointer */
+	__pmFseek(lcp->mdfp, new_meta_offset, SEEK_SET);
+	flushsize = __pmFtell(acp->ac_mfp) + 100000;
+    }
+
+    sts = current->version >= PM_LOG_VERS03 ?
+	    __pmLogPutResult3(acp, pb) : __pmLogPutResult2(acp, pb);
+
     __pmUnpinPDUBuf(pb);
+
+    if (sts < 0)
+	return sts;
     return 0;
 }
 
@@ -215,8 +254,7 @@ _pmi_put_text(pmi_context *current)
     int		needti;
 
     /* last_stamp has been set by the caller. */
-    stamp.tv_sec = current->last_stamp.tv_sec;
-    stamp.tv_usec = current->last_stamp.tv_usec;
+    stamp = current->last_stamp;
 
     /* One time processing for the start of the context. */
     sts = check_context_start(current);
@@ -278,8 +316,7 @@ _pmi_put_label(pmi_context *current)
     int		needti;
 
     /* last_stamp has been set by the caller. */
-    stamp.tv_sec = current->last_stamp.tv_sec;
-    stamp.tv_usec = current->last_stamp.tv_usec;
+    stamp = current->last_stamp;
 
     /* One time processing for the start of the context. */
     sts = check_context_start(current);
@@ -313,10 +350,10 @@ _pmi_put_label(pmi_context *current)
 
 	/*
 	 * Now write out the label record.
-	 * libpcp, via __pmLogPutLabel(), assumes control of the
+	 * libpcp, via __pmLogPutLabels(), assumes control of the
 	 * storage pointed to by lp->labelset.
 	 */
-	if ((sts = __pmLogPutLabel(&current->archctl, lp->type, lp->id,
+	if ((sts = __pmLogPutLabels(&current->archctl, lp->type, lp->id,
 				   1, lp->labelset, &stamp)) < 0)
 	    return sts;
 

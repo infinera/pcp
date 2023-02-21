@@ -222,3 +222,35 @@ PCP_WEB_1.15 {
     pmSearchTextInDom;
     pmSearchTextTypeStr;
 } PCP_WEB_1.14;
+
+PCP_WEB_1.16 {
+  global:
+    redisSlotsSetupMetrics;
+    redisSlotsSetMetricRegistry;
+} PCP_WEB_1.15;
+
+PCP_WEB_1.17 {
+  global:
+    pmWebTimerSetMetricRegistry;
+    pmWebTimerRegister;
+    pmWebTimerRelease;
+} PCP_WEB_1.16;
+
+PCP_WEB_1.18 {
+  global:
+    pmWebTimerClose;
+    pmWebTimerSetEventLoop;
+    pmWebTimerSetup;
+} PCP_WEB_1.17;
+
+PCP_WEB_1.19 {
+  global:
+    dictGenHashFunction;
+    dictGetIterator;
+    redisSlotsReconnect;
+} PCP_WEB_1.18;
+
+PCP_WEB_1.20 {
+  global:
+    pmSeriesWindow;
+} PCP_WEB_1.19;

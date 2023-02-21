@@ -1,12 +1,12 @@
 /*
- * Copyright (c) 2013,2018 Red Hat.
+ * Copyright (c) 2013,2018,2021-2022 Red Hat.
  * Copyright (c) 2004 Silicon Graphics, Inc.  All Rights Reserved.
- * 
+ *
  * This program is free software; you can redistribute it and/or modify it
  * under the terms of the GNU General Public License as published by the
  * Free Software Foundation; either version 2 of the License, or (at your
  * option) any later version.
- * 
+ *
  * This program is distributed in the hope that it will be useful, but
  * WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY
  * or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License
@@ -27,15 +27,19 @@ extern int	wflag;		/* -w from command line */
  */
 typedef struct {
     int			flags;		/* GLOBAL_* flags */
-    struct timeval	time;		/* timestamp shift */
-    char		hostname[PM_LOG_MAXHOSTLEN];
-    char		tz[PM_TZ_MAXLEN]; 
+    __pmTimestamp	time;		/* timestamp shift */
+    char		*hostname;
+    char		*timezone;
+    char		*zoneinfo;
+    int			features;
 } global_t;
 
 /* values for global_t flags */
 #define GLOBAL_CHANGE_TIME	1
 #define GLOBAL_CHANGE_HOSTNAME	2
-#define GLOBAL_CHANGE_TZ	4
+#define GLOBAL_CHANGE_TIMEZONE	4
+#define GLOBAL_CHANGE_ZONEINFO	8
+#define GLOBAL_CHANGE_FEATURES	16
 
 extern global_t global;
 
@@ -65,6 +69,7 @@ typedef struct indomspec {
 #define INST_DELETE		64
 
 extern indomspec_t	*indom_root;
+extern __pmHashCtl	indom_hash;
 
 /*
  * Rewrite specifications for a metric
@@ -164,14 +169,15 @@ extern labelspec_t	*label_root;
  *  Input archive control
  */
 typedef struct {
-    int		ctx;
-    __pmContext	*ctxp;
-    char	*name;
-    pmLogLabel	label;
-    __pmPDU	*metarec;
-    __pmPDU	*logrec;
-    pmResult	*rp;
-    int		mark;		/* need EOL marker */
+    int			ctx;
+    int			version;	/* input log version (2/3) */
+    __pmContext		*ctxp;
+    char		*name;
+    __pmLogLabel	label;
+    __int32_t		*metarec;
+    __int32_t		*logrec;
+    __pmResult		*rp;
+    int			mark;		/* need EOL marker */
 } inarch_t;
 
 extern inarch_t		inarch;		/* input archive */
@@ -183,6 +189,7 @@ typedef struct {
     char	*name;		/* base name of output archive */
     __pmArchCtl	archctl;	/* libpcp archive control */
     __pmLogCtl	logctl;		/* libpcp log control */
+    int		version;	/* output log version (2/3) */
 } outarch_t;
 
 extern outarch_t	outarch;	/* output archive */
@@ -209,11 +216,8 @@ extern int	yyparse(void);
 #define W_NEXT	2
 #define W_NONE	3
 
-extern int	_pmLogGet(__pmArchCtl *, int, __pmPDU **);
-extern int	_pmLogPut(FILE *, __pmPDU *);
 extern int	_pmLogRename(const char *, const char *);
 extern int	_pmLogRemove(const char *, int);
-extern pmUnits	ntoh_pmUnits(pmUnits);
 #define ntoh_pmInDom(indom) ntohl(indom)
 #define ntoh_pmID(pmid)     ntohl(pmid)
 
@@ -235,7 +239,7 @@ extern char	*dupcat(const char *, const char *);
 extern void	newvolume(int);
 
 extern void	do_desc(void);
-extern void	do_indom(void);
+extern void	do_indom(int);
 extern void	do_labelset(void);
 extern void	do_text(void);
 extern void	do_result(void);

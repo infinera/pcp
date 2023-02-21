@@ -4,6 +4,8 @@
 #
 # Copyright (c) 1995-2002 Silicon Graphics, Inc.  All Rights Reserved.
 #
+# check-group-include: pmlogextract
+#
 
 seq=`basename $0`
 echo "QA output created by $seq"
@@ -77,6 +79,9 @@ sed \
 	-e '/date-and-timestamp/d' \
 	-e '/^Roll .*\/NOTICES/d' \
 	-e '/^Start .*\/NOTICES/d' \
+	-e '/^Add merge callback for: pmlogger_daily_report/d' \
+	-e '/^+ mv .*\/NOTICES/d' \
+	-e '/^+ touch .*\/NOTICES/d' \
 	-e "s/$TODAY/TODAY/g" \
 	-e "s/$FIVEDAYS/FIVEDAYS/g" \
 	-e "s/$FIVEMONTHS/FIVEMONTHS/g" \

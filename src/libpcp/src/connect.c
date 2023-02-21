@@ -157,12 +157,8 @@ check_feature_flags(int ctxflags, int features, int local_conn)
 		return -EOPNOTSUPP;
 	    }
 	}
-	if (ctxflags & PM_CTXFLAG_COMPRESS) {
-	    if (features & PDU_FLAG_COMPRESS)
-		pduflags |= PDU_FLAG_COMPRESS;
-	    else
-		return -EOPNOTSUPP;
-	}
+	if (ctxflags & PM_CTXFLAG_COMPRESS)
+	    return -EOPNOTSUPP;
 	if (ctxflags & PM_CTXFLAG_AUTH) {
 	    if (features & PDU_FLAG_AUTH)
 		pduflags |= PDU_FLAG_AUTH;
@@ -300,9 +296,8 @@ __pmConnectHandshake(int fd, const char *hostname, int ctxflags, __pmHashCtl *at
 	    /*
 	     * At this point we know the caller wants to set channel options
 	     * and pmcd supports them so go ahead and update the socket (this
-	     * completes the SSL handshake in encrypting mode, authentication
-	     * via SASL, enabling compression in NSS, and any other requested
-	     * connection attributes).
+	     * completes the TLS handshake in encrypting mode, authentication
+	     * via SASL, and any other requested connection attributes).
 	     */
 	    if (sts >= 0 && pduflags)
 		sts = attributes_handshake(fd, pduflags, hostname, attrs);
@@ -332,7 +327,7 @@ load_pmcd_ports(void)
 }
 
 static void
-load_proxy_hostspec(pmHostSpec *proxy)
+load_proxy_hostspec(__pmHostSpec *proxy)
 {
     char	errmsg[PM_MAXERRMSGLEN];
     char	*envstr;
@@ -362,7 +357,7 @@ load_proxy_hostspec(pmHostSpec *proxy)
 }
 
 void
-__pmConnectGetPorts(pmHostSpec *host)
+__pmConnectGetPorts(__pmHostSpec *host)
 {
     PM_INIT_LOCKS();
     PM_LOCK(connect_lock);
@@ -378,7 +373,7 @@ __pmConnectGetPorts(pmHostSpec *host)
 }
 
 int
-__pmConnectPMCD(pmHostSpec *hosts, int nhosts, int ctxflags, __pmHashCtl *attrs)
+__pmConnectPMCD(__pmHostSpec *hosts, int nhosts, int ctxflags, __pmHashCtl *attrs)
 {
     int		sts = -1;
     int		fd = -1;	/* Fd for socket connection to pmcd */
@@ -387,10 +382,10 @@ __pmConnectPMCD(pmHostSpec *hosts, int nhosts, int ctxflags, __pmHashCtl *attrs)
     int		portIx;
     int		version = -1;
     int		proxyport;
-    pmHostSpec	*proxyhost;
+    __pmHostSpec *proxyhost;
 
     static int first_time = 1;
-    static pmHostSpec proxy;
+    static __pmHostSpec proxy;
 
     PM_INIT_LOCKS();
     PM_LOCK(connect_lock);

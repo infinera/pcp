@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2017-2020 Red Hat.
+ * Copyright (c) 2017-2022 Red Hat.
  *
  * This library is free software; you can redistribute it and/or modify it
  * under the terms of the GNU Lesser General Public License as published
@@ -23,7 +23,8 @@
 #include "util.h"
 #include "sha1.h"
 
-/* dynamic memory manipulation */
+const char *SDS_NOINIT = "SDS_NOINIT";	/* back-compat, exported global */
+
 static void
 default_oom(size_t size)
 {
@@ -33,37 +34,6 @@ default_oom(size_t size)
     abort();
 }
 static void (*oom_handler)(size_t) = default_oom;
-
-void *
-s_malloc(size_t size)
-{
-    void	*p;
-
-    p = malloc(size);
-    if (UNLIKELY(p == NULL))
-	oom_handler(size);
-    return p;
-}
-
-void *
-s_realloc(void *ptr, size_t size)
-{
-    void	*p;
-
-    if (ptr == NULL)
-	return s_malloc(size);
-    p = realloc(ptr, size);
-    if (UNLIKELY(p == NULL))
-	oom_handler(size);
-    return p;
-}
-
-void
-s_free(void *ptr)
-{
-    if (LIKELY(ptr != NULL))
-	free(ptr);
-}
 
 void *
 zmalloc(size_t size)
@@ -94,41 +64,17 @@ zfree(void *ptr)
 	free(ptr);
 }
 
-/* time structure manipulation */
-int
-tsub(struct timeval *a, struct timeval *b)
-{
-    if ((a == NULL) || (b == NULL))
-	return -1;
-    pmtimevalDec(a, b);
-    if (a->tv_sec < 0) {
-	/* clip negative values at zero */
-	a->tv_sec = 0;
-	a->tv_usec = 0;
-    }
-    return 0;
-}
-
-int
-tadd(struct timeval *a, struct timeval *b)
-{
-    if ((a == NULL) || (b == NULL))
-	return -1;
-    pmtimevalInc(a, b);
-    return 0;
-}
-
 /* convert into <milliseconds>-<nanoseconds> format for series streaming */
 const char *
-timeval_stream_str(struct timeval *stamp, char *buffer, int buflen)
+timespec_stream_str(struct timespec *stamp, char *buffer, int buflen)
 {
     __uint64_t	millipart;
     __uint64_t	fractions;
-    __uint64_t	crossover = stamp->tv_usec / 1000;
+    __uint64_t	crossover = stamp->tv_nsec / 1000000;
 
     millipart = ((__uint64_t)stamp->tv_sec) * 1000;
     millipart += crossover;
-    fractions = stamp->tv_usec % 1000;
+    fractions = stamp->tv_nsec % 1000000 / 1000;
     pmsprintf(buffer, buflen, "%" FMT_UINT64 "-%"FMT_UINT64,
 		(__uint64_t)millipart, (__uint64_t)fractions);
     return buffer;
@@ -136,36 +82,35 @@ timeval_stream_str(struct timeval *stamp, char *buffer, int buflen)
 
 /* convert timeval into human readable date/time format for logging */
 const char *
-timeval_str(struct timeval *tvp, char *buffer, int buflen)
+timespec_str(struct timespec *tvp, char *buffer, int buflen)
 {
     struct tm	tmp;
     time_t	now = (time_t)tvp->tv_sec;
 
     pmLocaltime(&now, &tmp);
     pmsprintf(buffer, sizeof(buflen), "%02u:%02u:%02u.%06u",
-	      tmp.tm_hour, tmp.tm_min, tmp.tm_sec, (unsigned int)tvp->tv_usec);
+	      tmp.tm_hour, tmp.tm_min, tmp.tm_sec, (unsigned int)tvp->tv_nsec);
     return buffer;
 }
 
 /* convert into <milliseconds>-<nanoseconds> format for series streaming */
 const char *
-timespec_stream_str(pmTimespec *stamp, char *buffer, int buflen)
+timestamp_stream_str(__pmTimestamp *tsp, char *buffer, int buflen)
 {
-    pmsprintf(buffer, buflen, "%" FMT_UINT64 "-%"FMT_UINT64,
-		(__uint64_t)stamp->tv_sec, (__uint64_t)stamp->tv_nsec);
+    pmsprintf(buffer, buflen, "%" FMT_UINT64 "-%d", tsp->sec, tsp->nsec);
     return buffer;
 }
 
-/* convert timespec into human readable date/time format for logging */
+/* convert __pmTimestamp into human readable date/time format for logging */
 const char *
-timespec_str(pmTimespec *tsp, char *buffer, int buflen)
+timestamp_str(__pmTimestamp *tsp, char *buffer, int buflen)
 {
     struct tm	tmp;
-    time_t	now = (time_t)tsp->tv_sec;
+    time_t	now = (time_t)tsp->sec;
 
     pmLocaltime(&now, &tmp);
     pmsprintf(buffer, buflen, "%02u:%02u:%02u.%09u",
-	      tmp.tm_hour, tmp.tm_min, tmp.tm_sec, (unsigned int)tsp->tv_nsec);
+	      tmp.tm_hour, tmp.tm_min, tmp.tm_sec, tsp->nsec);
     return buffer;
 }
 
@@ -256,6 +201,8 @@ default_labelset(context_t *c, pmLabelSet **sets)
 	*sets = lp;
 	return 0;
     }
+    if (lp)
+	free(lp); /* Coverity CID340558 */
     return sts;
 }
 
@@ -270,15 +217,15 @@ metric_labelsets(metric_t *metric, char *buffer, int length,
     indom_t	*indom = metric->indom;
     int		nsets = 0;
 
-    if (context->labelset)
+    if (context && context->labelset)
 	sets[nsets++] = context->labelset;
-    if (domain->labelset)
+    if (domain && domain->labelset)
 	sets[nsets++] = domain->labelset;
     if (indom && indom->labelset)
 	sets[nsets++] = indom->labelset;
-    if (cluster->labelset)
+    if (cluster && cluster->labelset)
 	sets[nsets++] = cluster->labelset;
-    if (metric->labelset)
+    if (metric && metric->labelset)
 	sets[nsets++] = metric->labelset;
 
     return pmMergeLabelSets(sets, nsets, buffer, length, filter, arg);
@@ -451,7 +398,7 @@ pmwebapi_hash_sds(sds s, const unsigned char *p)
 
     hash_identity(p, namebuf, sizeof(namebuf));
     if (s == NULL)
-	s = sdsnewlen(SDS_NOINIT, 40);
+	s = sdsnewlen(NULL, 40);
     sdsclear(s);
     return sdscatlen(s, namebuf, 40);
 }
@@ -1006,8 +953,8 @@ pmwebapi_add_instances_labels(struct context *context, struct indom *indom)
 		    pmInDomStr_r(indom->indom, buffer, sizeof(buffer)),
 		    pmErrStr_r(sts, errmsg, sizeof(errmsg)));
     } else {
-	if (sts >= 0)
-	    indom->updated = 1;
+	assert(sts >= 0);
+	indom->updated = 1;
     }
 
     if (labelsets)
@@ -1042,6 +989,9 @@ pmwebapi_new_instance(indom_t *indom, int inst, sds name)
 {
     struct instance	*instance;
 
+    if (name == NULL || sdslen(name) == 0)
+	return NULL;
+
     if ((instance = calloc(1, sizeof(instance_t))) == NULL)
 	return NULL;
     instance->inst = inst;
@@ -1056,7 +1006,10 @@ struct instance *
 pmwebapi_add_instance(struct indom *indom, int inst, char *name)
 {
     struct instance	*instance;
-    size_t		length = strlen(name);
+    size_t		length;
+
+    if (name == NULL || (length = strlen(name)) == 0)
+	return NULL;
 
     if ((instance = dictFetchValue(indom->insts, &inst)) != NULL) {
 	/* has the external name changed for this internal identifier? */
@@ -1107,6 +1060,19 @@ pmwebapi_add_indom_instances(struct context *context, struct indom *indom)
 
     if ((sts = pmGetInDom(indom->indom, &instlist, &namelist)) >= 0) {
 	for (i = 0; i < sts; i++) {
+	    if (namelist[i] == NULL || namelist[i][0] == '\0') {
+		if (pmDebugOptions.dev0) {
+		    if (namelist[i] == NULL)
+			fprintf(stderr, "pmwebapi_add_indom_instances: Botch: indom %s numinst %d inst %d namelist[%d] NULL\n", 
+				    pmInDomStr_r(indom->indom, buffer, sizeof(buffer)),
+				    sts, instlist[i], i);
+		    else
+			fprintf(stderr, "pmwebapi_add_indom_instances: Botch: indom %s numinst %d inst %d namelist[%d] empty\n", 
+				    pmInDomStr_r(indom->indom, buffer, sizeof(buffer)),
+				    sts, instlist[i], i);
+		}
+		continue;
+	    }
 	    instance = pmwebapi_add_instance(indom, instlist[i], namelist[i]);
 	    instance->updated = 1;
 	    count++;

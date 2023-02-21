@@ -1,12 +1,12 @@
 /*
- * Copyright (c) 2017 Red Hat.
+ * Copyright (c) 2017,2021-2022 Red Hat.
  * Copyright (c) 1995-2003 Silicon Graphics, Inc.  All Rights Reserved.
- * 
+ *
  * This program is free software; you can redistribute it and/or modify it
  * under the terms of the GNU General Public License as published by the
  * Free Software Foundation; either version 2 of the License, or (at your
  * option) any later version.
- * 
+ *
  * This program is distributed in the hope that it will be useful, but
  * WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY
  * or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License
@@ -58,35 +58,57 @@ static char*	names[] = {
 
 static int	n_metric = sizeof(desc) / sizeof(desc[0]);
 
+static char	*fqdn;
+
+/*
+ * Get FQDN for local hostname ... logic cloned from the pmcd PMDA
+ */
+void
+prep_fqdn(void)
+{
+    char	host[MAXHOSTNAMELEN];
+    __pmHostEnt *servInfo;
+
+    if (gethostname(host, MAXHOSTNAMELEN) < 0) {
+	fqdn = "unknown";
+	return;
+    }
+    host[MAXHOSTNAMELEN-1] = '\0';
+    if ((servInfo = __pmGetAddrInfo(host)) == NULL)
+	fqdn = strdup(host);
+    else {
+	fqdn = __pmHostEntGetName(servInfo);
+	__pmHostEntFree(servInfo);
+	if (fqdn == NULL)
+	    fqdn = strdup(host);
+    }
+    return;
+}
+
 #define PROLOGUE 1
 #define EPILOGUE 2
 
-int
+static int
 do_logue(int type)
 {
     int		sts;
     int		i;
     int		j;
     pid_t	mypid = getpid();
-    pmResult	*res;			/* the output pmResult */
-    pmResult	*res_pmcd = NULL;	/* for values from pmcd */
+    __pmResult	*res;			/* the output pmResult */
     __pmPDU	*pb;
     pmAtomValue	atom;
-    pmTimeval	tmp;
     char	path[MAXPATHLEN];
-    char	host[MAXHOSTNAMELEN];
-    int		free_cp;
+    pmHighResResult	*res_pmcd = NULL; /* values from pmcd */
+    __pmLogInDom	lid;
 
-    /* start to build the pmResult */
-    res = (pmResult *)malloc(sizeof(pmResult) + (n_metric - 1) * sizeof(pmValueSet *));
-    if (res == NULL)
+    /* start to build the internal __pmResult */
+    if ((res = __pmAllocResult(n_metric)) == NULL)
 	return -oserror();
 
     res->numpmid = n_metric;
     if (type == PROLOGUE) {
-	last_stamp = res->timestamp = epoch;	/* struct assignment */
-	tmp.tv_sec = (__int32_t)epoch.tv_sec;
-	tmp.tv_usec = (__int32_t)epoch.tv_usec;
+	last_stamp = res->timestamp = lid.stamp = epoch; /* struct assignment */
     }
     else {
 	res->timestamp = last_stamp;	/* struct assignment */
@@ -94,10 +116,10 @@ do_logue(int type)
 	 * epilogue, last plus 1msec as the default ... hope pmFetch gives
 	 * us a better answer below
 	 */
-	res->timestamp.tv_usec += 1000;
-	if (res->timestamp.tv_usec > 999999) {
-	    res->timestamp.tv_usec -= 1000000;
-	    res->timestamp.tv_sec++;
+	res->timestamp.nsec += 1000000;
+	if (res->timestamp.nsec > 999999999) {
+	    res->timestamp.nsec -= 1000000000;
+	    res->timestamp.sec++;
 	}
     }
 
@@ -113,22 +135,8 @@ do_logue(int type)
 	res->vset[i]->pmid = desc[i].pmid;
 	res->vset[i]->numval = 1;
 	/* special case for each value 0 .. n_metric-1 */
-	free_cp = 0;
 	if (desc[i].pmid == PMID(2,3,3)) {
-	    __pmHostEnt *servInfo;
-	    /* my fully qualified hostname, cloned from the pmcd PMDA */
-	    (void)gethostname(host, MAXHOSTNAMELEN);
-	    host[MAXHOSTNAMELEN-1] = '\0';
-	    if ((servInfo = __pmGetAddrInfo(host)) == NULL)
-		atom.cp = host;
-	    else {
-		atom.cp = __pmHostEntGetName(servInfo);
-		__pmHostEntFree(servInfo);
-		if (atom.cp == NULL)
-		    atom.cp = host;
-		else
-		    free_cp = 1;
-	    }
+	    atom.cp = fqdn;
 	    res->vset[i]->vlist[0].inst = (int)mypid;
 	 }
 	 else if (desc[i].pmid == PMID(2,3,0)) {
@@ -155,15 +163,18 @@ do_logue(int type)
 	    res->vset[i]->vlist[0].inst = (int)mypid;
 	}
 	else if (desc[i].pmid == PMID(2,0,23)) {
-	    pmID	pmid[2];
+	    pmID		pmid[2];
 	    /*
 	     * pmcd.pid and pmcd.seqnum we need from pmcd ...
 	     */
-	    pmid[0] = PMID(2,0,23);
-	    pmid[1] = PMID(2,0,24);
-	    sts = pmFetch(2, pmid, &res_pmcd);
+	    pmid[0] = PMID(2,0,23);	/* pmcd.pid */
+	    pmid[1] = PMID(2,0,24);	/* pmcd.seqnum */
+
+	    sts = pmFetchHighRes(2, pmid, &res_pmcd);
 	    if (sts >= 0 && type == EPILOGUE) {
-		last_stamp = res->timestamp = res_pmcd->timestamp;	/* struct assignment */
+		last_stamp.sec = res_pmcd->timestamp.tv_sec;
+		last_stamp.nsec = res_pmcd->timestamp.tv_nsec;
+		res->timestamp = last_stamp;	/* struct assignment */
 	    }
 	    if (sts >= 0 && res_pmcd->vset[0]->numval == 1 &&
 	        (res_pmcd->vset[0]->valfmt == PM_VAL_SPTR || res_pmcd->vset[0]->valfmt == PM_VAL_DPTR))
@@ -181,25 +192,31 @@ do_logue(int type)
 	}
 
 	sts = __pmStuffValue(&atom, &res->vset[i]->vlist[0], desc[i].type);
-	if (free_cp)
-	    free(atom.cp);
 	if (sts < 0)
 	    goto done;
 	res->vset[i]->valfmt = sts;
     }
 
-    if ((sts = __pmEncodeResult(__pmFileno(archctl.ac_mfp), res, &pb)) < 0)
+    sts = __pmEncodeResult(&logctl, res, &pb);
+    if (sts < 0)
 	goto done;
 
-    __pmOverrideLastFd(__pmFileno(archctl.ac_mfp));	/* force use of log version */
+    /* force use of log version */
+    __pmOverrideLastFd(__pmFileno(archctl.ac_mfp));
     /* and write to the archive data file ... */
     last_log_offset = __pmFtell(archctl.ac_mfp);
-    sts = __pmLogPutResult2(&archctl, pb);
+
+    if (archive_version >= PM_LOG_VERS03)
+	sts = __pmLogPutResult3(&archctl, pb);
+    else
+	sts = __pmLogPutResult2(&archctl, pb);
     __pmUnpinPDUBuf(pb);
     if (sts < 0)
 	goto done;
 
     if (type == PROLOGUE) {
+	long	offset;
+
 	for (i = 0; i < n_metric; i++) {
 	    if ((sts = __pmLogPutDesc(&archctl, &desc[i], 1, &names[i])) < 0)
 		goto done;
@@ -212,7 +229,8 @@ do_logue(int type)
 	    if (j == i) {
 		/* need indom ... force one with my PID as the only instance */
 		int		*instid;
-		char	**instname;
+		char		**instname;
+		int		pdu_type;
 
 		if ((instid = (int *)malloc(sizeof(*instid))) == NULL) {
 		    sts = -oserror();
@@ -232,20 +250,30 @@ do_logue(int type)
 		instname[0] = (char *)&instname[1];
 		strcpy(instname[0], path);
 		/*
-		 * Note.	DO NOT free instid and instname ... they get hidden
-		 *		away in addindom() below __pmLogPutInDom()
+		 * Note.	DO NOT free instid[] and instname[]... they
+		 *		get hidden away in addindom() below
+		 *		__pmLogPutInDom()
 		 */
-		if ((sts = __pmLogPutInDom(&archctl, desc[i].indom, &tmp, 1, instid, instname)) < 0)
+		if (archive_version == PM_LOG_VERS03)
+		    pdu_type = TYPE_INDOM;
+		else
+		    pdu_type = TYPE_INDOM_V2;
+		lid.indom = desc[i].indom;
+		lid.numinst = 1;
+		lid.instlist = instid;
+		lid.namelist = instname;
+		if ((sts = __pmLogPutInDom(&archctl, pdu_type, &lid)) < 0)
 		    goto done;
 	    }
 	}
 
 	/* fudge the temporal index */
-	__pmFseek(archctl.ac_mfp, sizeof(__pmLogLabel)+2*sizeof(int), SEEK_SET);
-	__pmFseek(logctl.l_mdfp, sizeof(__pmLogLabel)+2*sizeof(int), SEEK_SET);
-	__pmLogPutIndex(&archctl, &tmp);
+	offset = __pmLogLabelSize(&logctl);
+	__pmFseek(archctl.ac_mfp, offset, SEEK_SET);
+	__pmFseek(logctl.mdfp, offset, SEEK_SET);
+	__pmLogPutIndex(&archctl, &lid.stamp);
 	__pmFseek(archctl.ac_mfp, 0L, SEEK_END);
-	__pmFseek(logctl.l_mdfp, 0L, SEEK_END);
+	__pmFseek(logctl.mdfp, 0L, SEEK_END);
     }
 
     sts = 0;
@@ -261,9 +289,10 @@ done:
 	    free(res->vset[i]);
 	}
     }
-    free(res);
+    res->numpmid = 0;		/* don't free vset's */
+    __pmFreeResult(res);
     if (res_pmcd != NULL)
-	pmFreeResult(res_pmcd);
+	pmFreeHighResResult(res_pmcd);
 
     return sts;
 }

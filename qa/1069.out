@@ -92,6 +92,25 @@ Invalid metric tape.dev.io_ns (PM_ERR_INDOM_LOG Instance domain identifier not d
       1.000        1000.033
       1.000        1000.001
       1.000        1000.016
+  s.seconds  s.milliseconds
+        N/A             N/A
+        N/A             N/A
+      1.000        1000.033
+      1.000        1000.001
+      1.000        1000.016
+  d.d.read  d.d.read  d.d.read  d.d.read  d.d.read  d.d.read
+   count/s   count/s   count/s   count/s   count/s   count/s
+       N/A       N/A       N/A       N/A       N/A       N/A
+     0.000    30.000     0.500     0.000     0.000     1.000
+     0.000    30.000     0.000     0.000     0.000     1.000
+     0.000    30.000     0.500     0.000     0.000     1.000
+     0.000    30.000     0.500     0.000     0.000     0.500
+  d.d.read  d.d.read  d.d.read  d.d.read  d.d.read  d.d.read
+       N/A       N/A       N/A       N/A       N/A       N/A
+     0.000    30.000     0.500     0.000     0.000     1.000
+     0.000    30.000     0.000     0.000     0.000     1.000
+     0.000    30.000     0.500     0.000     0.000     1.000
+     0.000    30.000     0.500     0.000     0.000     0.500
         |        |d.d.read|d.d.write|d.d.total|n.i.mtu|m.u.free|k.a.load|m.u.used
         |        | count/s|  count/s|  count/s|   byte|   Kbyte|        |   Kbyte
 00:47:01|     sda|     N/A|      N/A|      N/A|      ~|       ~|       ~|       ~
@@ -378,24 +397,28 @@ Invalid metric tape.dev.io_ns (PM_ERR_INDOM_LOG Instance domain identifier not d
 00:47:09  cpu0         ~    21.000         ~         ~
 00:47:09  cpu1         ~   384.000         ~         ~
 == invalid command line parameters
-Error while parsing options: Non-negative integer expected.
-Error while parsing options: Non-negative integer expected.
-Error while parsing options: Non-negative integer expected.
+Error while reading option repeat_header: Non-negative integer expected.
+Error while reading option precision: Non-negative integer expected.
+Error while reading option width: Non-negative integer expected.
 Invalid regex '(':
 Invalid regex '.[]*':
 Invalid regex '.[z-a]':
 == metricset command line handling
-  p.p.processor  p.p.priority  p.p.nice  p.p.c.pct  p.p.c.ratio  p.p.threads  p.p.sname  p.p.utime  p.p.stime
-  000001 /usr/l  000001 /usr/  000001 /  000001 /u  000001 /usr  000001 /usr  000001 /u  000001 /u  000001 /u
-                                                                                              ms/s       ms/s
 Metricset definition ':nosuchset' not found.
 Metricset definition ':nosuchset' not found.
-== invalid configuration file
+== invalid configuration file part 1
 Error while parsing options: Invalid output target specified.
 pcp: sample count must be a positive numeric argument
-Error while parsing options: Non-negative integer expected.
+Error while reading option precision: Non-negative integer expected.
 pmrep: Impossible value or scale conversion
 Invalid metric bogus (PM_ERR_NAME Unknown metric name).
+== invalid configuration file part 2
+Failed to read configuration file CONF_FILE, line 2:
+Source contains parsing errors: CONF_FILE
+	[line  2]: 'error\n'
+== invalid configuration file part 3
+Failed to read configuration file CONF_FILE:
+No value set for error in [test1].
 == unsupported metric type
 Invalid metric sample.sysinfo (PM_ERR_TYPE Unknown or illegal metric type).
 == exercise non-integer options
@@ -1118,6 +1141,7 @@ No output expected.
 == derived metrics v. instance profiles
       4500       100       200       300       400       500       600       700       800       900
       4500
+  930827.6  930827.6  930827.6
 == extended existing sample configuration
   s.combo  s.seconds  s.milliseconds
       s/s        s/s            ms/s
@@ -1187,102 +1211,6 @@ PCP_VERSION
   fail
       
    inf
-== user-requested instance handling
-No matching instances found.
-
-Requested global instances:
-['wrong']
-  m.u.free
-     Kbyte
-     38220
-  m.u.free
-     Kbyte
-     38220
-  d.d.read
-       sda
-   count/s
-       N/A
-  d.d.read
-       sda
-   count/s
-       N/A
-  d.d.read  k.a.load  k.a.load
-       sda  1 minute  5 minute
-   count/s                    
-       N/A     0.820     0.700
-          k.a.load
-          1 minute
-                  
-             0.820
-  k.a.load  k.a.load
-  1 minute  5 minute
-                    
-     0.820     0.700
-  d.d.read
-       sda
-   count/s
-       N/A
-          d.d.read
-               sda
-           count/s
-               N/A
-  d.d.read  d.d.read
-       sda       sdb
-   count/s   count/s
-       N/A       N/A
-          d.d.read          d.d.read
-               sda               sdb
-           count/s           count/s
-               N/A               N/A
-  k.a.sysfork              free              load              load              read
-                                         1 minute          5 minute               sda
-      count/s             Kbyte                                               count/s
-          N/A             38220             0.820             0.700               N/A
-  d.d.read  d.d.read  d.d.read  d.d.read  d.d.read  d.d.read
-       sda       sdb       sdc       hdc       sdd       sde
-   count/s   count/s   count/s   count/s   count/s   count/s
-       N/A       N/A       N/A       N/A       N/A       N/A
-  d.d.read
-       sda
-   count/s
-       N/A
-      read      read      read      read      read
-       sda       sdb       sdc       sdd       sde
-   count/s   count/s   count/s   count/s   count/s
-       N/A       N/A       N/A       N/A       N/A
-| sd.* | sd.* | sd.* | sd.* | sd.* 
-|   sda|   sdb|   sdc|   sdd|   sde
-|count/|count/|count/|count/|count/
-|   N/A|   N/A|   N/A|   N/A|   N/A
-=== more instance handling
-No matching instances found.
-
-Requested global instances:
-['xxx', 'yyy', 'zzz']
-No matching instances found.
-
-Requested global instances:
-['sda', 'sdc']
-No matching instances found.
-
-Requested global instances:
-['sda']
-   l2   l3
-  sda  sda
-  cou  cou
-  N/A  N/A
-  d.d.read
-       sda
-   count/s
-       N/A
-  d.d.read
-       sda
-   count/s
-       N/A
-  label
-    sda
-  count
-    N/A
 == test ignoring and omitting metrics
 pmrep: Impossible value or scale conversion
   m.u.used  m.u.free  m.u.shared  m.u.bufmem  m.u.cached  m.u.other  m.u.swapCached  m.u.active  m.u.inactive  m.u.highTotal  m.u.highFree  m.u.lowTotal  m.u.lowFree  m.u.swapTotal  m.u.swapFree  m.u.dirty  m.u.writeback  m.u.mapped  m.u.slab  m.u.committed_AS  m.u.pageTables  m.u.reverseMaps  m.u.cache_clean  m.u.anonpages  m.u.commitLimit  m.u.bounce  m.u.NFS_Unstable  m.u.slabReclaimable  m.u.slabUnreclaimable  m.u.active_anon  m.u.inactive_anon  m.u.active_file  m.u.inactive_file  m.u.unevictable  m.u.mlocked  m.u.shmem  m.u.kernelStack  m.u.directMap4k  m.u.directMap2M  m.u.vmallocTotal  m.u.vmallocUsed  m.u.vmallocChunk  m.u.mmap_copy  m.u.quicklists  m.u.corrupthardware  m.u.anonhugepages
@@ -1301,6 +1229,7 @@ pmrep: Impossible value or scale conversion
   xxx
 == handle empty/invalid/multiple metricsets in config file
 Invalid metric yes (PM_ERR_NAME Unknown metric name).
+Failed to read configuration file CONF_FILE:
 Unknown option mem.util.free in [options].
 No metrics specified.
 
@@ -1337,6 +1266,7 @@ No metrics specified.
  duration: 00:00:00
 
 == handle options/global/metricset section corner cases / issues
+Failed to read configuration file CONF_FILE:
 Unknown option mem.util.free in [options].
    test   freemem
             Kbyte
@@ -1355,7 +1285,8 @@ Unknown option mem.util.free in [options].
 
   m.u.used
      Kbyte
-No options allowed in [global] section.
+Failed to read configuration file CONF_FILE:
+Section [global] contains options.
 No metrics specified.
 
   archive: QAPATH/archives/20130706

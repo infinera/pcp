@@ -1,6 +1,6 @@
 /*
- * Copyright (c) 2017-2020 Red Hat.
- * 
+ * Copyright (c) 2017-2022 Red Hat.
+ *
  * This library is free software; you can redistribute it and/or modify it
  * under the terms of the GNU Lesser General Public License as published
  * by the Free Software Foundation; either version 2.1 of the License, or
@@ -110,6 +110,7 @@ redis_param_raw(sds cmd, sds param)
 }
 
 extern void redisGlobalsInit(struct dict *);
+extern void redisGlobalsClose(void);
 
 extern void redis_series_source(redisSlots *, void *);
 extern void redis_series_mark(redisSlots *, sds, int, void *);
@@ -118,14 +119,15 @@ extern void redis_series_metric(redisSlots *, metric_t *, sds, int, int, void *)
 /*
  * Asynchronous schema load baton structures
  */
-#define LOAD_PHASES	5
+#define LOAD_PHASES	6
 
 typedef struct seriesGetContext {
     seriesBatonMagic	header;		/* MAGIC_CONTEXT */
 
     context_t		context;
     unsigned long long	count;		/* number of samples processed */
-    pmResult		*result;	/* currently active sample data */
+    pmHighResResult	*result;	/* currently active sample data */
+    int			loaded;		/* end of archive data reached */
     int			error;		/* PMAPI error code from fetch */
 
     redisDoneCallBack	done;
@@ -152,6 +154,9 @@ typedef struct seriesLoadBaton {
     const char		**metrics;	/* metric specification strings */
     dict		*errors;	/* PMIDs where errors observed */
     dict		*wanted;	/* allowed metrics list PMIDs */
+    sds			*exclude_patterns;	/* list of exclude metric patterns (e.g. proc.*) */
+    unsigned int	exclude_npatterns;	/* number of exclude metric patterns */
+    dict		*exclude_pmids;		/* dict of excluded pmIDs (pmID: NULL) */
 
     int			error;
     void		*arg;
@@ -160,11 +165,28 @@ typedef struct seriesLoadBaton {
 /*
  * Module internal (private) data structures and accessors
  */
+
+enum {
+    SERIES_QUERY_CALLS,
+    SERIES_DESCS_CALLS,
+    SERIES_INSTANCES_CALLS,
+    SERIES_SOURCES_CALLS,
+    SERIES_METRICS_CALLS,
+    SERIES_VALUES_CALLS,
+    SERIES_LABELS_CALLS,
+    SERIES_LABELVALUES_CALLS,
+    SERIES_LOAD_CALLS,
+    NUM_SERIES_METRIC
+};
+
 typedef struct seriesModuleData {
-    mmv_registry_t	*metrics;
-    void		*metrics_handle;
+    mmv_registry_t	*registry;	/* metrics */
+    pmAtomValue		*metrics[NUM_SERIES_METRIC];
+    void		*map;
+
     struct dict		*config;
     uv_loop_t		*events;
+
     redisSlots		*slots;
     unsigned int	shareslots;
     unsigned int	search;
@@ -173,5 +195,8 @@ typedef struct seriesModuleData {
 extern seriesModuleData *getSeriesModuleData(pmSeriesModule *);
 extern void pmSeriesStatsAdd(pmSeriesModule *, const char *, const char *, double);
 extern void pmSeriesStatsSet(pmSeriesModule *, const char *, const char *, double);
+
+extern void redisSchemaLoad(redisSlots *, redisSlotsFlags, redisInfoCallBack,
+	redisDoneCallBack, void *, void *, void *);
 
 #endif	/* SERIES_SCHEMA_H */

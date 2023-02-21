@@ -32,6 +32,21 @@ _cleanup()
 }
 
 trap "_cleanup; exit \$status" 0 1 2 3 15
+rm -f $seq.full
+
+# Test is failing on test-centos6-container in CI deep inside
+# the avahi code (not the PCP code), so we've decided to
+# _notrun on anything related to RHEL 6.
+#
+case `admin/whatami`
+in
+    *CentOS6.*)
+	_notrun "dodge avahi issue on CentOS 6"
+	;;
+    *RHEL*6.*)
+	_notrun "dodge avahi issue on RHEL 6"
+	;;
+esac
 
 _filter()
 {
@@ -48,8 +63,6 @@ p
 _service pcp stop >/dev/null 2>&1
 # allow time to cleanup and close all sockets
 sleep 3
-
-rm -f $seq.full
 
 # figure out which user we will run pmcd and its pmdas as
 username=`id -u -n`

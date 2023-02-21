@@ -1,11 +1,12 @@
 /*
  * Copyright (c) 2009 Ken McDonell.  All Rights Reserved.
- * 
+ * Copyright (c) 2022 Red Hat.
+ *
  * This library is free software; you can redistribute it and/or modify it
  * under the terms of the GNU Lesser General Public License as published
  * by the Free Software Foundation; either version 2.1 of the License, or
  * (at your option) any later version.
- * 
+ *
  * This library is distributed in the hope that it will be useful, but
  * WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY
  * or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU Lesser General Public
@@ -33,11 +34,11 @@ typedef struct {		/* dynamic information for an expression node */
     int			mul_scale;	/* scale multiplier */
     int			div_scale;	/* scale divisor */
     val_t		*ivlist;	/* instance-value pairs */
-    struct timeval	stamp;		/* timestamp from current fetch */
+    struct timespec	stamp;		/* timestamp from current fetch */
     double		time_scale;	/* time utilization scaling for rate() */
     int			last_numval;	/* length of last_ivlist[] */
     val_t		*last_ivlist;	/* values from previous fetch for delta() or rate() */
-    struct timeval	last_stamp;	/* timestamp from previous fetch for rate() */
+    struct timespec	last_stamp;	/* timestamp from previous fetch for rate() */
 } info_t;
 
 typedef struct {			/* for instance filtering */
@@ -159,7 +160,7 @@ extern void __dmbind(int, __pmContext *, int, int) _PCP_HIDDEN;
 extern void __dmclosecontext(__pmContext *) _PCP_HIDDEN;
 extern int __dmdesc(__pmContext *, int, pmID, pmDesc *) _PCP_HIDDEN;
 extern int __dmprefetch(__pmContext *, int, const pmID *, pmID **) _PCP_HIDDEN;
-extern void __dmpostfetch(__pmContext *, pmResult **) _PCP_HIDDEN;
+extern void __dmpostfetch(__pmContext *, __pmResult **) _PCP_HIDDEN;
 extern void __dmdumpexpr(node_t *, int) _PCP_HIDDEN;
 extern char *__dmnode_type_str(int) _PCP_HIDDEN;
 extern int __dmhelptext(pmID, int, char **) _PCP_HIDDEN;

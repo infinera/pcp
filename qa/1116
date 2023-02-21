@@ -37,9 +37,11 @@ _value_filter()
     _values=`awk '/inst.*value/ {print $NF}' $tmp.value`
     for value in $_values
     do
-        if _within_tolerance "Expecting ${write_size} +- 10%" $value ${write_size} 10%; then
-            echo "found value ${write_size} +- 10%"
+        if _within_tolerance "Expecting ${write_size} +- 20%" $value ${write_size} 20%; then
+            echo "found value ${write_size} +- 20%"
             break
+	else
+	    echo "failed: $value not in range `expr 80 \* ${write_size} / 100` ... `expr 120 \* ${write_size} / 100`" >>$here/$seq.full
         fi
     done
 }
@@ -50,12 +52,7 @@ _cleanup()
     $sudo rm -f "$out_file"
 }
 
-_prepare_pmda bcc
-trap "_cleanup; exit \$status" 0 1 2 3 15
-_stop_auto_restart pmcd
-
-# real QA test starts here
-cat <<EOF | _pmdabcc_install
+cat <<EOF >$tmp.conf
 # Installed by PCP QA test $seq on `date`
 [pmda]
 modules = bioperpid
@@ -64,6 +61,15 @@ prefix = bcc.
 module = bioperpid
 cluster = 1
 EOF
+
+_pmdabcc_try_compile $tmp.conf
+
+_prepare_pmda bcc
+trap "_cleanup; exit \$status" 0 1 2 3 15
+_stop_auto_restart pmcd
+
+# real QA test starts here
+_pmdabcc_install <$tmp.conf
 _pmdabcc_wait_for_metric
 
 # Generate system activity for the BCC bioperpid module

@@ -5,12 +5,14 @@
 # Copyright (c) 1997-2002 Silicon Graphics, Inc.  All Rights Reserved.
 #
 
-MKARCH	= foo.0 mv-foo.0 noti-foo.0 noti-ok-foo.0 null.0 \
+MKARCH	= foo.0 foo_v2.0 foo_v3.0 mv-foo.0 noti-foo.0 noti-ok-foo.0 null.0 \
 	bar.0 mv-bar.0 noti-bar.0 \
 	bigbin.0 mv-bigbin.0 noti-bigbin.0 truncbin.0 \
 	interp.0 mv-interp.0 noti-interp.0 \
 	gap.0 gap2.0 reduce-gap.0 \
-	dodgey-some.0 dodgey-all.0 dodgey-mixed.0 bad-1.0
+	dodgey-some.0 dodgey-all.0 dodgey-mixed.0 bad-1.0 \
+	sample-proc_v2.0 sample-proc_v3.0 \
+	sampledso-no-delta_v2.0 sampledso-no-delta_v3.0
 
 LDIRT = $(MKARCH) \
 	$(patsubst %.0,%.meta,$(MKARCH)) $(patsubst %.0,%.index,$(MKARCH)) \
@@ -21,7 +23,7 @@ MYCONFIGS = config.foo config.bar config.bigbin \
 	config.dodgey-all config.dodgey-mixed config.dodgey-some \
 	config1.interp config2.interp
 
-MYSCRIPTS = make.dodgey mkbig1
+MYSCRIPTS = make.dodgey mkbig1 check-pmcd-stable make.sample-proc
 
 OTHERS = README
 
@@ -41,6 +43,8 @@ else
 CONFIG_INTERP = config1.interp
 endif
 
+DEFAULT_ARCHIVE_VERSION=$(shell [ -f /etc/pcp.conf ] && sed -n -e '/^PCP_ARCHIVE_VERSION=/s/.*=//p' /etc/pcp.conf)
+
 #
 # rules to make archives
 #
@@ -48,6 +52,14 @@ endif
 foo.0:	config.foo
 	rm -f foo.index foo.meta foo.0
 	pmlogger -c config.foo -s 8 foo
+
+foo_v2.0:	config.foo
+	rm -f foo_v2.index foo_v2.meta foo_v2.0
+	pmlogger -V2 -c config.foo -s 8 foo_v2
+
+foo_v3.0:	config.foo
+	rm -f foo_v3.index foo_v3.meta foo_v3.0
+	pmlogger -V3 -c config.foo -s 8 foo_v3
 
 mv-foo.0:	config.foo
 	rm -f mv-foo.index mv-foo.meta mv-foo.?
@@ -66,7 +78,11 @@ null.0:	foo.0
 	rm -f null.index null.meta null.0
 	ln foo.meta null.meta
 	ln foo.index null.index
-	dd ibs=132 count=1 if=foo.0 of=null.0
+	if [ "$(DEFAULT_ARCHIVE_VERSION)" = 3 ]; then \
+	    dd ibs=808 count=1 if=foo.0 of=null.0 ;\
+	else \
+	    dd ibs=132 count=1 if=foo.0 of=null.0 ;\
+	fi
 
 bar.0:	config.bar
 	rm -f bar.index bar.meta bar.0
@@ -100,14 +116,25 @@ truncbin.0:	bigbin.0
 	rm -f truncbin.index truncbin.meta truncbin.0
 	ln bigbin.meta truncbin.meta
 	ln bigbin.index truncbin.index
-	dd ibs=1024 count=200 if=bigbin.0 of=truncbin.0
+	# V2 len here is label size + 204668 = 200K
+	# V3 len here is label size + 204668 + 416*4 (bigger timestamps)
+	if [ "$(DEFAULT_ARCHIVE_VERSION)" = 3 ]; then \
+	    dd ibs=1 count=207140 if=bigbin.0 of=truncbin.0 ;\
+	else \
+	    dd ibs=1 count=204800 if=bigbin.0 of=truncbin.0 ;\
+	fi
 
 # truncated in the middle of the first pmResult
 bad-1.0:	bigbin.0
 	rm -f bad-1.index bad-1.meta bad-1.0
 	ln foo.meta bad-1.meta
 	ln foo.index bad-1.index
-	dd ibs=1 count=140 if=foo.0 of=bad-1.0
+	# len here is label size + 8
+	if [ "$(DEFAULT_ARCHIVE_VERSION)" = 3 ]; then \
+	    dd ibs=1 count=816 if=foo.0 of=bad-1.0;\
+	else \
+	    dd ibs=1 count=140 if=foo.0 of=bad-1.0;\
+	fi
 
 interp.0:	$(CONFIG_INTERP)
 	rm -f interp.index interp.meta interp.0
@@ -157,3 +184,15 @@ dodgey-all.0:	make.dodgey config.dodgey-all
 
 dodgey-mixed.0:	make.dodgey config.dodgey-mixed
 	./make.dodgey mixed 150
+
+sample-proc_v2.0 sample-proc_v3.0: make.sample-proc
+	./make.sample-proc
+
+sampledso-no-delta_v2.0 sampledso-no-delta_v3.0:
+	rm -f sampledso-no-delta_v2.* sampledso-no-delta_v3.*
+	rm -rf tmp
+	mkdir tmp
+	echo "log mandatory on 250msec { sampledso.long.ten sampledso.longlong.ten sampledso.bin }" >tmp/config
+	pmlogger -s 3 -c tmp/config -V2 sampledso-no-delta_v2
+	pmlogger -s 3 -c tmp/config -V3 sampledso-no-delta_v3
+	rm -rf tmp

@@ -1,6 +1,6 @@
 #
 # Common shell routines for testing security extensions
-# Copyright (c) 2012-2014,2017 Red Hat.
+# Copyright (c) 2012-2014,2017,2022 Red Hat.
 #
 
 # get standard environment, filters and checks
@@ -8,11 +8,16 @@
 . ./common.filter
 . ./common.check
 
+# if no secure_sockets in local libpcp, don't bother
+#
+_get_libpcp_config
+[ "$secure_sockets" = "true" ] || _notrun "Secure sockets not supported"
+
 usersdb=${HOME}/.pki/nssdb
 collectordb=$tmp/pki/nssdb
 collectorpw=$tmp/pki/nssdb/pass
 PCP_SECURE_DB_METHOD=${PCP_SECURE_DB_METHOD-'sql:'}
-certopts="-d $PCP_SECURE_DB_METHOD$collectordb -f $collectorpw -z $tmp.rand"
+__certopts="-d $PCP_SECURE_DB_METHOD$collectordb -f $collectorpw -z $tmp.rand"
 
 userid=`id -u`
 groupid=`id -g`
@@ -24,37 +29,36 @@ hostname=`hostname | sed -e 's/\..*//'`
 
 sasl_notrun_checks()
 {
-    gotplugins=false
-    which pluginviewer >/dev/null 2>&1 && gotplugins=true
-    if $gotplugins
+    __gotplugins=false
+    which pluginviewer >/dev/null 2>&1 && __gotplugins=true
+    if $__gotplugins
     then
 	pluginviewer=pluginviewer
     else
-	which saslpluginviewer >/dev/null 2>&1 && gotplugins=true
+	which saslpluginviewer >/dev/null 2>&1 && __gotplugins=true
 	pluginviewer=saslpluginviewer
     fi
-    $gotplugins || _notrun "SASL pluginviewer utility unavailable"
+    $__gotplugins || _notrun "SASL pluginviewer utility unavailable"
 
-    for helper in $@
+    for __helper in $@
     do
-	which $helper >/dev/null 2>&1 || _notrun "SASL $helper tool unavailable"
+	which $__helper >/dev/null 2>&1 || _notrun "SASL $__helper tool unavailable"
     done
 }
 
 nss_notrun_checks()
 {
-    _get_libpcp_config
-    [ "$secure_sockets" = "true" ] || _notrun "Secure sockets not supported"
+    [ -d "$PCP_SECURE_DB_PATH" ] || _notrun "NSS secure DB not installed"
     which certutil >/dev/null 2>&1 || _notrun "certutil not installed (NSS tools)"
     [ -c /dev/urandom ] || _notrun "No random number generator special file found"
 
-    fips=false	# testing for exposure to Red Hat bug 1035509
-    fipsfile=/proc/sys/crypto/fips_enabled
-    if [ -f $fipsfile ]
+    __fips=false	# testing for exposure to Red Hat bug 1035509
+    __fipsfile=/proc/sys/crypto/fips_enabled
+    if [ -f "$__fipsfile" ]
     then
-	test `cat $fipsfile` -ne 0 && fips=true
+	test `cat "$__fipsfile"` -ne 0 && __fips=true
     fi
-    $fips && _notrun "FIPS mode interacts badly with system NSS databases"
+    $__fips && _notrun "FIPS mode interacts badly with system NSS databases"
 }
 
 nss_cleanup()
@@ -78,9 +82,9 @@ nss_cleanup()
 # backup pmcd configuration and certificate DBs from existing installation
 nss_backup()
 {
-    for f in $PCP_PMCDOPTIONS_PATH $usersdb
+    for __f in $PCP_PMCDOPTIONS_PATH $usersdb
     do
-	[ -e $f ] && _save_config $f
+	[ -e "$__f" ] && _save_config "$__f"
     done
 }
 
@@ -102,43 +106,43 @@ nss_setup_randomness()
 
 nss_subject_name()
 {
-    fqdn=$1
-    host=$2
-    echo $fqdn | sed -e "s/^$host\./dc=/g" -e 's/\./,dc=/g'
+    __fqdn=$1
+    __host=$2
+    echo $__fqdn | sed -e "s/^$__host\./dc=/g" -e 's/\./,dc=/g'
 }
 
 nss_setup_certificates()
 {
-    certdomain=`nss_subject_name $qahost $hostname`
+    __certdomain=`nss_subject_name $qahost $hostname`
 
     echo "setup_certificates host details:" >> $here/$seq.full
     echo "HOST=$hostname" >> $here/$seq.full
     echo "QAHOST=$qahost" >> $here/$seq.full
-    echo "DOMAIN=$certdomain" >> $here/$seq.full
+    echo "DOMAIN=$__certdomain" >> $here/$seq.full
 
     # create self-signed (-x) server certificate locally
     echo "== Creating local certificates" | tee -a $here/$seq.full
-    $sudo certutil $certopts -S -x \
-	-n "Local CA certificate" -s "CN=\"Local PCP Installation, $certdomain\""  \
+    $sudo certutil $__certopts -S -x \
+	-n "Local CA certificate" -s "CN=\"Local PCP Installation, $__certdomain\""  \
 	-t "CT,,"  >> $here/$seq.full 2>&1
     sleep 1 # so that the next cert does not get the same serial number
-    $sudo certutil $certopts -S \
+    $sudo certutil $__certopts -S \
 	-n "PCP Collector certificate" -s "CN=\"PCP Collector\"" \
 	-c "Local CA certificate" -8 "$qahost,$hostname" \
 	-t "P,," >> $here/$seq.full 2>&1
     echo "== Certificate DB and local certificates created" | tee -a $here/$seq.full
 
     # export ascii copy of the certificate for later use
-    $sudo certutil $certopts -L -n "Local CA certificate" -a > $tmp.cacert.asc
+    $sudo certutil $__certopts -L -n "Local CA certificate" -a > $tmp.cacert.asc
     cat $tmp.cacert.asc >> $here/$seq.full
 }
 
 nss_setup_collector()
 {
-    withcerts=$1
-    fqdn=$2
-    host=$3
-    force_client_cert=$4
+    __withcerts=$1
+    __fqdn=$2
+    __host=$3
+    __force_client_cert=$4
 
     # prepare new locations for certificates
     $sudo rm -fr $collectordb
@@ -149,9 +153,9 @@ nss_setup_collector()
     $sudo mv $tmp.password $collectorpw
 
     echo "== Creating empty certificate DB" | tee -a $here/$seq.full
-    $sudo certutil $certopts -N
+    $sudo certutil $__certopts -N
 
-    $withcerts && nss_setup_certificates $fqdn $host
+    $__withcerts && nss_setup_certificates $__fqdn $__host
 
     if [ -d $collectordb ]
     then
@@ -159,9 +163,9 @@ nss_setup_collector()
 	$sudo chown -R pcp:pcp $collectordb
     fi
 
-    if [ -n "$force_client_cert" ]
+    if [ -n "$__force_client_cert" ]
     then
-	cert_option="-Q"
+	__cert_option="-Q"
     fi
 
     cat <<End-Of-File >$tmp.options
@@ -170,24 +174,24 @@ nss_setup_collector()
 -l $tmp.pmcd.log
 -C $PCP_SECURE_DB_METHOD$collectordb
 -P $collectorpw
-$cert_option
+$__cert_option
 End-Of-File
     $sudo cp $tmp.options $PCP_PMCDOPTIONS_PATH
-    grp=root
+    __grp=root
     case $PCP_PLATFORM
     in
 	freebsd|netbsd|openbsd)
-		grp=wheel
+		__grp=wheel
 		;;
     esac
-    $sudo chown root:$grp $PCP_PMCDOPTIONS_PATH
+    $sudo chown root:$__grp $PCP_PMCDOPTIONS_PATH
     echo "Start pmcd, modified \$PCP_PMCDOPTIONS_PATH (pmcd.options):" | tee -a $here/$seq.full
     _service pcp restart | tee -a $here/$seq.full >$tmp.out
     _wait_for_pmcd
     _wait_for_pmlogger
     grep -i 'starting pmcd' $tmp.out | sed -e "s/$$/MYPID/" | _filter_pcp_start
     echo "Checking pmcd.log for unexpected messages" | tee -a $here/$seq.full
-    egrep 'Error:|Info:' $tmp.pmcd.log | sed -e '/PMNS file "DEFAULT" is unchanged/d'
+    grep -E 'Error:|Info:' $tmp.pmcd.log | sed -e '/PMNS file "DEFAULT" is unchanged/d'
     cat $tmp.pmcd.log >> $here/$seq.full
     echo "--- end of pmcd.log ---" >> $here/$seq.full
 }
@@ -209,25 +213,137 @@ nss_import_cert_userdb()
 
 find_users()
 {
-    limit=$1
-    tail -n $limit /etc/passwd | $PCP_AWK_PROG -F: '{ print  $1 }'
+    __limit=$1
+    tail -n $__limit /etc/passwd | $PCP_AWK_PROG -F: '{ print  $1 }'
 }
 
 find_groups()
 {
-    limit=$1
-    tail -n $limit /etc/group | $PCP_AWK_PROG -F: '{ print  $1 }'
+    __limit=$1
+    tail -n $__limit /etc/group | $PCP_AWK_PROG -F: '{ print  $1 }'
 }
 
+# lines like ...
+#   [DATETIME] pmdasample(PID) Info: Attribute: ctx=N groupid=999
+#   [DATETIME] pmdasample(PID) Info: Attribute: ctx=N userid=999
+# for the "user" and "group" belonging to "pcp" are not from the QA
+# tests (likely from pmlogger or some other random process fetching
+# metrics from the local pmcd) and need to be culled
+#
 filter_sample_log_credentials()
 {
-    grep Info $PCP_LOG_DIR/pmcd/sample.log | \
-    sed \
+    __pcp_user=`grep '^pcp:' /etc/passwd | $PCP_AWK_PROG -F: '{print $3}'`
+    __pcp_group=`grep '^pcp:' /etc/group | $PCP_AWK_PROG -F: '{print $3}'`
+    grep Info $PCP_LOG_DIR/pmcd/sample.log \
+    | sed \
 	-e '/processid=/d' \
         -e '/ctx=[0-9][0-9]*/s//ctx=N/' \
         -e "s/userid=$userid/userid=UID/g" \
         -e "s/groupid=$groupid/groupid=GID/g" \
         -e "s/username=$username/username=USER/g" \
         -e '/pmdasample([0-9][0-9]*)/s//pmdasample(PID)/' \
-        -e 's/^\[[A-Z].. [A-Z]..  *[0-9][0-9]* ..:..:..]/[DATETIME]/'
+        -e 's/^\[[A-Z].. [A-Z]..  *[0-9][0-9]* ..:..:..]/[DATETIME]/' \
+	-e "/userid=$__pcp_user\$/d" \
+	-e "/groupid=$__pcp_group\$/d" \
+    # end
+}
+
+# check openssl is available and an acceptable version is installed.
+#
+_check_tls()
+{
+    openssl help 2>/dev/null || _notrun "No openssl binary found"
+
+    if [ -f /etc/lsb-release ]
+    then
+	. /etc/lsb-release
+        # TLS tests fail under Ubuntu 19.10 with a myriad of errors involving
+        # the use of uninitialized values.  The code paths vary but typically
+        # involve libuv -> libssl -> libcrypto.
+	if [ "$DISTRIB_ID" = Ubuntu ]
+	then
+	    case "$DISTRIB_RELEASE"
+	    in
+		19.10)
+		    _notrun "problems with libuv, libssl, libcrypto and valgrind on $DISTRIB_ID $DISTRIB_RELEASE"
+		;;
+	    esac
+        fi
+    fi
+}
+
+# creates self-signed (insecure) certificates for QA testing only.
+#
+_setup_cert()
+{
+    local __name=$1
+    local __cn="$2"
+    local __opts="$3"
+
+    local __keyfile=$here/tls.conf/${__name}.key
+    local __certfile=$here/tls.conf/${__name}.crt
+
+    [ -d $here/tls.conf ] || mkdir $here/tls.conf
+
+    [ -f $__keyfile ] || \
+	openssl genrsa -out $__keyfile 2048 >> $here/tls.conf/openssl.log 2>&1
+
+    [ -f $__certfile ] || \
+	openssl req \
+		-new -sha256 \
+		-subj "/O=PCP QA/CN=$__cn" \
+		-key $__keyfile \
+	| openssl x509 -req -sha256 -days 365 $__opts \
+		-CA $here/tls.conf/ca.crt \
+		-CAkey $here/tls.conf/ca.key \
+		-CAserial $here/tls.conf/ca.txt \
+		-CAcreateserial \
+		-out $__certfile >> $here/tls.conf/openssl.log 2>&1
+}
+
+# configure an /etc/pcp/tls.conf file for secure socket communication
+# - used by PMAPI clients, pmcd and pmproxy - caller must ensure that
+# a backup of tls.conf has been made, and restore it at end of test.
+#
+_setup_tls()
+{
+    [ -d $here/tls.conf ] || mkdir $here/tls.conf
+
+    [ -f $here/tls.conf/ca.key ] || \
+	openssl genrsa -out $here/tls.conf/ca.key 4096 >> $here/tls.conf/openssl.log 2>&1
+
+    [ -f $here/tls.conf/ca.crt ] || \
+	openssl req \
+		-x509 -new -nodes -sha256 -days 3650 \
+		-subj "/O=PCP QA/CN=Certificate Authority" \
+		-key $here/tls.conf/ca.key \
+		-out $here/tls.conf/ca.crt >> $here/tls.conf/openssl.log 2>&1
+
+    [ -f $here/tls.conf/openssl.cnf ] || \
+	cat > $here/tls.conf/openssl.cnf <<__END__
+[ server_cert ]
+keyUsage = digitalSignature, keyEncipherment
+nsCertType = server
+
+[ client_cert ]
+keyUsage = digitalSignature, keyEncipherment
+nsCertType = client
+__END__
+
+    _setup_cert server "Server-only" "-extfile $here/tls.conf/openssl.cnf -extensions server_cert"
+    _setup_cert client "Client-only" "-extfile $here/tls.conf/openssl.cnf -extensions client_cert"
+    _setup_cert pcp "Generic-cert"
+
+    $sudo chown -R pcp:pcp $here/tls.conf
+    $sudo chmod ugo+r $here/tls.conf/*
+
+    echo > $tmp.tls
+    echo "# settings related to TLS certificates and keys" >> $tmp.tls
+    echo "# created by QA test $seq" >> $tmp.tls
+    echo >> $tmp.tls
+    echo "tls-key-file = $here/tls.conf/pcp.key" >> $tmp.tls
+    echo "tls-cert-file = $here/tls.conf/pcp.crt" >> $tmp.tls
+    echo "tls-ca-cert-file = $here/tls.conf/ca.crt" >> $tmp.tls
+
+    $sudo cp $tmp.tls $PCP_TLSCONF_PATH
 }

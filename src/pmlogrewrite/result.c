@@ -1,14 +1,14 @@
 /*
  * pmResult rewrite methods for pmlogrewrite
  *
- * Copyright (c) 2017 Red Hat.
+ * Copyright (c) 2017,2021-2022 Red Hat.
  * Copyright (c) 2011 Ken McDonell.  All Rights Reserved.
- * 
+ *
  * This program is free software; you can redistribute it and/or modify it
  * under the terms of the GNU General Public License as published by the
  * Free Software Foundation; either version 2 of the License, or (at your
  * option) any later version.
- * 
+ *
  * This program is distributed in the hope that it will be useful, but
  * WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY
  * or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License
@@ -29,7 +29,7 @@
  * - changing type has the same implications as rescaling
  * - a single metric within a pmResult may have both rescaling and type
  *   change
- * - the initial pmResult contains pointers into a PDU buffer so the fast
+ * - the initial pmResult contains pointers into a record buffer so the fast
  *   track case in pmFreeresult() may not release any of the pmValueSet
  *   or pmValue or pmValueBlock allocations if pmFreeResult is given a
  *   rewritten pmResult, so we modify the pmResult in place but use save[]
@@ -56,7 +56,7 @@ static int		len_save = 0;
  * for the number of values expected for this metric
  */
 static int
-save_vset(pmResult *rp, int idx)
+save_vset(__pmResult *rp, int idx)
 {
     pmValueSet	*vsp;
     int		need;
@@ -94,7 +94,7 @@ save_vset(pmResult *rp, int idx)
  * free the pval for the jth instance of the ith metric
  */
 static void
-free_pval(pmResult *rp, int i, int j)
+free_pval(__pmResult *rp, int i, int j)
 {
     if (pmDebugOptions.appl2) {
 	fprintf(stderr, "free_pval: free(" PRINTF_P_PFX "%p) pmid=%s inst=%d\n",
@@ -108,7 +108,7 @@ free_pval(pmResult *rp, int i, int j)
  * pmValueSet and put the old one back in place
  */
 static void
-clean_vset(pmResult *rp)
+clean_vset(__pmResult *rp)
 {
     int		i;
     int		j;
@@ -369,7 +369,7 @@ rescale(int i, metricspec_t *mp)
 	    fprintf(stderr, "%s: Botch: %s (%s): extracting value: %s\n",
 			pmGetProgname(), mp->old_name, pmIDStr(mp->old_desc.pmid), pmErrStr(sts));
 	    inarch.rp->vset[i]->numval = j;
-	    __pmDumpResult(stderr, inarch.rp);
+	    __pmPrintResult(stderr, inarch.rp);
 	    abandon();
 	    /*NOTREACHED*/
 	}
@@ -384,7 +384,7 @@ rescale(int i, metricspec_t *mp)
 			pmGetProgname(), mp->old_name, pmIDStr(mp->old_desc.pmid), pmUnitsStr(&mp->old_desc.units));
 	    fprintf(stderr, " to %s failed: %s\n", pmUnitsStr(&mp->new_desc.units), pmErrStr(sts));
 	    inarch.rp->vset[i]->numval = j;
-	    __pmDumpResult(stderr, inarch.rp);
+	    __pmPrintResult(stderr, inarch.rp);
 	    abandon();
 	    /*NOTREACHED*/
 	}
@@ -392,7 +392,7 @@ rescale(int i, metricspec_t *mp)
 	    /*
 	     * current value uses pval that is from a previous call to
 	     * __pmStuffValue() during rewriting, not a pointer into a
-	     * PDU buffer
+	     * record buffer
 	     */
 	    if (pmDebugOptions.appl2) {
 		fprintf(stderr, "rescale free(" PRINTF_P_PFX "%p) pval pmid=%s inst=%d\n",
@@ -412,7 +412,7 @@ rescale(int i, metricspec_t *mp)
 	    fprintf(stderr, "%s: Botch: %s (%s): stuffing value %s (type=%s) into rewritten pmResult: %s\n",
 			pmGetProgname(), mp->old_name, pmIDStr(mp->old_desc.pmid), pmAtomStr(&oval, mp->old_desc.type), pmTypeStr(mp->old_desc.type), pmErrStr(sts));
 	    inarch.rp->vset[i]->numval = j;
-	    __pmDumpResult(stderr, inarch.rp);
+	    __pmPrintResult(stderr, inarch.rp);
 	    abandon();
 	    /*NOTREACHED*/
 	}
@@ -448,7 +448,7 @@ retype(int i, metricspec_t *mp)
 			pmGetProgname(), mp->old_name, pmIDStr(mp->old_desc.pmid), pmTypeStr(mp->old_desc.type));
 	    fprintf(stderr, " to %s: %s\n", pmTypeStr(mp->new_desc.type), pmErrStr(sts));
 	    inarch.rp->vset[i]->numval = j;
-	    __pmDumpResult(stderr, inarch.rp);
+	    __pmPrintResult(stderr, inarch.rp);
 	    abandon();
 	    /*NOTREACHED*/
 	}
@@ -456,7 +456,7 @@ retype(int i, metricspec_t *mp)
 	    /*
 	     * current value uses pval that is from a previous call to
 	     * __pmStuffValue() during rewriting, not a pointer into a
-	     * PDU buffer
+	     * record buffer
 	     */
 	    if (pmDebugOptions.appl2) {
 		fprintf(stderr, "retype free(" PRINTF_P_PFX "%p) pval pmid=%s inst=%d\n",
@@ -476,7 +476,7 @@ retype(int i, metricspec_t *mp)
 	    fprintf(stderr, "%s: Botch: %s (%s): stuffing value %s (type=%s) into rewritten pmResult: %s\n",
 			pmGetProgname(), mp->old_name, pmIDStr(mp->old_desc.pmid), pmAtomStr(&val, mp->new_desc.type), pmTypeStr(mp->new_desc.type), pmErrStr(sts));
 	    inarch.rp->vset[i]->numval = j;
-	    __pmDumpResult(stderr, inarch.rp);
+	    __pmPrintResult(stderr, inarch.rp);
 	    abandon();
 	    /*NOTREACHED*/
 	}
@@ -587,11 +587,11 @@ do_result(void)
 		    if (pick >= 0) {
 			if (pick > 0) {
 			    /* swap vlist[0] and vlist[pick] */
-			    pmValue		save;
-			    save = inarch.rp->vset[i]->vlist[0];
+			    pmValue		saved_value;
+			    saved_value = inarch.rp->vset[i]->vlist[0];
 			    inarch.rp->vset[i]->vlist[0] = inarch.rp->vset[i]->vlist[pick];
 			    inarch.rp->vset[i]->vlist[0].inst = inarch.rp->vset[i]->vlist[pick].inst;
-			    inarch.rp->vset[i]->vlist[pick] = save;
+			    inarch.rp->vset[i]->vlist[pick] = saved_value;
 			}
 			if (mp->new_desc.indom == PM_INDOM_NULL)
 			    inarch.rp->vset[i]->vlist[0].inst = PM_IN_NULL;
@@ -633,7 +633,7 @@ do_result(void)
 				    /*
 				     * messy case ... last instance pval is
 				     * from calling __pmStuffValue() in
-				     * rewriting not a pointer into the PDU
+				     * rewriting not a pointer into the record
 				     * buffer, so free here because
 				     * clean_vset() won't find it
 				     */
@@ -663,42 +663,48 @@ do_result(void)
      * only output numpmid == 0 case if input was a mark record
      */
     if (orig_numpmid == 0 || inarch.rp->numpmid > 0) {
+	__pmPDU		*logrec = (__pmPDU *)inarch.logrec;
 	unsigned long	out_offset;
 	unsigned long	peek_offset;
+	__uint64_t	max_offset;
+
+	max_offset = (outarch.version == PM_LOG_VERS02) ? 0x7fffffff : LONGLONG_MAX;
 	peek_offset = __pmFtell(outarch.archctl.ac_mfp);
-	sts = __pmEncodeResult(PDU_OVERRIDE2, inarch.rp, &inarch.logrec);
+	sts = __pmEncodeResult(outarch.archctl.ac_log, inarch.rp, &logrec);
 	if (sts < 0) {
 	    fprintf(stderr, "%s: Error: __pmEncodeResult: %s\n",
 		    pmGetProgname(), pmErrStr(sts));
 	    abandon();
 	    /*NOTREACHED*/
 	}
-	peek_offset += ((__pmPDUHdr *)inarch.logrec)->len - sizeof(__pmPDUHdr) + 2*sizeof(int);
-	if (peek_offset > 0x7fffffff) {
+	peek_offset += ((__pmPDUHdr *)logrec)->len - sizeof(__pmPDUHdr) + 2*sizeof(int);
+	if (peek_offset > max_offset) {
 	    /*
-	     * data file size will exceed 2^31-1 bytes, so force
-	     * volume switch
+	     * data file size will exceed maximum (2^31-1 bytes for v2),
+	     * or 2^63-1 bytes (for v3+), so force a volume switch
 	     */
 	    newvolume(outarch.archctl.ac_curvol+1);
 	}
 	out_offset = __pmFtell(outarch.archctl.ac_mfp);
-	if ((sts = __pmLogPutResult2(&outarch.archctl, inarch.logrec)) < 0) {
-	    fprintf(stderr, "%s: Error: __pmLogPutResult2: log data: %s\n",
+	sts = (outarch.version == PM_LOG_VERS02) ?
+		__pmLogPutResult2(&outarch.archctl, logrec) :
+		__pmLogPutResult3(&outarch.archctl, logrec);
+	if (sts < 0) {
+	    fprintf(stderr, "%s: Error: __pmLogPutResult: log data: %s\n",
 		    pmGetProgname(), pmErrStr(sts));
 	    abandon();
 	    /*NOTREACHED*/
 	}
 	/*
-	 * do not free inarch.logrec ... this is a libpcp PDU buffer,
-	 * so Unpin it
+	 * do not free logrec ... this is a libpcp record buffer, so unpin it
 	 */
-	__pmUnpinPDUBuf(inarch.logrec);
-	
+	__pmUnpinPDUBuf(logrec);
+
 	if (pmDebugOptions.appl0) {
 	    struct timeval	stamp;
 	    fprintf(stderr, "Log: write ");
-	    stamp.tv_sec = inarch.rp->timestamp.tv_sec;
-	    stamp.tv_usec = inarch.rp->timestamp.tv_usec;
+	    stamp.tv_sec = inarch.rp->timestamp.sec;
+	    stamp.tv_usec = inarch.rp->timestamp.nsec / 1000;
 	    pmPrintStamp(stderr, &stamp);
 	    fprintf(stderr, " numpmid=%d @ offset=%ld\n", inarch.rp->numpmid, out_offset);
 	}
@@ -716,5 +722,5 @@ do_result(void)
 	inarch.rp->vset[i]->numval = orig_numval[i];
     free(orig_numval);
 
-    pmFreeResult(inarch.rp);
+    __pmFreeResult(inarch.rp);
 }

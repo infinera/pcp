@@ -13,6 +13,7 @@ echo "QA output created by $seq"
 . ./common.filter
 . ./common.check
 
+trap "rm -f $tmp.*" 0
 _get_libpcp_config
 $unix_domain_sockets || _notrun "No unix domain socket support available"
 
@@ -123,10 +124,10 @@ while [ $i -lt 10 ]
 do
     $PCP_PS_PROG $PCP_PS_ALL_FLAGS >$tmp.tmp
     echo "ps probe #$i" >>$here/$seq.full
-    egrep '[P]ID|[p]mdadynamic' $tmp.tmp >>$here/$seq.full
+    grep -E '[P]ID|[p]mdadynamic' $tmp.tmp >>$here/$seq.full
     # looking for a defunct PMDA process
     #
-    if egrep '(pmdadynamic.*defunct)|( Z .*pmdadynamic)|\(pmdadynamic\)' $tmp.tmp >/dev/null
+    if grep -E '(pmdadynamic.*defunct)|( Z .*pmdadynamic)|\(pmdadynamic\)' $tmp.tmp >/dev/null
     then
 	rm -f $tmp.tmp
 	break
@@ -145,7 +146,7 @@ done
 if [ -f $tmp.tmp ]
 then
     echo "Arrgh ... dynamic PMDA won't die"
-    egrep '[P]ID|[p]mdadynamic' $tmp.tmp
+    grep -E '[P]ID|[p]mdadynamic' $tmp.tmp
     exit
 fi
 date >>$here/$seq.full
@@ -162,6 +163,7 @@ then
     #
     echo "Error: nval=$nval not as expected ... see $seq.full"
     pmprobe -h unix:$tmp.socket -i hinv.ncpu >>$here/$seq.full
+    pminfo -f pmcd.agent.status pmcd.agent.fenced >>$here/$seq.full
     echo "+++ Tickle failed `date` +++" >>$here/$seq.full
     cat $PCP_LOG_DIR/pmcd/pmcd.log >>$here/$seq.full
     cat $PCP_LOG_DIR/pmcd/dynamic.log >>$here/$seq.full

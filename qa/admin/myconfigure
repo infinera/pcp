@@ -94,6 +94,16 @@ then
     # rpm build configure
     #
     configopts="$configopts --with-make=$MAKE --with-tar=$TAR --with-zip=$ZIP"
+    # for RHEL 6 and CentOS 6, building with selinux no longer works, and
+    # our libqwt won't build
+    #
+    if [ -f /etc/system-release ]
+    then
+	if grep -E '((Red Hat)|CentOS).* release 6\.' /etc/system-release >/dev/null
+	then
+	    configopts="$configopts --with-selinux=no --with-qt=no"
+	fi
+    fi
 elif [ $target = darwin ]
 then
     # On Mac OS X platforms, we're using brew ...
@@ -190,16 +200,21 @@ cd src/pmns; $PCP_MAKE_PROG; cd $here
 
 if $quick
 then
+    cd src/include; $PCP_MAKE_PROG; cd $here
     echo "== Configured pcp ($configopts)"
 else
-    # build some useful libs ...
+    # build some useful libs and bits ...
     #
+    cd src/include; $PCP_MAKE_PROG; cd $here
     cd src/libpcp; $PCP_MAKE_PROG; cd $here
     cd src/libpcp_static; $PCP_MAKE_PROG; cd $here
+    cd src/libpcp_archive; $PCP_MAKE_PROG; cd $here
     cd src/libpcp_pmda; $PCP_MAKE_PROG; cd $here
     cd src/libpcp_qmc; $PCP_MAKE_PROG; cd $here
+    cd src/libpcp_web; $PCP_MAKE_PROG; cd $here
     cd src/pmcpp; $PCP_MAKE_PROG; cd $here
     cd src/newhelp; $PCP_MAKE_PROG; cd $here
+    cd src/pmns; $PCP_MAKE_PROG; cd $here
 fi
 
 # check expected files are the same

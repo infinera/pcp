@@ -48,6 +48,7 @@ pmiGetHandle: OK ->1
 pmiGetHandle: OK ->2
 pmiSetHostname: OK
 pmiSetTimezone: OK
+pmiSetVersion: OK
 pmiStart: OK ->1
 pmiUseContext: OK
 
@@ -83,8 +84,7 @@ Instance Domains in the Log ...
 
 Temporal Index
 		Log Vol    end(meta)     end(log)
-TIMESTAMP      0          132          132
-TIMESTAMP      0          244          132
+TIMESTAMP	      0          132          132
 
 [116 bytes]
 TIMESTAMP 2 metrics

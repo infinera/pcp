@@ -1,6 +1,6 @@
 /*
- * Copyright (c) 2018-2019 Red Hat.
- * 
+ * Copyright (c) 2018-2019,2021 Red Hat.
+ *
  * This program is free software; you can redistribute it and/or modify it
  * under the terms of the GNU Lesser General Public License as published
  * by the Free Software Foundation; either version 2.1 of the License, or
@@ -19,29 +19,20 @@
 #define PDU_MAXLENGTH	(MAXHOSTNAMELEN + HEADER_LENGTH + sizeof("65536")-1)
 
 static void
-client_free(struct client *client)
-{
-    if (client->u.pcp.hostname)
-	sdsfree(client->u.pcp.hostname);
-    if (client->buffer)
-	sdsfree(client->buffer);
-}
-
-static void
 on_server_close(uv_handle_t *handle)
 {
     struct client	*client = (struct client *)handle;
 
     if (pmDebugOptions.pdu)
 	fprintf(stderr, "client %p pmcd connection closed\n", client);
-    client_free(client);
+    client_put(client);
 }
 
 static void
 on_server_write(uv_write_t *writer, int status)
 {
-    struct client	*client = (struct client *)writer->handle;
-    stream_write_baton	*request = (stream_write_baton *)writer;
+    struct client		*client = (struct client *)writer->handle;
+    struct stream_write_baton	*request = (struct stream_write_baton *)writer;
 
     free(request);
     if (status != 0)
@@ -51,12 +42,12 @@ on_server_write(uv_write_t *writer, int status)
 static void
 server_write(struct client *client, sds buffer)
 {
-    stream_write_baton	*request;
+    struct stream_write_baton	*request;
 
     if (client_is_closed(client))
 	return;
 
-    if ((request = calloc(1, sizeof(stream_write_baton))) != NULL) {
+    if ((request = calloc(1, sizeof(struct stream_write_baton))) != NULL) {
 	if (pmDebugOptions.pdu)
 	    fprintf(stderr, "%s: %ld bytes from client %p to pmcd\n",
 			"server_write", (long)sdslen(buffer), client);
@@ -92,12 +83,11 @@ on_server_read(uv_stream_t *stream, ssize_t nread, const uv_buf_t *buf)
 void
 on_pcp_client_close(struct client *client)
 {
-    if (client->u.pcp.connected) {
+    if (client->u.pcp.connected)
 	uv_close((uv_handle_t *)&client->u.pcp.socket, on_server_close);
-	memset(&client->u.pcp, 0, sizeof(client->u.pcp));
-    } else {
-	client_free(client);
-    }
+    if (client->u.pcp.hostname)
+	sdsfree(client->u.pcp.hostname);
+    memset(&client->u.pcp, 0, sizeof(client->u.pcp));
 }
 
 static void
@@ -118,6 +108,8 @@ on_pcp_client_connect(uv_connect_t *connected, int status)
 
     /* socket connection to pmcd successfully established */
     client->u.pcp.state = PCP_PROXY_SETUP;
+    client->u.pcp.connected = 1;
+    client_get(client);
 
     /* if we have already received PDUs, send them on now */
     if ((buffer = client->buffer) != NULL) {

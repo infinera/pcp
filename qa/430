@@ -28,7 +28,7 @@ rm -f $seq.full
 realhost=`hostname`
 LOCALHOST=`echo $realhost | sed -e 's/\..*//'`
 hostsfile="/etc/hosts"
-egrep '^[^#].*[ 	]'$realhost'([ 	]|$)' <$hostsfile >/dev/null || \
+grep -E '^[^#].*[ 	]'$realhost'([ 	]|$)' <$hostsfile >/dev/null || \
     _notrun "No entry for hostname of local host in $hostsfile"
 
 signal="$sudo $PCP_BINADM_DIR/pmsignal"
@@ -37,7 +37,7 @@ trap "_cleanup; exit \$status" 0 1 2 3 15
 
 _stop_auto_restart pmlogger
 _service pmlogger stop | _filter_pcp_stop
-$PCP_PS_PROG $PCP_PS_ALL_FLAGS | egrep '[P]ID|[p]mlogger' >>$here/$seq.full
+$PCP_PS_PROG $PCP_PS_ALL_FLAGS | grep -E '[P]ID|[p]mlogger' >>$here/$seq.full
 
 _filter()
 {
@@ -52,6 +52,8 @@ _filter()
 	-e "s;$tmp;TMP;g" \
 	-e "s;$PCP_TMP_DIR;PCP_TMP_DIR;" \
 	-e '/Duplicate/d' \
+	-e '/^Reconfigured: .*pmlogconf./d' \
+	-e '/^No reconfigure: .*pmlogconf./d' \
 	-e 's/process [0-9][0-9]*/process PID/' \
 	-e '/[0-9] inode=/d' \
 	-e 's/[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]\.[0-9][0-9]\.[0-9][0-9]/CHECK/' \
@@ -133,10 +135,22 @@ _update_hostsfile()
 	else
 	    echo "# Hacked for QA/$seq" >$tmp.etc.hosts
 	    echo "#" >>$tmp.etc.hosts
-	    egrep '^[^#].*[ 	]'$realhost'([ 	]|$)' <$hostsfile >$tmp.tmp
-	    if [ `wc -l <$tmp.tmp | sed -e 's/  *//g'` -ne 1 ]
+	    # For recent Ubuntu versions we're seeing
+	    # 127.0.1.1 <realhost>.<domain> <realhost>
+	    # so dodge this one in the counting test
+	    # - kenj 2 May 2021
+	    #
+	    grep -E '^[^#].*[ 	]'$realhost'([ 	]|$)' <$hostsfile \
+	    | grep -v '^127\.0\.1\.1' >$tmp.tmp
+	    # we used to test for exactly one line matching $realhost
+	    # but the introduction of IPv6 means we may legitimately have
+	    # more than one entry for $realhost ... and the update algorithm
+	    # below appears safe as long as there is at least one entry
+	    # for $realhost
+	    #
+	    if [ `wc -l <$tmp.tmp | sed -e 's/  *//g'` -lt 1 ]
 	    then
-		echo "Updating $hostsfile failed: no single $realhost entry: (see $seq.full):"
+		echo "Updating $hostsfile failed: no $realhost entry: (see $seq.full):"
 		echo "=== $hostsfile ===" >>$here/$seq.full
 		cat $hostsfile >>$here/$seq.full
 		echo "grep $realhost ..." >>$here/$seq.full
@@ -146,7 +160,23 @@ _update_hostsfile()
 	    cat $tmp.tmp >>$tmp.etc.hosts
 	    echo "127.0.0.$i	$extra_hostname" >>$tmp.etc.hosts
 	    echo "" >>$tmp.etc.hosts
-	    egrep -v '^[^#].*[ 	]'$realhost'([ 	]|$)' <$hostsfile >>$tmp.etc.hosts
+	    grep -E -v '^[^#].*[ 	]'$realhost'([ 	]|$)' <$hostsfile >>$tmp.etc.hosts
+	    case "$PCP_PLATFORM"
+	    in
+		openbsd)
+		    # For OpenBSD, we need to make sure this loopback address is enabled ...
+		    #
+		    if ping -w 1 -c 1 127.0.0.$i >>$here/$seq.full 2>&1
+		    then
+			# already OK
+			:
+		    else
+			# enable it
+			$sudo ifconfig lo0 alias 127.0.0.$i
+			ifconfig lo >>$here/$seq.full 2>&1
+		    fi
+		    ;;
+	    esac
 	    break
 	fi
     done
@@ -261,10 +291,10 @@ do
     echo >>$here/$seq.full
     echo "=== test $i ===" >>$here/$seq.full
     echo "--- before _setup() ---" >>$here/$seq.full
-    $PCP_PS_PROG $PCP_PS_ALL_FLAGS | egrep '[P]ID|[p]mlogger' >>$here/$seq.full
+    $PCP_PS_PROG $PCP_PS_ALL_FLAGS | grep -E '[P]ID|[p]mlogger' >>$here/$seq.full
     _setup
     echo "--- after _setup() ---" >>$here/$seq.full
-    $PCP_PS_PROG $PCP_PS_ALL_FLAGS | egrep '[P]ID|[p]mlogger' >>$here/$seq.full
+    $PCP_PS_PROG $PCP_PS_ALL_FLAGS | grep -E '[P]ID|[p]mlogger' >>$here/$seq.full
     
     # create the control file from primary
     _extract_control $i > $logdir/control
@@ -292,14 +322,19 @@ for log in $logdir.1 $logdir.2 $logdir.3 $logdir.4 $logdir.5 $logdir.6
 do
     echo | tee -a $here/$seq.full
     echo "Kill off one pmlogger ..." | tee -a $here/$seq.full
-    pid=`grep -l $log $PCP_TMP_DIR/pmlogger/[0-9]* | sed -e 's/.*pmlogger.//'`
+    # in case /var/tmp is a symlink to /tmp, then the control file sometimes
+    # contains /tmp and sometimes contains /var/tmp ... handle both here
+    #
+    altlog=`echo $log | sed -e 's,^/var/,/,'`
+    pid=`grep -l -E "($log)|($altlog)" $PCP_TMP_DIR/pmlogger/[0-9]* | sed -e 's/.*pmlogger.//'`
+    cat $PCP_TMP_DIR/pmlogger/[0-9]* >>$here/$seq.full
     try=1
     num_pid=`echo "$pid" | wc -w | sed -e 's/ *//g'`
     while [ $try -lt 10 -a $num_pid -ne 1 ]
     do
 	echo "try $try num_pid=$num_pid: `echo $pid`" >>$here/$seq.full
 	sleep 1
-	pid=`grep -l $log $PCP_TMP_DIR/pmlogger/[0-9]* | sed -e 's/.*pmlogger.//'`
+	pid=`grep -l -E "($log)|($altlog)" $PCP_TMP_DIR/pmlogger/[0-9]* | sed -e 's/.*pmlogger.//'`
 	num_pid=`echo "$pid" | wc -w | sed -e 's/ *//g'`
 	try=`expr $try + 1`
     done
@@ -308,7 +343,7 @@ do
 	echo "Arrgh ... failed to find just one pmlogger to kill ... see $seq.full"
 	echo "" >>$here/$seq.full
 	echo "Arrgh ... failed to find just one pmlogger to kill ..." >>$here/$seq.full
-	$PCP_PS_PROG $PCP_PS_ALL_FLAGS | egrep '[P]ID|[p]mlogger' >>$here/$seq.full
+	$PCP_PS_PROG $PCP_PS_ALL_FLAGS | grep -E '[P]ID|[p]mlogger' >>$here/$seq.full
 	echo "$log contents ..." >>$here/$seq.full
 	ls -l $log >>$here/$seq.full
 	for ctl in $PCP_TMP_DIR/pmlogger/[0-9]*
@@ -316,8 +351,8 @@ do
 	    echo "+++ $ctl +++" >>$here/$seq.full
 	    cat $ctl >>$here/$seq.full
 	done
-	echo "+ grep -l $log"' $PCP_TMP_DIR/pmlogger/[0-9]*' >>$here/$seq.full
-	grep $log $PCP_TMP_DIR/pmlogger/[0-9]* >>$here/$seq.full
+	echo "+ grep -l -E \"($log)|($altlog)\"" $PCP_TMP_DIR/pmlogger/[0-9]* >>$here/$seq.full
+	grep -E "($log)|($altlog)" $PCP_TMP_DIR/pmlogger/[0-9]* >>$here/$seq.full
 	exit
     fi
     echo "Victim pid=$pid" >>$here/$seq.full
@@ -353,7 +388,7 @@ $2 == '"$pid"' { print; exit(0) }'
     rm -f $tmp.found
     while [ "$x" -lt 30 ]
     do
-	pid=`grep -l $log $PCP_TMP_DIR/pmlogger/[0-9]* | sed -e 's/.*pmlogger.//'`
+	pid=`grep -l -E "($log)|($altlog)" $PCP_TMP_DIR/pmlogger/[0-9]* | sed -e 's/.*pmlogger.//'`
 	if [ -n "$pid" ]
 	then
 	    echo "Found pid $pid after $x iterations" >>$here/$seq.full
@@ -367,7 +402,7 @@ $2 == '"$pid"' { print; exit(0) }'
     if [ ! -f $tmp.found ]
     then
 	echo "Arrgh ... pmlogger_check failed to restart pmloggers" | tee -a $here/$seq.full
-	$PCP_PS_PROG $PCP_PS_ALL_FLAGS | egrep '[P]ID|[p]mlogger' >>$here/$seq.full
+	$PCP_PS_PROG $PCP_PS_ALL_FLAGS | grep -E '[P]ID|[p]mlogger' >>$here/$seq.full
 	for state in $PCP_TMP_DIR/pmlogger/[0-9]*
 	do
 	    echo "=== $state ==="

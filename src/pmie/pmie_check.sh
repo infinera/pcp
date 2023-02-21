@@ -50,16 +50,6 @@ _unsymlink_path()
     fi
 }
 
-# constant setup
-#
-tmp=`mktemp -d "$PCP_TMPFILE_DIR/pmie_check.XXXXXXXXX"` || exit 1
-status=0
-echo >$tmp/lock
-prog=`basename $0`
-PROGLOG=$PCP_LOG_DIR/pmie/$prog.log
-MYPROGLOG=$PROGLOG.$$
-USE_SYSLOG=true
-
 _cleanup()
 {
     if [ -s "$MYPROGLOG" ]
@@ -71,12 +61,27 @@ _cleanup()
     fi
     $USE_SYSLOG && [ $status -ne 0 ] && \
     $PCP_SYSLOG_PROG -p daemon.error "$prog failed - see $PROGLOG"
-    lockfile=`cat $tmp/lock 2>/dev/null`
-    [ -n "$lockfile" ] && rm -f "$lockfile"
-    rm -rf $tmp
+    if [ -n "$tmp" ]
+    then
+	lockfile=`cat $tmp/lock 2>/dev/null`
+	[ -n "$lockfile" ] && rm -f "$lockfile"
+	[ -d "$tmp" ] && rm -rf $tmp
+    fi
     $VERY_VERBOSE && echo "End: `date '+%F %T.%N'`"
 }
+
+# constant setup
+#
+tmp=''
+status=0
+prog=`basename $0`
+PROGLOG=$PCP_LOG_DIR/pmie/$prog.log
+MYPROGLOG=$PROGLOG.$$
+USE_SYSLOG=true
+
 trap "_cleanup; exit \$status" 0 1 2 3 15
+tmp=`mktemp -d "$PCP_TMPFILE_DIR/pmie_check.XXXXXXXXX"` || exit 1
+echo >$tmp/lock
 
 # control files for pmie administration ... edit the entries in this
 # file (and optional directory) to reflect your local configuration;
@@ -110,6 +115,8 @@ VERY_VERBOSE=false
 CHECK_RUNLEVEL=false
 START_PMIE=true
 STOP_PMIE=false
+SKIP_PRIMARY=false
+ONLY_PRIMARY=false
 
 echo > $tmp/usage
 cat >> $tmp/usage << EOF
@@ -118,6 +125,8 @@ Options:
   -l=FILE,--logfile=FILE  send important diagnostic messages to FILE
   -C                      query system service runlevel information
   -N,--showme             perform a dry run, showing what would be done
+  -p,--skip-primary	  do not start or stop the primary pmie instance
+  -P,--only-primary	  only start or stop the primary pmie instance, no others
   -s,--stop               stop pmie processes instead of starting them
   -T,--terse              produce a terser form of output
   -V,--verbose            increase diagnostic verbosity
@@ -150,6 +159,11 @@ do
 		CP="echo + cp"
 		KILL="echo + kill"
 		;;
+	-p)     SKIP_PRIMARY=true
+		;;
+	-P)     ONLY_PRIMARY=true
+		;;
+
 	-s)	START_PMIE=false
 		STOP_PMIE=true
 		;;
@@ -313,6 +327,8 @@ _check_logfile()
     fi
 }
 
+# check and wait for launched pmie daemon process.
+# $1 is the pid and $2 is the pmie process stdout/stderr output file
 _check_pmie()
 {
     $VERBOSE && $PCP_ECHO_PROG $PCP_ECHO_N " [process $1] ""$PCP_ECHO_C"
@@ -329,6 +345,14 @@ _check_pmie()
     delay=`expr \( $delay + 20 \* $x \) \* 10`	# tenths of a second
     while [ $delay -ne 0 ]
     do
+	if [ -s "$2" ]; then
+	    if grep -q -s "Log finished" "$2"; then
+		echo "Error: pmie daemon failed to start, see $PCP_LOG_DIR/pmie/pmie_check.log"
+		cat "$2"
+		return 1
+	    fi
+	fi
+
 	if [ -f $logfile ]
 	then
 	    # $logfile was previously removed, if it has appeared again then
@@ -646,6 +670,24 @@ s/^\\$//
 		;;
 	esac
 
+	# if -p/--skip-primary on the command line, do not process
+	# a control file line for the primary pmie
+	#
+	if $SKIP_PRIMARY && [ $primary = y ]
+	then
+	    $VERY_VERBOSE && echo "Skip, -p/--skip-primary on command line"
+	    continue
+	fi
+
+	# if -P/--only-primary on the command line, only process
+	# the control file line for the primary pmie
+	#
+	if $ONLY_PRIMARY && [ $primary != y ]
+	then
+	    $VERY_VERBOSE && echo "Skip non-primary, -P/--only-primary on command line"
+	    continue
+	fi
+
 	# substitute LOCALHOSTNAME marker in this config line
 	# (differently for logfile and pcp -h HOST arguments)
 	#
@@ -804,11 +846,12 @@ NR == 3	{ printf "p_pmcd_host=\"%s\"\n", $0; next }
 		#
 		$VERY_VERBOSE && ( echo; $PCP_ECHO_PROG $PCP_ECHO_N "+ ${sock_me}$PMIE -b $args""$PCP_ECHO_C"; echo "..." )
 		$PCP_BINADM_DIR/pmpost "start pmie from $prog for host $host"
-		pid=`${sock_me} $PMIE -b $args >/dev/null 2>&1 & echo $!`
+		err=`mktemp "$tmp/pmie.errXXXXXXXXX"`
+		pid=`${sock_me} $PMIE -b $args >$err 2>&1 & echo $!`
 	    fi
 
 	    # wait for pmie to get started, and check on its health
-	    _check_pmie $pid
+	    _check_pmie $pid $err
 
 	elif [ ! -z "$pid" -a $STOP_PMIE = true ]
 	then

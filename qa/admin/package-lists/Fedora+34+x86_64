@@ -1,5 +1,5 @@
-# PCP required package list for Fedora 32 x86_64
-# created by kenj on vm03.localdomain Mon 12 Oct 2020 14:03:26 AEDT
+# PCP required package list for Fedora 34 x86_64
+# cloned by kenj from Fedora 32 version on Tue Oct 13 11:33:31 2020 +1100
 #
 389-ds-base
 Coin4-devel
@@ -7,7 +7,6 @@ HdrHistogram_c-devel
 RediSearch
 SoQt-devel
 Spreadsheet::Read cpan
-Spreadsheet::ReadSXC cpan
 audit
 autoconf
 avahi-devel
@@ -16,8 +15,10 @@ bash
 bc
 bind-utils
 bison
+bpftool
 bpftrace
 chan-devel
+clang
 coreutils
 cppcheck
 cronie
@@ -43,16 +44,20 @@ httpd
 initscripts
 java-latest-openjdk-headless
 kubernetes-client
+libbpf
+libbpf-devel
+libcmocka-devel
 libicu-devel
 libpfm-devel
 libuv-devel
-libvarlink-devel
 libvirt-daemon
 libvirt-daemon-driver-qemu
+llvm
+llvm-devel
 lm_sensors
 mailx
 make
-man
+man-db
 mandoc
 mariadb
 memcached
@@ -60,9 +65,6 @@ mesa-dri-drivers
 ncurses-devel
 net-tools
 nmap
-nspr-devel
-nss-devel
-nss-tools
 openssl
 openssl-devel
 perl
@@ -92,7 +94,7 @@ postfix-perl-scripts
 postgresql
 psmisc
 pylint
-python2-devel
+python2.7
 python2-setuptools
 python3-bcc
 python3-devel
@@ -106,13 +108,13 @@ python3-pillow
 python3-prometheus_client
 python3-psycopg2
 python3-pylint
+python3-pymongo
 python3-pyodbc
 python3-requests
 python3-rtslib
 python3-setuptools
 python3-six
 qt-devel
-qt4-devel
 qt5-qtbase-devel
 qt5-qtsvg-devel
 qtchooser
@@ -121,14 +123,12 @@ rdma-core-devel
 readline-devel
 redis
 rpm-build
-rpm-devel
 rrdtool
 rrdtool-perl
 sed
 selinux-policy
 selinux-policy-devel
 selinux-policy-targeted
-setools
 setools-console
 smartmontools
 socat

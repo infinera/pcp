@@ -43,15 +43,20 @@ This agent collects [StatsD](https://github.com/statsd/statsd) data, aggregates 
 
 ## Installation steps
 
-1. Put contents of this repo into $PCP_PMDAS_DIR/statsd/ ($PCP_PMDAS_DIR is sourced from /etc/pcp.conf, which should be available if you have PCP installed)
-2. First make sure you have "STATSD" namespace set to "510" in stdpmid file. [How-to](https://pcp.io/books/PCP_PG/html/id5189538.html)
-3. Compile with **make**
-4. Activate agent with **sudo make activate**
-
+Do the following as root:
+```
+cd $PCP_PMDAS_DIR/statsd
+./Install
+```
 ## Uninstallation steps
 
-1. Run **sudo make deactivate** within $PCP_PMDAS_DIR/statsd/ directory
-2. Remove the statsd folder
+Do the following as root:
+```
+cd $PCP_PMDAS_DIR/statsd
+./Remove
+```
+
+Remove the statsd folder, if you wish.
 
 # Configuration
 
@@ -66,7 +71,7 @@ It accepts following parameters:
 All levels include those belows.
 - **debug_output_filename** - You can send USR1 signal that 'asks' agent to output basic information about all aggregated metric into a $PCP\_LOG\_DIR/pmcd/statsd\_{name} file. <br>default: _debug_
 - **version** - Flag controlling whether or not to log current agent version on start <br>default: _0_
-- **parser_type** - Flag specifying which algorithm to use for parsing incoming datagrams, 0 = basic, 1 = Ragel <br>default: _0_
+- **parser_type** - Flag specifying which algorithm to use for parsing incoming datagrams, 0 = basic, 1 = Ragel. Ragel parser includes better logging when verbose = 2. <br>default: _0_
 - **duration_aggregation_type** - Flag specifying which aggregation scheme to use for duration metrics, 0 = basic, 1 = hdr histogram <br>default: _1_
 - **max_unprocessed_packets** - Maximum size of packet queue that the agent will save in memory. There are 2 queues: one for packets that are waiting to be parsed and one for parsed packets before they are aggregated <br>default: _2048_
 
@@ -320,6 +325,14 @@ Agent also exports metrics about itself:
     </ul>
 </details>
 <details>
+    <summary><strong>statsd.pmda.time_spent_parsing</strong></summary>
+    Total time in microseconds spent parsing metrics. Includes time spent parsing a datagram and failing midway.
+</details>
+<details>
+    <summary><strong>statsd.pmda.time_spent_aggregating</strong></summary>
+    Total time in microseconds spent aggregating metrics. Includes time spent aggregating a metric and failing midway.
+</details>
+<details>
     <summary><strong>statsd.pmda.settings.max_udp_packet_size</strong></summary>
     Maximum UDP packet size
 </details>
@@ -330,10 +343,6 @@ Agent also exports metrics about itself:
 <details>
     <summary><strong>statsd.pmda.settings.verbose</strong></summary>
     Verbosity flag
-</details>
-<details>
-    <summary><strong>statsd.pmda.settings.debug</strong></summary>
-    Debug flag
 </details>
 <details>
     <summary><strong>statsd.pmda.settings.debug_output_filename</strong></summary>
@@ -353,30 +362,3 @@ Agent also exports metrics about itself:
 </details>
 
 These names are blocklisted for user usage. No messages with these names will processed. While not yet reserved, whole <strong>statsd.pmda.*</strong> namespace is not recommended to use for user metrics.
-
-# Roadmap
-- Make sure code is optimized
-
-# FAQ
-
-## I installed both **chan** and **HdrHistogram_c** yet the program won't run... there seem to be .so missing.
-You may need to make sure that /usr/local is actually looked into. You may need to add the directory to **/etc/ld.so.conf** yourself:
-```
-tee /etc/ld.so.conf.d/local.conf <<EOF
-/usr/local/lib
-/usr/local/lib64
-EOF
-```
-Next, run as root:
-```
-ldconfig
-```
-to clear linker cache.
-
-# Simplified inner logic flow:
-
-Listener -> Parser -> Aggregator => Data structures (PMDA stats and StatsD metrics) guarded by locks <= PCP
-
-Legend:
-- "->" = channel
-- "=>" = shared data structures

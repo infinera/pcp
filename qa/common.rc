@@ -26,9 +26,9 @@ fi
 
 # augment $PATH for QA specific dirs
 #
-for dir in /sbin /usr/sbin
+for __dir in /sbin /usr/sbin
 do
-    [ -d "$dir" ] && PATH="$PATH:$dir"
+    [ -d "$__dir" ] && PATH="$PATH:$__dir"
 done
 export PATH
 
@@ -75,7 +75,7 @@ in
 	# I cannot make this work on Mac OS X ... kenj
 	;;
     *)
-	if $sudo -h 2>&1 | egrep '(\[-[a-zA-DF-Z]*E[a-zA-Z]*\])|(.-E[, 	])' >/dev/null 2>&1
+	if $sudo -h 2>&1 | grep -E '(\[-[a-zA-DF-Z]*E[a-zA-Z]*\])|(.-E[, 	])' >/dev/null 2>&1
 	then
 	    # sudo has -E to preserve the environment
 	    #
@@ -97,16 +97,15 @@ in
 	;;
 esac
 
-real_sudo="$sudo"
 # running with PCP_DIR set, probably don't want to do most things as
-# root ... leave $real_sudo alone just in case
+# root ... leave $sudo alone just in case
 # However, if $PCP_DIR exists and is owned by someone other than ourselves,
 # real sudo is guessed necessary.
 if [ -n "$PCP_DIR" ]
 then
-    pcp_dir_owner=`ls -ld $PCP_DIR | awk '{print $3}'`
-    whoami=`whoami`
-    if [ "$pcp_dir_owner" = "$whoami" ]; then
+    __pcp_dir_owner=`ls -ld $PCP_DIR | awk '{print $3}'`
+    __whoami=`whoami`
+    if [ "$__pcp_dir_owner" = "$__whoami" ]; then
         sudo=''
     fi
 fi
@@ -129,3 +128,9 @@ fi
 # insensitive matching
 #
 export LC_COLLATE=POSIX
+
+# If we're using timeout(1) -s ABRT from check, it helps to trap the
+# SIGABRT (signal 6), explain why you're quitting, then kill yourself
+# with SIGTERM
+#
+trap 'echo "!!!"; echo "!!! Killed from check by timeout ..."; echo "!!!"; pmsignal -s TERM '$$ 6

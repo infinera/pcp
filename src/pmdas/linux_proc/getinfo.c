@@ -47,21 +47,53 @@ tty_driver_init(void)
     tty_driver_t	*tty, *tmp;
     char		path[MAXPATHLEN];
     FILE		*file;
-    char		unused[128], device[128], range[64], *end;
+    char		*unused, *device, *range, *end;
     int			maj, n;
+    int			sts;
 
     /* create a data structure of tty drivers for faster lookups */
     pmsprintf(path, sizeof(path), "%s/proc/tty/drivers", proc_statspath);
     if ((file = fopen(path, "r")) == NULL)
 	return;
+    /*
+     * /proc/tty/drivers lines look like ...
+     * /dev/tty             /dev/tty        5       0 system:/dev/tty
+     * ...
+     * serial               /dev/ttyS       4 64-111 serial
+     */
     while (!feof(file)) {
-	n = fscanf(file, "%s %s %d %s %s", unused, device, &maj, range, unused);
-	if (n != 5)
-	    continue;
+
+	if ((sts = pmfstring(file, &unused)) < 1) {
+	    if (sts == -1)
+		break;
+	    goto bad;
+	}
+	free(unused);
+	if (pmfstring(file, &device) < 1)
+	    goto bad;
+	n = fscanf(file, "%d", &maj);
+	if (n != 1) {
+	    free(device);
+	    goto bad;
+	}
+	if (pmfstring(file, &range) < 1) {
+	    free(device);
+	    goto bad;
+	}
+	if (pmfstring(file, &unused) < 1) {
+	    free(device);
+	    free(range);
+	    goto bad;
+	}
+	free(unused);
 
 	n = (tty_driver_count + 1) * sizeof(tty_driver_t);
-	if ((tmp = (tty_driver_t *)realloc(tty_drivers, n)) == NULL)
+	if ((tmp = (tty_driver_t *)realloc(tty_drivers, n)) == NULL) {
+	    pmNoMem("tty_driver_init: realloc", n, PM_RECOV_ERR);
+	    free(device);
+	    free(range);
 	    break;
+	}
 
 	tty = &tmp[tty_driver_count];
 	if (strncmp(end = device, "/dev/", 5) == 0)
@@ -76,11 +108,19 @@ tty_driver_init(void)
 
 	tty_drivers = tmp;
 	tty_driver_count++;
+
+	free(device);
+	free(range);
+	continue;
+
+bad:
+	fprintf(stderr, "%s: bad format at %s:%d\n", __func__, path, tty_driver_count+1);
+	break;
     }
     fclose(file);
 }
 
-char *
+static char *
 lookup_ttyname(dev_t dev)
 {
     tty_driver_t	*tty;
@@ -112,7 +152,7 @@ lookup_ttyname(dev_t dev)
  *
  * Returns a pointer into a static buffer, so no free'ing needed.
  */
-char *
+static char *
 get_ttyname(dev_t dev, char *devpath)
 {
     static char	ttyname[MAXPATHLEN];
@@ -148,19 +188,11 @@ get_ttyname(dev_t dev, char *devpath)
 }
 
 /*
- * Convert kernels string device number encoding into a dev_t
+ * Use kernels device number encoding (dev_t) to
  * before searching for matching tty name.
  */
 char *
-get_ttyname_info(const char *devnum)
-{
-    unsigned device = (unsigned int)strtoul(devnum, NULL, 0);
-
-    return get_ttyname_info_dev_t((dev_t)device);
-}
-
-char *
-get_ttyname_info_dev_t(dev_t dev)
+get_ttyname_info(dev_t dev)
 {
     char	*name;
 

@@ -1,5 +1,9 @@
 # Environment variables for the primary pmlogger daemon.  See also
 # the pmlogger control file and pmlogconf(1) for additional details.
+# Also see separate pmlogger_farm configuration for the non-primary
+# logger configuration settings, separate to this file.
+# Settings defined in this file will override any settings in the
+# pmlogger zeroconf file (if present).
 
 # Behaviour regarding listening on external-facing interfaces;
 # unset PMLOGGER_LOCAL to allow connections from remote hosts.
@@ -11,7 +15,8 @@
 # PMLOGGER_MAXPENDING=5
 
 # Default sampling interval pmlogger uses when no more specific
-# interval is requested.  A value of 60 seconds is the default.
+# interval is requested.  A value of 60 seconds is the default,
+# unless pcp-zeroconf is installed then the default is 10 seconds.
 # Both pmlogger command line (via control file) and also pmlogger
 # configuration file directives will override this value.
 # PMLOGGER_INTERVAL=60

@@ -855,8 +855,8 @@ do
     line=`echo $extra | sed -e 's/.*:\([0-9][0-9]*\)$/\1/'`
     # reduce things like "[lm-sensors (QA optional)]:1189" down to
     # "lm-sensors"
-    # and "[perl-Spreadsheet-ReadSXC or cpan(Spreadsheet::ReadSXC) (QA optional)]:601
-    # down to "perl-Spreadsheet-ReadSXC cpan(Spreadsheet::ReadSXC)"
+    # and "[perl-Some-Random-Package or cpan(Some-Random::Package) (QA optional)]:601
+    # down to "perl-Some-Random-Package cpan(Some-Random::Package)"
     # and cull the [N/A...] lines
     #
     pkginfo=`echo "$extra" \
@@ -892,7 +892,7 @@ do
 	    _perl=`echo "$target" | sed -e 's/:://'`
 	    _target=`find $_perl_dirs -name "$_perl.*" -print 2>/dev/null \
 		     | tee $tmp.debug \
-	             | egrep "/$_perl.(pm|so|dylib|bs)$" \
+	             | grep -E "/$_perl.(pm|so|dylib|bs)$" \
 		     | ( tr '\012' '|'; echo ) \
 		     | sed -e 's/|$//'`
 	    if [ -z "$_target" ]
@@ -920,7 +920,7 @@ do
 	    _perl=`echo "$target" | sed -e 's/.*:://'`
 	    _target=`find $_perl_dirs -name "$_perl.*" -print 2>/dev/null \
 		     | tee $tmp.debug \
-	             | egrep "/$_module/($_submodule|$_submodule/$_perl)/$_perl.(pm|so|dylib|bs)$" \
+	             | grep -E "/$_module/($_submodule|$_submodule/$_perl)/$_perl.(pm|so|dylib|bs)$" \
 		     | ( tr '\012' '|'; echo ) \
 		     | sed -e 's/|$//'`
 	    if [ -z "$_target" ]
@@ -947,7 +947,7 @@ do
 	    _perl=`echo "$target" | sed -e 's/.*:://'`
 	    _target=`find $_perl_dirs -name "$_perl.*" -print 2>/dev/null \
 		     | tee $tmp.debug \
-	             | egrep "/$_module/$_perl.(pm|so|dylib|bs)$" \
+	             | grep -E "/$_module/$_perl.(pm|so|dylib|bs)$" \
 		     | ( tr '\012' '|'; echo ) \
 		     | sed -e 's/|$//'`
 	    if [ -z "$_target" ]

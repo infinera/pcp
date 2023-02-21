@@ -4,16 +4,18 @@
 List::MoreUtils cpan
 Net::SNMP cpan
 Spreadsheet::Read cpan
-Spreadsheet::ReadSXC cpan
 Spreadsheet::XLSX cpan
 audit
 autoconf
 bash
 bc
+bcc-tools
 bind-utils
 bison
 bpftrace
-coreutils-single
+# in CI centos8-container already has coreutils-single installed and this
+# conflicts with coreutils
+coreutils not4ci
 cronie
 curl
 cyrus-sasl
@@ -35,15 +37,18 @@ iproute
 httpd
 initscripts
 java-latest-openjdk-headless
+libbpf
 libicu-devel
 libpfm-devel
 libuv-devel
 libvirt-daemon
 libvirt-daemon-driver-qemu
+llvm
+llvm-devel
 lm_sensors
 mailx
 make
-man
+man-db
 mandoc
 mariadb
 memcached
@@ -51,9 +56,6 @@ mesa-dri-drivers
 ncurses-devel
 net-tools
 nmap
-nspr-devel
-nss-devel
-nss-tools
 openssl
 openssl-devel
 perl
@@ -64,6 +66,9 @@ perl-ExtUtils-MakeMaker
 perl-File-Slurp
 perl-JSON
 perl-LDAP
+#perl-Net-SNMP			! dnf will not install this one
+#perl-Spreadsheet-WriteExcel	! dnf will not install this one
+#perl-Spreadsheet-XLSX		! dnf will not install this one
 perl-Text-CSV_XS
 perl-Time-HiRes
 perl-TimeDate
@@ -87,10 +92,12 @@ python3-jsonpointer
 python3-libs
 python3-libvirt
 python3-lxml
+python3-openpyxl
 python3-pillow
 python3-prometheus_client
 python3-psycopg2
 python3-pylint
+python3-pyodbc
 python3-requests
 python3-rtslib
 python3-setuptools
@@ -103,14 +110,12 @@ rdma-core-devel
 readline-devel
 redis
 rpm-build
-rpm-devel
 rrdtool
 rrdtool-perl
 sed
 selinux-policy
 selinux-policy-devel
 selinux-policy-targeted
-setools
 setools-console
 smartmontools
 socat

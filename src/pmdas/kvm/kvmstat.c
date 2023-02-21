@@ -2,7 +2,7 @@
  * Configurable Kernel Virtual Machine (KVM) PMDA
  *
  * Copyright (c) 2018 Fujitsu.
- * Copyright (c) 2018,2020 Red Hat.
+ * Copyright (c) 2018,2020,2022 Red Hat.
  *
  * This program is free software; you can redistribute it and/or modify it
  * under the terms of the GNU General Public License as published by the
@@ -36,6 +36,8 @@ static int _isDSO;
 static pmdaNameSpace *pmns;
 static char *username;
 static char helppath[MAXPATHLEN];
+
+static int perf_event_setup(void);
 
 static int ntrace;
 static char **trace_nametab;
@@ -176,7 +178,34 @@ static pmdaMetric metrictab[] = {
     { "tlb_flush",
 	{ PMDA_PMID(CLUSTER_DEBUG, 33), PM_TYPE_U64, PM_INDOM_NULL,
 	    PM_SEM_COUNTER, PMDA_PMUNITS(0,0,1,0,0,PM_COUNT_ONE) } },
-#define KVM_DEBUG_COUNT	34
+    { "irq_window_exits",
+	{ PMDA_PMID(CLUSTER_DEBUG, 34), PM_TYPE_U64, PM_INDOM_NULL,
+	    PM_SEM_COUNTER, PMDA_PMUNITS(0,0,1,0,0,PM_COUNT_ONE) } },
+    { "nmi_window_exits",
+	{ PMDA_PMID(CLUSTER_DEBUG, 35), PM_TYPE_U64, PM_INDOM_NULL,
+	    PM_SEM_COUNTER, PMDA_PMUNITS(0,0,1,0,0,PM_COUNT_ONE) } },
+    { "l1d_flush",
+	{ PMDA_PMID(CLUSTER_DEBUG, 36), PM_TYPE_U64, PM_INDOM_NULL,
+	    PM_SEM_COUNTER, PMDA_PMUNITS(0,0,1,0,0,PM_COUNT_ONE) } },
+    { "request_irq_exits",
+	{ PMDA_PMID(CLUSTER_DEBUG, 37), PM_TYPE_U64, PM_INDOM_NULL,
+	    PM_SEM_COUNTER, PMDA_PMUNITS(0,0,1,0,0,PM_COUNT_ONE) } },
+    { "req_event",
+	{ PMDA_PMID(CLUSTER_DEBUG, 38), PM_TYPE_U64, PM_INDOM_NULL,
+	    PM_SEM_COUNTER, PMDA_PMUNITS(0,0,1,0,0,PM_COUNT_ONE) } },
+    { "nested_run",
+	{ PMDA_PMID(CLUSTER_DEBUG, 39), PM_TYPE_U64, PM_INDOM_NULL,
+	    PM_SEM_COUNTER, PMDA_PMUNITS(0,0,1,0,0,PM_COUNT_ONE) } },
+    { "directed_yield_attempted",
+	{ PMDA_PMID(CLUSTER_DEBUG, 40), PM_TYPE_U64, PM_INDOM_NULL,
+	    PM_SEM_COUNTER, PMDA_PMUNITS(0,0,1,0,0,PM_COUNT_ONE) } },
+    { "directed_yield_successful",
+	{ PMDA_PMID(CLUSTER_DEBUG, 41), PM_TYPE_U64, PM_INDOM_NULL,
+	    PM_SEM_COUNTER, PMDA_PMUNITS(0,0,1,0,0,PM_COUNT_ONE) } },
+    { "guest_mode",
+	{ PMDA_PMID(CLUSTER_DEBUG, 42), PM_TYPE_U64, PM_INDOM_NULL,
+	    PM_SEM_INSTANT, PMDA_PMUNITS(0,0,1,0,0,PM_COUNT_ONE) } },
+#define KVM_DEBUG_COUNT	43
 
     { "trace.count",	/* final entry - insert new entries above */
 	{ PMDA_PMID(CLUSTER_TRACE, 0), PM_TYPE_U64, PM_INDOM_NULL,
@@ -244,6 +273,8 @@ kvm_trace_refresh(void)
     size_t		bufsize = ksize + sizeof(unsigned long long);
     int			i, sts, changed = 0;
 
+    perf_event_setup();
+
     if (ntrace == 0 || group_fd == NULL || kernel_lockdown)
 	return;
 
@@ -284,13 +315,13 @@ kvm_trace_refresh(void)
 #ifdef HAVE_LINUX_PERF_EVENT_H
 static long
 perf_event_open(perf_event_attr_t *kvm_event, pid_t pid,
-		int cpu, int group_fd, unsigned long flags)
+		int cpu, int fd, unsigned long flags)
 {
-    return syscall(__NR_perf_event_open, kvm_event, pid, cpu, group_fd, flags);
+    return syscall(__NR_perf_event_open, kvm_event, pid, cpu, fd, flags);
 }
 
 static int
-perf_event(int ncpus, int *group_fd)
+perf_event(void)
 {
     struct dirent	*de;
     perf_event_attr_t	pe;
@@ -353,11 +384,34 @@ perf_event(int ncpus, int *group_fd)
     closedir(dir);
     return sts;
 }
+
+static int
+perf_event_setup(void)
+{
+    static int		setup;
+
+    if (setup)
+	return setup;
+    setup = 1;
+
+    if (tmetrictab != metrictab) {
+	int		sts;
+
+	group_fd = calloc(ncpus, sizeof(int));
+	if ((sts = perf_event()) < 0) {
+	    pmNotifyErr(LOG_INFO, "disabling perf_event support: %s",
+			pmErrStr(sts));
+	    free(group_fd);
+	    group_fd = NULL;
+	}
+    }
+    return 0;
+}
+
 #else
 static int
-perf_event(int c, int *fds)
+perf_event_setup(void)
 { 
-    (void)c; (void)fds;
     return -EOPNOTSUPP;
 }
 #endif
@@ -670,16 +724,6 @@ kvm_init(pmdaInterface *dp)
     if (tmetrictab == NULL) {
 	tmetrictab = metrictab;
 	tmetrics = nmetrics;
-    }
-
-    if (tmetrictab != metrictab) {
-	group_fd = malloc(ncpus * sizeof(int));
-	if ((sts = perf_event(ncpus, group_fd)) < 0) {
-	    pmNotifyErr(LOG_INFO, "disabling perf_event support: %s",
-			pmErrStr(sts));
-	    free(group_fd);
-	    group_fd = NULL;
-	}
     }
 
     dp->version.seven.fetch = kvm_fetch;

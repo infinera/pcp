@@ -222,6 +222,13 @@ hacluster_pacemaker_constraints_fetch(int item, struct location_constraints *loc
 }
 
 int
+hacluster_pacemaker_constraints_all_fetch(int item, pmAtomValue *atom)
+{
+	atom->ul = 1; /* Assign default exists value 1 */
+	return PMDA_FETCH_STATIC;
+}
+
+int
 hacluster_pacemaker_nodes_fetch(int item, struct nodes *nodes, pmAtomValue *atom)
 {
 	/* check for bounds */
@@ -298,6 +305,13 @@ hacluster_pacemaker_node_attribs_fetch(int item, struct attributes *attributes, 
 }
 
 int
+hacluster_pacemaker_node_attribs_all_fetch(int item, pmAtomValue *atom)
+{
+	atom->ul = 1; /* Assign default exists value 1 */
+	return PMDA_FETCH_STATIC;
+}
+
+int
 hacluster_pacemaker_resources_fetch(int item, struct resources *resources, pmAtomValue *atom)
 {
 	/* check for bounds */
@@ -354,13 +368,20 @@ hacluster_pacemaker_resources_fetch(int item, struct resources *resources, pmAto
 }
 
 int
+hacluster_pacemaker_resources_all_fetch(int item, pmAtomValue *atom)
+{
+	atom->ul = 1; /* Assign default exists value 1 */
+	return PMDA_FETCH_STATIC;
+}
+
+int
 hacluster_refresh_pacemaker_global()
 {
 	char buffer[4096];
 	char last_written_text[128], stonith[6];
 	FILE *pf;
 
-	pmsprintf(buffer, sizeof(buffer), "%s", cibadmin_command);
+	pmsprintf(buffer, sizeof(buffer), "%s 2>&1", cibadmin_command);
 
 	if ((pf = popen(buffer, "r")) == NULL)
 		return -oserror();
@@ -374,7 +395,7 @@ hacluster_refresh_pacemaker_global()
 	}
 	pclose(pf);
 
-	pmsprintf(buffer, sizeof(buffer), "%s", crm_mon_command);
+	pmsprintf(buffer, sizeof(buffer), "%s 2>&1", crm_mon_command);
 
 	if ((pf = popen(buffer, "r")) == NULL)
 		return -oserror();
@@ -402,7 +423,7 @@ hacluster_refresh_pacemaker_fail(const char *instance_name, struct fail_count *f
 	int found_node_history = 0, found_node_name = 0;
 	FILE *pf;
 
-	pmsprintf(buffer, sizeof(buffer), "%s", crm_mon_command);
+	pmsprintf(buffer, sizeof(buffer), "%s 2>&1", crm_mon_command);
 
 	if ((pf = popen(buffer, "r")) == NULL)
 		return -oserror();
@@ -455,7 +476,7 @@ hacluster_refresh_pacemaker_constraints(const char *constraints_name, struct loc
 	int found_constraints = 0;
 	FILE *pf;
 
-	pmsprintf(buffer, sizeof(buffer), "%s", cibadmin_command);
+	pmsprintf(buffer, sizeof(buffer), "%s 2>&1", cibadmin_command);
 
 	if ((pf = popen(buffer, "r")) == NULL)
 		return -oserror();
@@ -492,7 +513,7 @@ hacluster_refresh_pacemaker_nodes(const char *node_name, struct nodes *nodes)
 	char online[10], standby[10], standby_on_fail[10], maintenance[10], pending[10];
 	char unclean[10], shutdown[10], expected_up[10], dc[10];
 
-	pmsprintf(buffer, sizeof(buffer), "%s", crm_mon_command);
+	pmsprintf(buffer, sizeof(buffer), "%s 2>&1", crm_mon_command);
 
 	if ((pf = popen(buffer, "r")) == NULL)
 		return -oserror();
@@ -513,7 +534,7 @@ hacluster_refresh_pacemaker_nodes(const char *node_name, struct nodes *nodes)
 
 		/* Collect our node names */
 		if (found_nodes && strstr(buffer, node_name)) {
-			sscanf(buffer, "%*s %*s %*s online=\"%[^\"]\" standby=\"%[^\"]\" standby_onfail=\"%[^\"]\" maintenance=\"%[^\"]\" pending=\"%[^\"]\" unclean=\"%[^\"]\" shutdown=\"%[^\"]\" expected_up=\"%[^\"]\" is_dc =\"%[^\"]\" %*s type=\"%[^\"]\"",
+			sscanf(buffer, "%*s %*s %*s online=\"%9[^\"]\" standby=\"%9[^\"]\" standby_onfail=\"%9[^\"]\" maintenance=\"%9[^\"]\" pending=\"%9[^\"]\" unclean=\"%9[^\"]\" shutdown=\"%9[^\"]\" expected_up=\"%9[^\"]\" is_dc =\"%9[^\"]\" %*s type=\"%9[^\"]\"",
 				online,
 				standby,
 				standby_on_fail,
@@ -549,7 +570,7 @@ hacluster_refresh_pacemaker_node_attribs(const char *attrib_name, struct attribu
 	int found_node_attributes = 0, found_node_name = 0;
 	FILE *pf;
 
-	pmsprintf(buffer, sizeof(buffer), "%s", crm_mon_command);
+	pmsprintf(buffer, sizeof(buffer), "%s 2>&1", crm_mon_command);
 
 	if ((pf = popen(buffer, "r")) == NULL)
 		return -oserror();
@@ -623,7 +644,7 @@ hacluster_refresh_pacemaker_resources(const char *instance_name, struct resource
 		node = strsep(&str, ":");
 	}
 
-	pmsprintf(buffer, sizeof(buffer), "%s", crm_mon_command);
+	pmsprintf(buffer, sizeof(buffer), "%s 2>&1", crm_mon_command);
 
 	if ((pf = popen(buffer, "r")) == NULL) {
 		if (!no_node_attachment)
@@ -671,19 +692,8 @@ hacluster_refresh_pacemaker_resources(const char *instance_name, struct resource
 			/* Collect our metrics */
 			if (strstr(buffer, "resource id=") && strstr(buffer, resource_id)) {
 
-				if(strstr(resources->clone, "\0") || strstr(resources->group, "\0")) {
-					sscanf(buffer, "%*s %*s resource_agent=\"%[^\"]\" role=\"%[^\"]\" active=\"%[^\"]\" orphaned=\"%[^\"]\" blocked=\"%[^\"]\" managed=\"%[^\"]\" failed=\"%[^\"]\" failure_ignored=\"%[^\"]\"",
-						resources->agent,
-						resources->role,
-						active,
-						orphaned,
-						blocked,
-						managed,
-						failed,
-						failure_ignored
-					);
-				} else if ((strstr(resources->clone, "\0") || strstr(resources->group, "\0")) && strstr(buffer, "target_role")) { 
-					sscanf(buffer, "%*s %*s resource_agent=\"%[^\"]\" role=\"%[^\"]\" %*s active=\"%[^\"]\" orphaned=\"%[^\"]\" blocked=\"%[^\"]\" managed=\"%[^\"]\" failed=\"%[^\"]\" failure_ignored=\"%[^\"]\"",
+				if (strstr(buffer, "target_role")) { 
+					sscanf(buffer, "%*s %*s resource_agent=\"%[^\"]\" role=\"%[^\"]\" %*s active=\"%7[^\"]\" orphaned=\"%7[^\"]\" blocked=\"%7[^\"]\" managed=\"%7[^\"]\" failed=\"%7[^\"]\" failure_ignored=\"%7[^\"]\"",
 						resources->agent,
 						resources->role,
 						active,
@@ -694,7 +704,7 @@ hacluster_refresh_pacemaker_resources(const char *instance_name, struct resource
 						failure_ignored
 					);
 				} else {
-					sscanf(buffer, "%*s %*s resource_agent=\"%[^\"]\" role=\"%[^\"]\" %*s active=\"%[^\"]\" orphaned=\"%[^\"]\" blocked=\"%[^\"]\" managed=\"%[^\"]\" failed=\"%[^\"]\" failure_ignored=\"%[^\"]\"",
+					sscanf(buffer, "%*s %*s resource_agent=\"%[^\"]\" role=\"%[^\"]\" active=\"%7[^\"]\" orphaned=\"%7[^\"]\" blocked=\"%7[^\"]\" managed=\"%7[^\"]\" failed=\"%7[^\"]\" failure_ignored=\"%7[^\"]\"",
 						resources->agent,
 						resources->role,
 						active,

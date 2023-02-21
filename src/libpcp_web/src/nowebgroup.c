@@ -80,7 +80,7 @@ pmWebGroupSetup(pmWebGroupModule *module)
 int
 pmWebGroupSetEventLoop(pmWebGroupModule *module, void *arg)
 {
-    (void)module;
+    (void)module; (void)arg;
     return -EOPNOTSUPP;
 }
 

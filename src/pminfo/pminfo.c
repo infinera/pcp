@@ -11,6 +11,10 @@
  * WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY
  * or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License
  * for more details.
+ *
+ * Debug flags
+ * -Dappl4	report downsizing of -b
+ * -Dappl5	dump PDU stats at end if context is a host
  */
 
 #include <ctype.h>
@@ -82,6 +86,7 @@ static char	**namelist;
 static pmID	*pmidlist;
 static int	contextid;
 static int	batchsize = 128;
+static int	pdusize;	/* guess at size of PDU_PMNS_NAMES PDU */
 static int	batchidx;
 static int	verify;		/* Only print error messages */
 static int	events;		/* Decode event metrics */
@@ -895,6 +900,8 @@ report(void)
 			    pmFreeResult(xresult);
 			    xresult = NULL;
 			}
+			free(all_inst);
+			free(all_names);
 			if (opts.context == PM_CONTEXT_ARCHIVE) {
 			    if ((sts = pmSetMode(PM_MODE_FORW, &opts.origin, 0)) < 0) {
 				fprintf(stderr, "%s: pmSetMode failed: %s\n", pmGetProgname(), pmErrStr(sts));
@@ -907,8 +914,6 @@ report(void)
 			}
 			vsp = xresult->vset[0];
 			/* leave the profile in the default state */
-			free(all_inst);
-			free(all_names);
 			pmDelProfile(desc.indom, 0, NULL);
 			pmAddProfile(desc.indom, 0, NULL);
 		    }
@@ -972,6 +977,9 @@ done:
     for (i = 0; i < batchidx; i++)
 	free(namelist[i]);
     batchidx = 0;
+
+    if (opts.context == PM_CONTEXT_HOST)
+	pdusize = 5 * sizeof(__pmPDU);
 }
 
 static void
@@ -989,6 +997,18 @@ dometric(const char *name)
     }
 
     batchidx++;
+    if (opts.context == PM_CONTEXT_HOST) {
+	/*
+	 * pdu encodes length and name (rounded up to a __pmPDU boundary)
+	 * ... 64K is the hard limit, so being conservative here
+	 */
+	pdusize += sizeof(__pmPDU) + PM_PDU_SIZE_BYTES(strlen(name));
+	if (pdusize > 63*1024) {
+	    if (pmDebugOptions.appl4)
+		fprintf(stderr, "pdusize=%d reduce -b from %d to %d\n", pdusize, batchsize, batchidx);
+	    batchsize = batchidx;
+	}
+    }
     if (batchidx >= batchsize)
 	report();
 }
@@ -1042,7 +1062,7 @@ dodigit(const char *arg)
  * pminfo has a few options which do not follow the defacto standards
  */
 static int
-myoverrides(int opt, pmOptions *opts)
+myoverrides(int opt, pmOptions *optsp)
 {
     if (opt == 's' || opt == 't' || opt == 'T')
 	return 1;	/* we've claimed these, inform pmGetOptions */
@@ -1169,6 +1189,16 @@ main(int argc, char **argv)
 	 */
 	batchsize = 1;
 
+    if (opts.context == PM_CONTEXT_HOST)
+	/*
+	 * need to keep track of expected PDU size for names sent
+	 * to pmcd ... if this exceeds 64K pmcd will refuse to answer
+	 * and close the conneection (DoS protection)
+	 * initially have header (2) + 1 each for # bytes in total,
+	 * # status values and # names
+	 */
+	pdusize = 5 * sizeof(__pmPDU);
+
     if (verify)
 	p_desc = p_mid = p_fullmid = p_help = p_oneline = p_value = p_force = p_label = 0;
 
@@ -1247,6 +1277,12 @@ main(int argc, char **argv)
 	}
     }
     report();
+
+    if (pmDebugOptions.appl5)
+	__pmDumpPDUCnt(stderr);
+
+//    if (need_context)
+//	pmDestroyContext(contextid);
 
     exit(exitsts);
 }

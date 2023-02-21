@@ -27,20 +27,32 @@ LIBS_SUBDIRS = \
 	libpcp_gui \
 	libpcp_mmv \
 	libpcp_import \
+	libpcp_archive \
 	libpcp_qed \
 	libpcp_qmc \
 	libpcp_qwt \
 	libpcp_web \
+	libpcp_fault \
 	#
 
+# ones that generate .static executables and may be used later on
+# in the build
+#
 OTHER_SUBDIRS = \
+	pmcpp \
+	newhelp \
+	pmieconf \
+	#
+
+# and all the rest ...
+#
+OTHER_SUBDIRS += \
 	pminfo \
 	pmprobe \
 	bashrc \
 	zshrc \
 	dbpmda \
 	genpmda \
-	newhelp \
 	pcp \
 	pcp2elasticsearch \
 	pcp2graphite \
@@ -52,7 +64,6 @@ OTHER_SUBDIRS = \
 	pcp2zabbix \
 	pmafm \
 	pmfind \
-	pmcpp \
 	pmcd \
 	pmcd_wait \
 	pmchart \
@@ -68,7 +79,6 @@ OTHER_SUBDIRS = \
 	pmgetopt \
 	pmhostname \
 	pmie \
-	pmieconf \
 	pmiestatus \
 	pmjson \
 	pmlc \
@@ -80,6 +90,7 @@ OTHER_SUBDIRS = \
 	pmlogreduce \
 	pmlogconf \
 	pmloglabel \
+	pmlogmv \
 	pmlogpaste \
 	pmlogrewrite \
 	pmlogsize \
@@ -117,9 +128,7 @@ OTHER_SUBDIRS = \
 	discover \
 	derived \
 	selinux \
-	zeroconf \
 	find-filter \
-	pmlogmv \
 	#
 
 SUBDIRS = \

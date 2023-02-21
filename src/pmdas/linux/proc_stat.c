@@ -71,7 +71,7 @@ cpu_add(pmInDom cpus, unsigned int cpuid, pernode_t *np)
     cpu->node = np;
     setup_cpu_info(&cpu->info);
     pmsprintf(name, sizeof(name)-1, "cpu%u", cpuid);
-    cpu->instid = pmdaCacheStore(cpus, PMDA_CACHE_ADD, name, (void*)cpu);
+    /* instid= */ pmdaCacheStore(cpus, PMDA_CACHE_ADD, name, (void*)cpu);
 }
 
 static pernode_t *
@@ -291,10 +291,10 @@ refresh_proc_stat(proc_stat_t *proc_stat)
      * this handles non-SMP kernels with no line starting with "cpu0".
      */
     if ((size = pmdaCacheOp(cpus, PMDA_CACHE_SIZE)) == 1) {
-	pmdaCacheLookup(cpus, 0, &name, (void **)&cp);
+	(void)pmdaCacheLookup(cpus, 0, &name, (void **)&cp);
 	memcpy(&cp->stat, &proc_stat->all, sizeof(cp->stat));
 	pmdaCacheStore(cpus, PMDA_CACHE_ADD, name, (void *)cp);
-	pmdaCacheLookup(nodes, 0, NULL, (void **)&np);
+	(void)pmdaCacheLookup(nodes, 0, NULL, (void **)&np);
 	memcpy(&np->stat, &proc_stat->all, sizeof(np->stat));
     }
     else {

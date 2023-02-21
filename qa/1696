@@ -12,13 +12,13 @@ echo "QA output created by $seq"
 . ./common.product
 . ./common.filter
 . ./common.check
+. ./common.python
 
-# needed by ./src/pmproxy_load_test.python
-#
-which python3 >/dev/null 2>&1 || _notrun "No binary named python3 found"
 
+_check_python36 # needed by ./src/pmproxy_load_test.python
 _check_valgrind
-_check_redis_server
+_check_series
+_check_redis_server_version_offline
 
 _cleanup()
 {
@@ -36,6 +36,8 @@ cat <<EOF > $tmp.conf
 [pmproxy]
 pcp.enabled = true
 http.enabled = true
+[pmseries]
+enabled = true
 EOF
 
 port=`_find_free_port`
@@ -76,7 +78,7 @@ fi
 
 date >>$seq.full
 echo "=== pmproxy load test ===" | tee -a $seq.full
-./src/pmproxy_load_test.python 100
+./src/pmproxy_load_test.python $port 100
 
 echo "=== check pmproxy is running ==="
 pminfo -v -h localhost@localhost:$port hinv.ncpu
@@ -93,7 +95,7 @@ echo "=== valgrind stdout ===" | tee -a $seq.full
 cat $tmp.valout | _filter_valgrind
 
 echo "=== valgrind stderr ===" | tee -a $seq.full
-cat $tmp.valerr | _filter_pmproxy_log | _filter_port
+cat $tmp.valerr | _filter_pmproxy_log | grep -v "Cannot connect to Redis" | _filter_port
 
 # success, all done
 status=0

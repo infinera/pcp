@@ -726,3 +726,124 @@ PCP_3.31 {
     pmstrncpy;
     pmstrncat;
 } PCP_3.30;
+
+PCP_3.32 {
+  global:
+    pmtimespecDec;
+    pmtimespecNow;
+    pmtimespecSub;
+
+    pmHighResFetch;
+
+#if 0
+    __pmHighResFetchLocal;
+#endif
+    __pmHighResFinishResult;
+    __pmSendHighResFetch;
+    __pmDecodeHighResFetch;
+    __pmSendHighResResult;
+    __pmDecodeHighResResult;
+} PCP_3.31;
+
+PCP_3.33 {
+  global:
+    __htonpmTimestamp;
+    __ntohpmTimestamp;
+    __pmFreeHighResResultValues;
+    __pmFreeLogStatus;
+    __pmLoadTimestamp;
+    __pmLoadTimeval;
+    __pmLogFindOpen;
+    __pmLogFreeLabel;
+    __pmLogLabelSize;
+    __pmLogLoadInDom;
+    __pmLogPutLabels;
+    __pmLogVersion;
+    __pmPrintResult;
+    __pmPrintTimespec;
+    __pmPrintTimestamp;
+    __pmPutTimestamp;
+    __pmPutTimeval;
+    pmstrlen;
+    __pmTimespecSub;
+    __pmTimestampCmp;
+    __pmTimestampDec;
+    __pmTimestampInc;
+    __pmTimestampSub;
+    __pmZoneinfo;
+} PCP_3.32;
+
+PCP_3.34 {
+  global:
+    __pmAllocResult;
+    __pmDumpPDUCnt;
+    __pmUrlEncode;
+    __pmUrlDecode;
+} PCP_3.33;
+
+PCP_3.35 {
+  global:
+    pmLookupDescs;
+    __pmSendDescs;
+    __pmDecodeDescs;
+    __pmDecodeDescs2;
+    __pmDecodeIDList2;
+    __pmHashFree;
+} PCP_3.34;
+
+PCP_3.36 {
+  global:
+    __pmDumpPDUTrace;
+} PCP_3.35;
+
+PCP_3.37 {
+  global:
+    pmtimespecAdd;
+    pmtimespecInc;
+    pmtimespecToReal;
+    pmtimespecFromReal;
+    pmExtendFetchGroup_timespec;
+    pmExtendFetchGroup_timeval;
+    pmGetHighResArchiveLabel;
+    pmGetHighResArchiveEnd;
+    pmStoreHighRes;
+    pmSetModeHighRes;
+    pmFetchHighRes;
+    pmFetchHighResArchive;
+    pmSortHighResInstances;
+    pmParseHighResInterval;
+    pmParseHighResTimeWindow;
+    __pmtimespecPause;
+    __pmtimespecSleep;
+    __pmConvertHighResTime;
+    __pmParseHighResTime;
+    __pmDecodeHighResResult_ctx;
+    __pmEncodeHighResResult;
+    __pmDecodeResult_ctx;
+    __pmDecodeValueSet;
+    __pmGetResultSize;
+    __pmSortInstances;
+    __pmSendFetchPDU;
+    __pmFetch;
+    __pmFetchHighResLocal;
+    __pmFetchArchive;
+    __pmFreeResult;
+    __pmGetTimestamp;
+    __pmLogWriteMark;
+    __pmLogFeaturesStr;
+    __pmLogLoadLabelSet;
+    __pmLogPutResult3;
+    __pmLogSearchInDom;
+    __pmLogUndeltaInDom;
+    __pmLogEncodeInDom;
+    __pmLogMetaTypeStr;
+    __pmLogMetaTypeStr_r;
+    __pmDupLogInDom;
+    __pmFreeLogInDom;
+    __pmLogEncodeLabels;
+    __pmDumpStackInit;
+    __pmGetSecureConfig;
+    __pmFreeSecureConfig;
+    __pmSecureServerInit;
+    __pmSecureConfigInit;
+} PCP_3.36;

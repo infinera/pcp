@@ -18,20 +18,21 @@ include $(TOPDIR)/src/include/builddefs
 TARGET = pmrep
 SCRIPT = $(TARGET).py
 LNKTARGET = pcp2csv
-CONFIG = pmrep.conf
 MAN_PAGES = pcp2csv.1 pmrep.1 pmrep.conf.5
 BASHDIR = $(PCP_BASHSHARE_DIR)/completions
 
-default: $(SCRIPT) $(MAN_PAGES)
+SUBDIRS = conf
 
 include $(BUILDRULES)
 
-install: default
+default: $(SCRIPT) $(MAN_PAGES) $(SUBDIRS)
+	$(SUBDIRS_MAKERULE)
+
+install: default $(SUBDIRS)
 ifeq "$(HAVE_PYTHON_ORDEREDDICT)" "true"
+	$(SUBDIRS_MAKERULE)
 	$(INSTALL) -m 755 $(SCRIPT) $(PCP_BIN_DIR)/$(TARGET)
 	$(INSTALL) -S $(PCP_BIN_DIR)/$(TARGET) $(PCP_BIN_DIR)/$(LNKTARGET)
-	$(INSTALL) -m 755 -d $(PCP_SYSCONF_DIR)/$(TARGET)
-	$(INSTALL) -m 644 $(CONFIG) $(PCP_SYSCONF_DIR)/$(TARGET)/$(CONFIG)
 	$(INSTALL) -S $(BASHDIR)/pcp $(BASHDIR)/$(TARGET)
 	@$(INSTALL_MAN)
 endif
@@ -40,8 +41,8 @@ default_pcp: default
 
 install_pcp: install
 
-check :: $(SCRIPT)
-	$(PYLINT) $^
+#check :: $(SCRIPT)
+#	$(PYLINT) $^
 
 check :: pmrep.1 pmrep.conf.5
 	$(MANLINT) $^

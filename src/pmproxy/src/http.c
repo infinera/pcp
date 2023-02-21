@@ -43,7 +43,7 @@ static sds HEADER_ACCESS_CONTROL_REQUEST_HEADERS,
  * (arrays and/or objects) to a buffer.
  */
 sds
-json_push_suffix(sds suffix, json_flags type)
+json_push_suffix(sds suffix, json_flags_t type)
 {
     size_t	length;
 
@@ -86,51 +86,8 @@ json_string(const sds original)
     return unicode_encode(original, sdslen(original));
 }
 
-static inline int
-ishex(int x)
-{
-    return (x >= '0' && x <= '9') ||
-	   (x >= 'a' && x <= 'f') ||
-	   (x >= 'A' && x <= 'F');
-}
-
-int
-http_decode(const char *url, size_t urllen, sds buf)
-{
-    const char		*end = url + urllen;
-    char		*out, escape[4] = {0};
-    int			c;
-
-    for (out = buf; url < end; out++) {
-	c = *url;
-	if (c == '+')
-	    c = ' ';
-	if (c != '%')
-	    url++;
-	else {
-	    if (url + 3 > end)
-	        return -EINVAL;
-	    url++;	/* move past percent character */
-	    if (!ishex(*url++) || !ishex(*url++))
-		return -EINVAL;
-	    escape[0] = *(url - 2);
-	    escape[1] = *(url - 1);
-	    if (sscanf(escape, "%2x", &c) != 1)
-		return -EINVAL;
-	}
-	if (out - buf > sdslen(buf))
-	    return -E2BIG;
-	*out = c;
-    }
-    *out = '\0';
-    c = out - buf;
-    assert(c <= sdslen(buf));
-    sdssetlen(buf, c);
-    return c;
-}
-
 const char *
-http_content_type(http_flags flags)
+http_content_type(http_flags_t flags)
 {
     if (flags & HTTP_FLAG_JSON)
 	return "application/json";
@@ -142,7 +99,7 @@ http_content_type(http_flags flags)
 }
 
 static const char * const
-http_content_encoding(http_flags flags)
+http_content_encoding(http_flags_t flags)
 {
     if (flags & HTTP_FLAG_UTF8)
 	return "; charset=UTF-8\r\n";
@@ -152,7 +109,7 @@ http_content_encoding(http_flags flags)
 }
 
 static int
-http_status_index(http_code code)
+http_status_index(http_code_t code)
 {
     static const int	codes[] = {
 #define XX(num, name, string) num,
@@ -169,7 +126,7 @@ http_status_index(http_code code)
 }
 
 const char *
-http_status_mapping(http_code code)
+http_status_mapping(http_code_t code)
 {
     static const char  *strings[] = {
 #define XX(num, name, string) #string,
@@ -214,14 +171,14 @@ http_get_buffer(struct client *client)
 
     client->buffer = NULL;
     if (buffer == NULL) {
-	buffer = sdsnewlen(SDS_NOINIT, smallest_buffer_size);
+	buffer = sdsnewlen(NULL, smallest_buffer_size);
 	sdsclear(buffer);
     }
     return buffer;
 }
 
 void
-http_set_buffer(struct client *client, sds buffer, http_flags flags)
+http_set_buffer(struct client *client, sds buffer, http_flags_t flags)
 {
     assert(client->buffer == NULL);
     client->u.http.flags |= flags;
@@ -229,7 +186,7 @@ http_set_buffer(struct client *client, sds buffer, http_flags flags)
 }
 
 static sds
-http_response_header(struct client *client, unsigned int length, http_code sts, http_flags flags)
+http_response_header(struct client *client, unsigned int length, http_code_t sts, http_flags_t flags)
 {
     struct http_parser	*parser = &client->u.http.parser;
     char		date[64];
@@ -291,7 +248,7 @@ http_headers_allowed(sds headers)
 
 /* check whether the (preflight) method being proposed is acceptable */
 static int
-http_method_allowed(sds value, http_options options)
+http_method_allowed(sds value, http_options_t options)
 {
     if (strcmp(value, "GET") == 0 && (options & HTTP_OPT_GET))
 	return 1;
@@ -307,7 +264,7 @@ http_method_allowed(sds value, http_options options)
 }
 
 static char *
-http_methods_string(char *buffer, size_t length, http_options options)
+http_methods_string(char *buffer, size_t length, http_options_t options)
 {
     char		*p = buffer;
 
@@ -365,7 +322,7 @@ http_response_trace(struct client *client, int sts)
 }
 
 static sds
-http_response_access(struct client *client, http_code sts, http_options options)
+http_response_access(struct client *client, http_code_t sts, http_options_t options)
 {
     struct http_parser	*parser = &client->u.http.parser;
     char		buffer[64];
@@ -420,9 +377,9 @@ http_response_access(struct client *client, http_code sts, http_options options)
 
 void
 http_reply(struct client *client, sds message,
-		http_code sts, http_flags type, http_options options)
+		http_code_t sts, http_flags_t type, http_options_t options)
 {
-    http_flags		flags = client->u.http.flags;
+    enum http_flags	flags = client->u.http.flags;
     char		length[32]; /* hex length */
     sds			buffer, suffix;
 
@@ -475,7 +432,7 @@ http_reply(struct client *client, sds message,
 }
 
 void
-http_error(struct client *client, http_code status, const char *errstr)
+http_error(struct client *client, http_code_t status, const char *errstr)
 {
     const char		*mapping = http_status_mapping(status);
     struct servlet	*servlet = client->u.http.servlet;
@@ -511,7 +468,7 @@ void
 http_transfer(struct client *client)
 {
     struct http_parser	*parser = &client->u.http.parser;
-    http_flags		flags = client->u.http.flags;
+    enum http_flags	flags = client->u.http.flags;
     const char		*method;
     sds			buffer, suffix;
 
@@ -593,22 +550,18 @@ static int
 http_add_parameter(dict *parameters,
 	const char *name, int namelen, const char *value, int valuelen)
 {
-    sds			pvalue, pname;
+    char		*pname, *pvalue;
     int			sts;
 
     if (namelen == 0)
 	return 0;
-    pname = sdsnewlen(SDS_NOINIT, namelen);
 
-    if ((sts = http_decode(name, namelen, pname)) < 0) {
-	sdsfree(pname);
+    if ((sts = __pmUrlDecode(name, namelen, &pname)) < 0) {
 	return sts;
     }
     if (valuelen > 0) {
-	pvalue = sdsnewlen(SDS_NOINIT, valuelen);
-	if ((sts = http_decode(value, valuelen, pvalue)) < 0) {
-	    sdsfree(pvalue);
-	    sdsfree(pname);
+	if ((sts = __pmUrlDecode(value, valuelen, &pvalue)) < 0) {
+	    free(pname);
 	    return sts;
 	}
     } else {
@@ -622,11 +575,13 @@ http_add_parameter(dict *parameters,
 	    fprintf(stderr, "URL parameter %s\n", pname);
     }
 
-    dictAdd(parameters, pname, pvalue);
+    dictAdd(parameters, sdsnew(pname), sdsnew(pvalue));
+    free(pname);
+    free(pvalue);
     return 0;
 }
 
-static int
+int
 http_parameters(const char *url, size_t length, dict **parameters)
 {
     const char		*end = url + length;
@@ -669,6 +624,7 @@ http_url_decode(const char *url, size_t length, dict **output)
 {
     const char		*p, *end = url + length;
     size_t		psize, urlsize = length;
+    char		*cresult;
     sds			result;
 
     if (length == 0)
@@ -691,15 +647,15 @@ http_url_decode(const char *url, size_t length, dict **output)
 	return NULL;
 
     /* extract decoded base URL */
-    result = sdsnewlen(SDS_NOINIT, urlsize);
-    if (http_decode(url, urlsize, result) < 0) {
-	sdsfree(result);
+    if (__pmUrlDecode(url, urlsize, &cresult) < 0) {
 	return NULL;
     }
+    result = sdsnew(cresult);
+    free(cresult);
     return result;
 }
 
-static servlet *
+static struct servlet *
 servlet_lookup(struct client *client, const char *offset, size_t length)
 {
     struct proxy	*proxy = (struct proxy *)client->proxy;

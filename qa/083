@@ -38,11 +38,11 @@ echo "shortme=$shortme" >>$here/$seq.full
 
 _filter()
 {
-    # for Linux sometimes see "Connection reset by peer" ... this is believed
-    # to be a timing issue, and the results are semantically equivalent for
-    # the purposes of this test, so ...
-    # and the "receiving response from pmlogger" part of the no permission
-    # error message may not be there for older pmlc versions, so ...
+    # For Linux sometimes see "Connection reset by peer" or "Connection
+    # refused" ... this is believed to be a timing issue, and the
+    # results are semantically equivalent for the purposes of this test.
+    # And the "receiving response from pmlogger" part of the no permission
+    # error message may not be there for older pmlc versions.
     #
     tee -a $here/$seq.full \
     | sed -e "s/$me/ME/" \
@@ -51,6 +51,7 @@ _filter()
 	-e "s/$other1/OTHER1/" \
 	-e "s/$other2/OTHER2/" \
         -e 's/Connection reset by peer/Address already in use/' \
+        -e 's/Connection refused/Address already in use/' \
 	-e '/No permission to perform/s/ receiving response from pmlogger//'
 }
 
@@ -82,7 +83,7 @@ _await_logger()
 	    # ...but meant to die
 	    echo
 	    echo "primary pmlogger won't die, can't do QA test, ...giving up!"
-	    $PCP_PS_PROG $PCP_PS_ALL_FLAGS | egrep '[p]m|[P]PID'
+	    $PCP_PS_PROG $PCP_PS_ALL_FLAGS | grep -E '[p]m|[P]PID'
 	    exit 1
 	fi
     else
@@ -96,7 +97,7 @@ _await_logger()
 	    cat $log
 	    echo "pmlogger sh log:"
 	    cat $tmp/sh.log
-	    $PCP_PS_PROG $PCP_PS_ALL_FLAGS | egrep '[p]m|[P]PID'
+	    $PCP_PS_PROG $PCP_PS_ALL_FLAGS | grep -E '[p]m|[P]PID'
 	    exit 1
 	else
 	    echo "primary pmlogger terminated"
@@ -156,13 +157,13 @@ echo "Running the access tests"
 # but even that has been dropped now that single CPU systems are so
 # rare
 #
-# Need at least PCP 3.0 here, because there is an interoperability
-# issue with older pmlc versions (e.g. 2.7.8) talking to a newer
+# Need at least PCP 5.3.4 here, because there is an interoperability issue
+# with older pmlc versions (e.g. PCP 2.7.8 or 4.0.0) talking to a newer
 # pmlogger ... the pmlc-pmlogger channel is fine, but when pmlc tries
 # to contact the pmlogger's pmcd, if the pmlogger is using a local
 # (Unix domain) socket, :local, then the wheels fall off.
 #
-eval `./getpmcdhosts -L -n2 -v 'pcp>=3' | sed -e 's/^/other1=/' -e 's/ / other2=/'`
+eval `./getpmcdhosts -L -n2 -v 'pcp>=5.3.4' | sed -e 's/^/other1=/' -e 's/ / other2=/'`
 if [ -z "$other1" ]
 then
     _notrun "Cannot find first remote host running pmcd v2.x"
@@ -216,7 +217,11 @@ echo "starting test pmlogger..."
 #
 # extra parentheses and I/O redirection so that shell doesn't print pid
 #
-( sh -c "$sudo $PCP_BINADM_DIR/pmlogger -P -c $config -l $log TEST" >$tmp/sh.log 2>&1 & ) >/dev/null 2>&1
+# if remote hosts are running older versions with bad autonegotiate
+# version logic in libpcp, then pmlc there will only be able to connect
+# to pmlogger here if we force pmlogger to offer LOG_PDU_VERSION2
+#
+( sh -c "$sudo $PCP_BINADM_DIR/pmlogger --pmlc-ipc-version=2 -P -c $config -l $log TEST" >$tmp/sh.log 2>&1 & ) >/dev/null 2>&1
 _await_logger true
 _wait_for_pmlogger $logger_pid $log
 
@@ -234,7 +239,7 @@ if [ -s $errors ]
 then
     echo Errors: | tee -a $here/$seq.full
     _filter < $errors
-    $PCP_PS_PROG $PCP_PS_ALL_FLAGS | egrep '[p]m|[P]PID'
+    $PCP_PS_PROG $PCP_PS_ALL_FLAGS | grep -E '[p]m|[P]PID'
     exit 1
 fi
 
@@ -312,7 +317,7 @@ echo "starting new pmlogger for advisory & mandatory tests..."
 #
 # extra parentheses and I/O redirection so that shell doesn't print pid
 #
-( sh -c "$sudo $PCP_BINADM_DIR/pmlogger -P -c $config -l $log TEST2" >$tmp/sh.log 2>&1 & ) >/dev/null 2>&1
+( sh -c "$sudo $PCP_BINADM_DIR/pmlogger --pmlc-ipc-version=2 -P -c $config -l $log TEST2" >$tmp/sh.log 2>&1 & ) >/dev/null 2>&1
 _await_logger true
 _wait_for_pmlogger $logger_pid $log
 
@@ -405,7 +410,7 @@ echo "starting new pmlogger for mandatory tests..."
 #
 # extra parentheses and I/O redirection so that shell doesn't print pid
 #
-( sh -c "$sudo $PCP_BINADM_DIR/pmlogger -P -c $config -l $log TEST3" >$tmp/sh.log 2>&1 & ) >/dev/null 2>&1
+( sh -c "$sudo $PCP_BINADM_DIR/pmlogger --pmlc-ipc-version=2 -P -c $config -l $log TEST3" >$tmp/sh.log 2>&1 & ) >/dev/null 2>&1
 _await_logger true
 _wait_for_pmlogger $logger_pid $log
 

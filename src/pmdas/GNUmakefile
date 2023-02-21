@@ -24,20 +24,21 @@ CPMDAS = root pmcd \
 	apache cisco trace shping mounts weblog \
 	mmv lmsensors process roomtemp summary etw \
 	lustrecomm infiniband logger bash systemd \
-	gfs2 jbd2 cifs rpm nvidia perfevent \
+	gfs2 jbd2 cifs nvidia perfevent \
 	dm pipe openbsd docker smart podman statsd \
-	hacluster linux_sockets
+	hacluster linux_sockets denki bpf overhead
 
 PLPMDAS = bonding netfilter zimbra postgresql \
-	dbping memcache mysql oracle vmware kvm \
+	dbping memcache mysql oracle kvm \
 	named news pdns samba dtsrun postfix gpsd \
-	rsyslog snmp nginx nfsclient \
+	rsyslog snmp nginx \
 	ds389 ds389log activemq lustre gpfs slurm \
 	bind2 redis nutcracker
 
 PYPMDAS = bcc gluster zswap unbound mic haproxy \
 	json libvirt lio openmetrics elasticsearch \
-	bpftrace mssql netcheck rabbitmq openvswitch
+	bpftrace mssql netcheck rabbitmq openvswitch \
+	nfsclient mongodb
 
 SUBDIRS = $(CPMDAS) $(PLPMDAS) $(PYPMDAS)
 LDIRT = pmcd.conf

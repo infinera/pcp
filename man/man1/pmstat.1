@@ -22,7 +22,7 @@
 \f3pcp\f1 [\f2pcp\ options\f1] \f3vmstat\f1 [\f2interval\f1 [\f2samples\f1]]
 .P
 \f3pmstat\f1
-[\f3\-gLlPxz?\f1]
+[\f3\-gLlPVxz?\f1]
 [\f3\-a\f1 \f2archive\f1]
 [\f3\-A\f1 \f2align\f1]
 [\f3\-h\f1 \f2host\f1]
@@ -262,6 +262,9 @@ when they launch
 .B pmstat
 with synchronized time control.
 .TP
+\fB\-P\fR, \fB\-\-pause\fR
+Pause between updates for archive replay.
+.TP
 \fB\-s\fR \fIsamples\fR, \fB\-\-samples\fR=\fIsamples\fR
 The
 .I samples
@@ -299,6 +302,9 @@ When reporting archived metrics, the report will be restricted to those
 records logged before or at
 .IR endtime .
 .TP
+\fB\-V\fR, \fB\-\-version\fR
+Display version number and exit.
+.TP
 \fB\-x\fR, \fI\-\-xcpu\fR
 The extended CPU metrics option, causes two additional CPU metrics to be
 reported, namely wait for I/O ("wa") and virtualisation steal time ("st").
@@ -325,6 +331,9 @@ option changes the timezone to
 .I timezone
 in the format of the environment variable TZ as described in
 .BR environ (7).
+.TP
+\fB\-?\fR, \fB\-\-help\fR
+Display usage message and exit.
 .SH OUTPUT
 The output from
 .B pmstat
@@ -411,8 +420,6 @@ system and interrupt processing code (\f3sy\fP), idle loop (\f3id\fP).
 .P
 If any values for the associated performance metrics are unavailable,
 the value appears as ``?'' in the output.
-.SH DIAGNOSTICS
-All are generated on standard error and are intended to be self-explanatory.
 .SH FILES
 .TP 5
 .I $PCP_VAR_DIR/pmns/*

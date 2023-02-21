@@ -7,7 +7,6 @@ HdrHistogram_c-devel
 RediSearch
 SoQt-devel
 Spreadsheet::Read cpan
-Spreadsheet::ReadSXC cpan
 audit
 autoconf
 avahi-devel
@@ -46,7 +45,6 @@ kubernetes-client
 libicu-devel
 libpfm-devel
 libuv-devel
-libvarlink-devel
 libvirt-daemon
 libvirt-daemon-driver-qemu
 lm_sensors
@@ -60,9 +58,6 @@ mesa-dri-drivers
 ncurses-devel
 net-tools
 nmap
-nspr-devel
-nss-devel
-nss-tools
 openssl
 openssl-devel
 perl
@@ -105,6 +100,7 @@ python3-pillow
 python3-prometheus_client
 python3-psycopg2
 python3-pylint
+python3-pymongo
 python3-pyodbc
 python3-requests
 python3-rtslib
@@ -119,14 +115,12 @@ rdma-core-devel
 readline-devel
 redis
 rpm-build
-rpm-devel
 rrdtool
 rrdtool-perl
 sed
 selinux-policy
 selinux-policy-devel
 selinux-policy-targeted
-setools
 setools-console
 smartmontools
 socat

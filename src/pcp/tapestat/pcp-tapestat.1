@@ -18,7 +18,7 @@
 \f3pcp-tapestat\f1 \- report tape I/O statistics
 .SH SYNOPSIS
 \f3pcp\f1 [\f2pcp\ options\f1] \f3tapestat\f1
-[\f3\-u\f1]
+[\f3\-u?\f1]
 [\f3\-G\f1 \f2method\f1]
 [\f3\-P\f1 \f2precision\f1]
 [\f3\-R\f1 \f2pattern\f1]
@@ -30,23 +30,36 @@ reports I/O statistics for tape devices.
 When invoked via the
 .BR pcp (1)
 command, the
+.I "pcp options"
+.hy 0
+.BR \-A /\c
+.BR \-\-align ,
 .BR \-a /\c
 .BR \-\-archive ,
 .BR \-h /\c
 .BR \-\-host ,
 .BR \-O /\c
 .BR \-\-origin ,
+.BR \-S /\c
+.BR \-\-start ,
 .BR \-s /\c
 .BR \-\-samples ,
 .BR \-t /\c
 .BR \-\-interval ,
+.BR \-T /\c
+.BR \-\-finish ,
+.BR \-V /\c
+.BR \-\-version ,
 .BR \-Z /\c
 .BR \-\-timezone
-and several other
-.I pcp options
+and
+.BR \-z /\c
+.BR \-\-hostzone
 become indirectly available; refer to
 .BR PCPIntro (1)
 for a complete description of these options.
+.br
+.hy 0
 .PP
 The additional command line options available for
 .B pcp-tapestat
@@ -166,6 +179,9 @@ is specified then
 .B \-a
 must also be specified.
 .TP
+\fB\-V\fR, \fB\-\-version\fR
+Display version number and exit.
+.TP
 \f3\-x\f1 \f2comma-separated-options\f1
 Specifies a comma-separated list of one or more extended reporting
 options as follows:
@@ -176,6 +192,9 @@ options as follows:
 \f3h\fP - omit the heading, which is otherwise reported every 24 samples,
 .br
 \f3noidle\fP - Do not display statistics for idle devices.
+.TP
+\fB\-?\fR, \fB\-\-help\fR
+Display usage message and exit.
 .SH REPORT
 The columns in the
 .B pcp-tapestat
@@ -238,8 +257,6 @@ operations performed by the tape driver such as
 rewind on close (for tape devices that implement rewind on close).
 It does not include any I/O performed using methods outside of the
 tape driver (e.g. via sg ioctls).
-.SH DIAGNOSTICS
-All are generated on standard error and are intended to be self-explanatory.
 .SH PCP ENVIRONMENT
 Environment variables with the prefix \fBPCP_\fP are used to parameterize
 the file and directory names used by PCP.

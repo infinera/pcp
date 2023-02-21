@@ -1,16 +1,28 @@
 /*
- * Copyright (c) 2012-2018 Red Hat.
+ * Copyright (c) 2012-2018,2021-2022 Red Hat.
  * Copyright (c) 1995-2001,2003 Silicon Graphics, Inc.  All Rights Reserved.
- * 
+ *
  * This program is free software; you can redistribute it and/or modify it
  * under the terms of the GNU General Public License as published by the
  * Free Software Foundation; either version 2 of the License, or (at your
  * option) any later version.
- * 
+ *
  * This program is distributed in the hope that it will be useful, but
  * WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY
  * or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License
  * for more details.
+ *
+ * Debugging options
+ * appl0	control request pdus (via pmlc)
+ * appl1	credentials exchange
+ * appl2	alarm (timing) loop
+ * 		callback (do_work())
+ * 		record mode control messages
+ * appl3	signal callbacks and exit logging
+ * appl4	timestamps in the log as milestones reached
+ * appl5	PDU stats after config file processed
+ * appl6	pass0 and name cache
+ * appl7	skip pass0 ... pass0() becomes a NOOP
  */
 
 #include <ctype.h>
@@ -46,13 +58,14 @@ char		*pmcd_host;
 char		*pmcd_host_conn;
 char		*pmcd_host_label;
 int		host_context = PM_CONTEXT_HOST;	 /* pmcd / local context mode */
-int		archive_version = PM_LOG_VERS02; /* Type of archive to create */
+int		archive_version;	/* Type of archive to create by default */
 int		linger = 0;		/* linger with no tasks/events */
 int		notify_service_mgr = 0;	/* notify service manager when we're ready (daemon mode only) */
 int		pmlogger_reexec = 0;	/* set when PMLOGGER_REEXEC is set in the environment */
+int		pmlc_ipc_version = LOG_PDU_VERSION;
 int		rflag;			/* report sizes */
 int		Cflag;			/* parse config and exit */
-struct timeval	epoch;
+__pmTimestamp	epoch;
 struct timeval	delta = { 60, 0 };	/* default logging interval */
 int		sig_code;		/* caught signal */
 int		qa_case;		/* QA error injection state */
@@ -61,6 +74,7 @@ char		*note;			/* note for port map file */
 static int 	    pmcdfd = -1;	/* comms to pmcd */
 static __pmFdSet    fds;		/* file descriptors mask for select */
 static int	    numfds;		/* number of file descriptors in mask */
+static __pmFdSet    readyfds;		/* fd mask for control port select() */
 
 static int	rsc_fd = -1;	/* recording session control see -x */
 static int	rsc_replay;
@@ -75,10 +89,13 @@ run_done(int sts, char *msg)
 {
     int	i, lsts;
 
+    /* no more timer events, especially on the re-exec path */
+    __pmAFblock();
+
     if (pmDebugOptions.services || (pmDebugOptions.log && pmDebugOptions.desperate)) {
 	fprintf(stderr, "run_done(%d, %s) last_log_offset=%d last_stamp=",
 		sts, msg, last_log_offset);
-	pmPrintStamp(stderr, &last_stamp);
+	__pmPrintTimestamp(stderr, &last_stamp);
 	fputc('\n', stderr);
     }
 
@@ -87,32 +104,28 @@ run_done(int sts, char *msg)
 	    pmErrStr(lsts));
 
     if (msg != NULL)
-    	fprintf(stderr, "pmlogger: %s, %s\n", msg, log_switch_flag ? "reexec" : "exiting");
+	pmNotifyErr(LOG_INFO, "pmlogger: %s, %s\n", msg, log_switch_flag ? "reexec" : "exiting");
     else
-    	fprintf(stderr, "pmlogger: End of run time, %s\n", log_switch_flag ? "reexec" : "exiting");
+	pmNotifyErr(LOG_INFO, "pmlogger: End of run time, %s\n", log_switch_flag ? "reexec" : "exiting");
 
     /*
      * write the last last temporal index entry with the time stamp
      * of the last pmResult and the seek pointer set to the offset
      * _before_ the last log record
      */
-    if (last_stamp.tv_sec != 0) {
-	pmTimeval	tmp;
-	tmp.tv_sec = (__int32_t)last_stamp.tv_sec;
-	tmp.tv_usec = (__int32_t)last_stamp.tv_usec;
-	if (last_log_offset < sizeof(__pmLogLabel)+2*sizeof(int)) {
+    if (last_stamp.sec != 0) {
+	if (last_log_offset < __pmLogLabelSize(archctl.ac_log))
 	    fprintf(stderr, "run_done: Botch: last_log_offset = %ld\n", (long)last_log_offset);
-	}
 	__pmFseek(archctl.ac_mfp, last_log_offset, SEEK_SET);
-	__pmLogPutIndex(&archctl, &tmp);
+	__pmLogPutIndex(&archctl, &last_stamp);
     }
 
     /*
      * close the archive
      */
     __pmFclose(archctl.ac_mfp);
-    __pmFclose(archctl.ac_log->l_tifp);
-    __pmFclose(archctl.ac_log->l_mdfp);
+    __pmFclose(archctl.ac_log->tifp);
+    __pmFclose(archctl.ac_log->mdfp);
 
     if (log_switch_flag) {
     	/*
@@ -146,7 +159,7 @@ run_done(int sts, char *msg)
 /*
  * Warning: called in signal handler context ... be careful
  */
-static void
+STATIC_FUNC void
 run_done_callback(int i, void *j)
 {
     run_done_alarm = 1;
@@ -155,7 +168,7 @@ run_done_callback(int i, void *j)
 /*
  * Warning: called in signal handler context ... be careful
  */
-static void
+STATIC_FUNC void
 vol_switch_callback(int i, void *j)
 {
     vol_switch_alarm = 1;
@@ -553,6 +566,7 @@ static pmLongOptions longopts[] = {
     PMOPT_DEBUG,
     PMOPT_HOST,
     { "labelhost", 1, 'H', "LABELHOST", "override the hostname written into the label" },
+    { "pmlc-ipc-version", 1, 'I', "VERSION", "set IPC version for pmlc port [defaily LOG_PDU_VERSION]" },
     { "log", 1, 'l', "FILE", "redirect diagnostics and trace output" },
     { "linger", 0, 'L', 0, "run even if not primary logger instance and nothing to log" },
     { "note", 1, 'm', "MSG", "descriptive note to be added to the port map file" },
@@ -577,25 +591,26 @@ static pmLongOptions longopts[] = {
 };
 
 static pmOptions opts = {
-    .short_options = "c:CD:fh:H:l:K:Lm:Nn:op:Prs:T:t:uU:v:V:x:y?",
+    .short_options = "c:CD:fh:H:I:l:K:Lm:Nn:op:Prs:T:t:uU:v:V:x:y?",
     .long_options = longopts,
     .short_usage = "[options] archive",
 };
 
 static FILE *
-do_pmcpp(char *configfile)
+do_pmcpp(char *config)
 {
     FILE	*f;
+    FILE	*pipef;
     char	cmd[3*MAXPATHLEN+80];
     char	*bin_dir = pmGetConfig("PCP_BINADM_DIR");
     char	*lib_dir = pmGetConfig("PCP_VAR_DIR");
     int		sts;
     __pmExecCtl_t	*argp = NULL;
 
-    if (configfile != NULL) {
-	if ((f = fopen(configfile, "r")) == NULL) {
+    if (config != NULL) {
+	if ((f = fopen(config, "r")) == NULL) {
 	    fprintf(stderr, "%s: Cannot open config file \"%s\": %s\n",
-		pmGetProgname(), configfile, osstrerror());
+		pmGetProgname(), config, osstrerror());
 	    exit(1);
 	}
 	fclose(f);
@@ -612,8 +627,8 @@ do_pmcpp(char *configfile)
 	exit(1);
     }
 
-    pmsprintf(cmd, sizeof(cmd), "%s%cpmcpp -rs %s -I %s%cconfig%cpmlogger",
-	bin_dir, sep, configfile == NULL ? "" : configfile, lib_dir, sep, sep);
+    pmsprintf(cmd, sizeof(cmd), "%s%cpmcpp -rs -I %s%cconfig%cpmlogger %s",
+	bin_dir, sep, lib_dir, sep, sep, config == NULL ? "" : config);
     fprintf(stderr, "preprocessor cmd: %s\n", cmd);
 
     if ((sts = __pmProcessUnpickArgs(&argp, cmd)) < 0) {
@@ -622,13 +637,13 @@ do_pmcpp(char *configfile)
 	exit(1);
     }
 
-    if ((sts = __pmProcessPipe(&argp, "r", PM_EXEC_TOSS_NONE, &f)) < 0) {
+    if ((sts = __pmProcessPipe(&argp, "r", PM_EXEC_TOSS_NONE, &pipef)) < 0) {
 	fprintf(stderr, "%s: __pmProcessPipe for \"%s\" failed: %s\n",
 		pmGetProgname(), cmd, pmErrStr(sts));
 	exit(1);
     }
 
-    return f;
+    return pipef;
 }
 
 /*
@@ -712,12 +727,12 @@ updateLatestFolio(const char *host, const char *base)
      */
     if (getcwd(dir, sizeof(dir)) == NULL) {
 	if (pmDebugOptions.services)
-	    fprintf(stderr, "Info: updateLatestFolio: getcwd() failed for host %s: %s", host, strerror(errno));
+	    fprintf(stderr, "Info: updateLatestFolio: getcwd() failed for host %s: %s\n", host, strerror(errno));
 	return;
     }
     if (strncmp(dir, logdir, strlen(logdir)) != 0) {
 	if (pmDebugOptions.services)
-	    fprintf(stderr, "Info: not creating \"Latest\" archive folio for host %s: %s", host, strerror(errno));
+	    fprintf(stderr, "Info: not creating \"Latest\" archive folio for host %s: cwd %s not below %s\n", host, dir, logdir);
     	return;
     }
 
@@ -725,7 +740,7 @@ updateLatestFolio(const char *host, const char *base)
     thishost[MAXHOSTNAMELEN-1] = '\0';
 
     if ((fp = fopen("Latest", "w")) == NULL) {
-    	fprintf(stderr, "Warning: failed to create \"Latest\" archive folio for host %s: %s", host, strerror(errno));
+    	fprintf(stderr, "Warning: failed to create \"Latest\" archive folio for host %s: %s\n", host, strerror(errno));
 	return;
     }
     time(&now);
@@ -746,6 +761,148 @@ updateLatestFolio(const char *host, const char *base)
     fclose(fp);
 }
 
+/* handle request on control port */
+void
+control_port_ready(void)
+{
+    int		i;
+
+    for (i = 0; i < CFD_NUM; ++i) {
+	if (ctlfds[i] >= 0 && __pmFD_ISSET(ctlfds[i], &readyfds)) {
+	    if (control_req(ctlfds[i])) {
+		/* new client has connected */
+		__pmFD_SET(clientfd, &fds);
+		if (clientfd >= numfds)
+		    numfds = clientfd + 1;
+		if (pmDebugOptions.appl4)
+		    pmNotifyErr(LOG_INFO, "control_port_ready: new client connection (%s socket) on fd=%d clientfd=%d", i == CFD_INET ? "ipv4" : (i == CFD_IPV6 ? "ipv6" : "unix domain"), ctlfds[i], clientfd);
+	    }
+	    else {
+		if (pmDebugOptions.appl4)
+		    pmNotifyErr(LOG_INFO, "control_req() failed");
+	    }
+	}
+    }
+    if (clientfd >= 0 && __pmFD_ISSET(clientfd, &readyfds)) {
+	/* process request from client, save clientfd in case client
+	 * closes connection, resetting clientfd to -1
+	 */
+	int	fd = clientfd;
+
+	if (pmDebugOptions.appl4)
+	    pmNotifyErr(LOG_INFO, "control_port_ready: request on clientfd=%d", clientfd);
+
+	if (client_req()) {
+	    /* client closed connection */
+	    __pmFD_CLR(fd, &fds);
+	    __pmCloseSocket(clientfd);
+	    clientfd = -1;
+	    pmlc_host[0] = '\0';
+	    numfds = maxfd() + 1;
+	    qa_case = 0;
+	}
+    }
+#ifndef IS_MINGW
+    if (pmcdfd >= 0 && __pmFD_ISSET(pmcdfd, &readyfds)) {
+	/*
+	 * do not expect this, given synchronous commumication with the
+	 * pmcd ... either pmcd has terminated, or bogus PDU ... or its
+	 * Win32 and we are operating under the different conditions of
+	 * our AF.c implementation there, which has to deal with a lack
+	 * of signal support on Windows - race condition exists between
+	 * this check and the async event timer callback.
+	 */
+	__pmPDU		*pb;
+	__pmPDUHdr	*php;
+	int		sts;
+	sts = __pmGetPDU(pmcdfd, ANY_SIZE, TIMEOUT_NEVER, &pb);
+	if (sts <= 0) {
+	    if (sts < 0)
+		fprintf(stderr, "Error: __pmGetPDU: %s\n", pmErrStr(sts));
+	    disconnect(sts);
+	}
+	else {
+	    php = (__pmPDUHdr *)pb;
+	    fprintf(stderr, "Error: Unsolicited %s PDU from PMCD\n",
+		__pmPDUTypeStr(php->type));
+	    __pmDumpPDUTrace(stderr);
+	    disconnect(PM_ERR_IPC);
+	}
+	if (sts > 0)
+	    __pmUnpinPDUBuf(pb);
+    }
+#endif
+    if (rsc_fd >= 0 && __pmFD_ISSET(rsc_fd, &readyfds)) {
+	/*
+	 * some action on the recording session control fd
+	 * end-of-file means launcher has quit, otherwise we
+	 * expect one of these commands
+	 *	V<number>\n	- version
+	 *	F<folio>\n	- folio name
+	 *	P<name>\n	- launcher's name
+	 *	R\n		- launcher can replay
+	 *	D\n		- detach from launcher
+	 *	Q\n		- quit pmlogger
+	 */
+	char	rsc_buf[MAXPATHLEN];
+	char	*rp = rsc_buf;
+	char	myc;
+	int	fake_x = 0;
+
+	for (rp = rsc_buf; ; rp++) {
+	    if (read(rsc_fd, &myc, 1) <= 0) {
+		if (pmDebugOptions.appl2)
+		    fprintf(stderr, "recording session control: eof\n");
+		if (rp != rsc_buf) {
+		    *rp = '\0';
+		    fprintf(stderr, "Error: incomplete recording session control message: \"%s\"\n", rsc_buf);
+		}
+		fake_x = 1;
+		break;
+	    }
+	    if (rp >= &rsc_buf[MAXPATHLEN]) {
+		fprintf(stderr, "Error: absurd recording session control message: \"%100.100s ...\"\n", rsc_buf);
+		fake_x = 1;
+		break;
+	    }
+	    if (myc == '\n') {
+		*rp = '\0';
+		break;
+	    }
+	    *rp = myc;
+	}
+
+	if (pmDebugOptions.appl2) {
+	    if (fake_x == 0)
+		fprintf(stderr, "recording session control: \"%s\"\n", rsc_buf);
+	}
+
+	if (fake_x)
+	    do_dialog('X');
+	else if (strcmp(rsc_buf, "Q") == 0 ||
+		 strcmp(rsc_buf, "D") == 0 ||
+		 strcmp(rsc_buf, "?") == 0)
+	    do_dialog(rsc_buf[0]);
+	else if (rsc_buf[0] == 'F')
+	    folio_name = strdup(&rsc_buf[1]);
+	else if (rsc_buf[0] == 'P')
+	    rsc_prog = strdup(&rsc_buf[1]);
+	else if (strcmp(rsc_buf, "R") == 0)
+	    rsc_replay = 1;
+	else if (rsc_buf[0] == 'V' && rsc_buf[1] == '0') {
+	    /*
+	     * version 0 of the recording session control ...
+	     * this is all we grok at the moment
+	     */
+	    ;
+	}
+	else {
+	    fprintf(stderr, "Error: illegal recording session control message: \"%s\"\n", rsc_buf);
+	    do_dialog('X');
+	}
+    }
+}
+
 int
 main(int argc, char **argv)
 {
@@ -763,7 +920,6 @@ main(int argc, char **argv)
     int			make_uniq = 0;	/* set if -NN suffix regime is in play */
     task_t		*tp;
     optcost_t		ocp;
-    __pmFdSet		readyfds;
     char		*p;
     char		*runtime = NULL;
     int	    		ctx;		/* handle corresponding to ctxp below */
@@ -772,15 +928,36 @@ main(int argc, char **argv)
     pid_t               target_pid = 0;
     int			exit_code = 0;
     char		*exit_msg;
-    const char		*name = "pmcd.timezone";
-    pmID		pmid;
-    pmResult		*resp;
+    const char		*names[2] = { "pmcd.timezone", "pmcd.zoneinfo" };;
+    pmID		pmids[2];
+    pmHighResResult	*resp;
+    pmValueSet		*vp;
+    struct timespec	myepoch;
+    struct timeval	nowait = {0, 0};
+    FILE		*fp;		/* pipe from pmcpp */
+#ifdef HAVE___EXECUTABLE_START
+    extern char		__executable_start;
+#endif
+
+    pmtimespecNow(&myepoch);
+
+#ifdef HAVE___EXECUTABLE_START
+    /*
+     * optionally set address for start of my text segment, to be used
+     * in __pmDumpStack() if it is called later
+     */
+    __pmDumpStackInit((void *)&__executable_start);
+#endif
 
     save_args(argc, argv);
     pmGetUsername(&username);
     sep = pmPathSeparator();
     if ((endnum = getenv("PMLOGGER_INTERVAL")) != NULL)
 	delta.tv_sec = atoi(endnum);
+    if ((endnum = pmGetOptionalConfig("PCP_ARCHIVE_VERSION")) != NULL)
+	archive_version = atoi(endnum);
+    else
+	archive_version = PM_LOG_VERS02;	/* safe fallback */
 
     while ((c = pmgetopt_r(argc, argv, &opts)) != EOF) {
 	switch (c) {
@@ -824,6 +1001,19 @@ main(int argc, char **argv)
 
 	case 'H':		/* hostname to put in label*/
 	    pmcd_host_label = strndup(opts.optarg, PM_LOG_MAXHOSTLEN-1);
+	    break;
+
+	case 'I':
+	    pmlc_ipc_version = (int)strtol(opts.optarg, &endnum, 10);
+	    if (*endnum != '\0') {
+		pmprintf("%s: non-numeric pmlc IPC version (%s)\n",
+			 pmGetProgname(), opts.optarg);
+		opts.errors++;
+	    } else if (pmlc_ipc_version < LOG_PDU_VERSION2 || pmlc_ipc_version > LOG_PDU_VERSION) {
+		pmprintf("%s: unsupported pmlc IPC version (%d)\n",
+			 pmGetProgname(), pmlc_ipc_version);
+		opts.errors++;
+	    }
 	    break;
 
 	case 'l':		/* log file name */
@@ -897,9 +1087,6 @@ main(int argc, char **argv)
 			pmGetProgname(), opts.optarg);
 		opts.errors++;
 	    }
-	    else if (exit_time.tv_sec > 0) {
-		__pmAFregister(&exit_time, NULL, run_done_callback);
-	    }
 	    break;
 
 	case 'T':		/* end time */
@@ -934,17 +1121,15 @@ main(int argc, char **argv)
 			pmGetProgname(), opts.optarg);
 		opts.errors++;
 	    }
-	    else if (vol_switch_time.tv_sec > 0) {
-		vol_switch_afid = __pmAFregister(&vol_switch_time, NULL, 
-						 vol_switch_callback);
-            }
 	    break;
 
         case 'V': 
 	    archive_version = (int)strtol(opts.optarg, &endnum, 10);
-	    if (*endnum != '\0' || archive_version != PM_LOG_VERS02) {
-		pmprintf("%s: -V requires a version number of %d\n",
-			 pmGetProgname(), PM_LOG_VERS02); 
+	    if (*endnum != '\0'
+		|| (archive_version != PM_LOG_VERS02 &&
+	            archive_version != PM_LOG_VERS03)) {
+		pmprintf("%s: -V requires a version number of %d or %d\n",
+			 pmGetProgname(), PM_LOG_VERS02, PM_LOG_VERS03); 
 		opts.errors++;
 	    }
 	    break;
@@ -1030,7 +1215,7 @@ main(int argc, char **argv)
 	/* only open a new log if we are NOT reexec'd */
 	if (pmlogger_reexec) {
 	    if (pmDebugOptions.services)
-		fprintf(stderr, "existing pmlogger.log remains open after re-exec\n");
+		fprintf(stderr, "existing log %s remains open after re-exec\n", logfile);
 	} else {
 	    pmOpenLog("pmlogger", logfile, stderr, &sts);
 	    if (sts != 1) {
@@ -1039,6 +1224,14 @@ main(int argc, char **argv)
 	    }
 	}
     }
+
+    /*
+     * Report start, includes date and PID
+     */
+    pmNotifyErr(LOG_INFO, "Start");
+
+    if (pmDebugOptions.appl4)
+	pmNotifyErr(LOG_INFO, "Signal handlers installed");
 
     if (Cflag == 0) {
 	/* base name for archive is here ... */
@@ -1123,10 +1316,27 @@ main(int argc, char **argv)
 	PM_UNLOCK(ctxp->c_lock);
     }
 
-    yyin = do_pmcpp(configfile);
+    if (pmDebugOptions.appl4)
+	pmNotifyErr(LOG_INFO, "Start pmcpp and parse");
+
+    fp = do_pmcpp(configfile);
     /* do not return unless yyin is valid */
     if (configfile == NULL)
 	configfile = strdup("<stdin>");
+
+    /*
+     * Pass 0 to extract PMNS names and build cache ... there is
+     * no return if anything fatal happens
+     */
+    yyin = pass0(fp);
+    __pmProcessPipeClose(fp);
+
+    /*
+     * set up signal handlers ... can't do it earlier because on some
+     * platforms the fork-n-exec to run pmcpp(1) behaves badly if we
+     * install our signal handlers before this
+     */
+    init_signals();
 
     __pmOptFetchGetParams(&ocp);
     ocp.c_scope = 1;
@@ -1137,10 +1347,17 @@ main(int argc, char **argv)
 
     if (yyparse() != 0)
 	exit(1);
-    __pmProcessPipeClose(yyin);
+    fclose(yyin);
     yyend();
 
+    /* no further need for the pass0 name cache */
+    cache_free();
+
     fprintf(stderr, "Config parsed\n");
+
+    if (pmDebugOptions.appl4) {
+	pmNotifyErr(LOG_INFO, "Parsing done");
+    }
 
     if (pmDebugOptions.log) {
 	fprintf(stderr, "optFetch Cost Parameters: pmid=%d indom=%d fetch=%d scope=%d\n",
@@ -1180,8 +1397,20 @@ main(int argc, char **argv)
 	}
     }
 
+    if (pmDebugOptions.appl5) {
+	struct timespec	now;
+
+	pmtimespecNow(&now);
+	fprintf(stderr, "Elapsed: %.9f sec\n", pmtimespecSub(&now, &myepoch));
+	__pmDumpPDUCnt(stderr);
+    }
+
     if (Cflag)
 	exit(0);
+
+    if (pmDebugOptions.appl4) {
+	pmNotifyErr(LOG_INFO, "Cflag test done, continuing");
+    }
 
     fprintf(stderr, "Starting %slogger for host \"%s\" via \"%s\"\n",
             primary ? "primary " : "", pmcd_host, pmcd_host_conn);
@@ -1191,9 +1420,8 @@ main(int argc, char **argv)
 	exit(1);
     }
 
-    if (pmcd_host_label != NULL) {
-	pmcd_host=pmcd_host_label;
-    }
+    if (pmcd_host_label != NULL)
+	pmcd_host = pmcd_host_label;
 
     archctl.ac_log = &logctl;
 
@@ -1225,31 +1453,48 @@ main(int argc, char **argv)
     }
 
     /*
+     * Get FQDN of host where pmlogger is running ... do this before
+     * any pmFetch scheduling calculations so we don't get AF events
+     * whacked by possible DNS delays in the prologue/epilogue
+     * processing.
+     */
+    prep_fqdn();
+
+    /*
      * try and establish $TZ from the remote PMCD ...
      * Note the label record has been set up, but not written yet
      */
 
-    pmtimevalNow(&epoch);
+    __pmGetTimestamp(&epoch);
     sts = pmUseContext(ctx);
 
     if (sts >= 0)
-	sts = pmLookupName(1, &name, &pmid);
+	sts = pmLookupName(2, names, pmids);
     if (sts >= 0)
-	sts = pmFetch(1, &pmid, &resp);
+	sts = pmFetchHighRes(2, pmids, &resp);
     if (sts >= 0) {
-	if (resp->vset[0]->numval > 0) { /* pmcd.timezone present */
-	    strcpy(logctl.l_label.ill_tz, resp->vset[0]->vlist[0].value.pval->vbuf);
+	vp = resp->vset[0];
+	if (vp->numval > 1) { /* pmcd.zoneinfo present */
+	    if (logctl.label.zoneinfo)
+		free(logctl.label.zoneinfo);
+	    logctl.label.zoneinfo = strdup(vp->vlist[1].value.pval->vbuf);
+	}
+	if (vp->numval > 0) { /* pmcd.timezone present */
+	    if (logctl.label.timezone)
+		free(logctl.label.timezone);
+	    logctl.label.timezone = strdup(vp->vlist[0].value.pval->vbuf);
 	    /* prefer to use remote time to avoid clock drift problems */
-	    epoch = resp->timestamp;		/* struct assignment */
+	    epoch.sec = resp->timestamp.tv_sec;
+	    epoch.nsec = resp->timestamp.tv_nsec;
 	    if (! use_localtime)
-		pmNewZone(logctl.l_label.ill_tz);
+		pmNewZone(logctl.label.timezone);
 	}
 	else if (pmDebugOptions.log) {
 	    fprintf(stderr,
 		    "main: Could not get timezone from host %s\n",
 		    pmcd_host);
 	}
-	pmFreeResult(resp);
+	pmFreeHighResResult(resp);
     }
 
     /* do ParseTimeWindow stuff for -T */
@@ -1267,8 +1512,8 @@ main(int argc, char **argv)
         now_tv.tv_usec = 0; 
 
         start = now_tv;
-        end.tv_sec = INT_MAX;
-        end.tv_usec = INT_MAX;
+        end.tv_sec = PM_MAX_TIME_T;
+        end.tv_usec = 0;
         sts = __pmParseTime(runtime, &start, &end, &res_end, &err_msg);
         if (sts < 0) {
 	    fprintf(stderr, "%s: illegal -T argument\n%s", pmGetProgname(), err_msg);
@@ -1279,7 +1524,8 @@ main(int argc, char **argv)
         tsub(&last_delta, &now_tv);
 	__pmAFregister(&last_delta, NULL, run_done_callback);
 
-        last_stamp = res_end;
+        last_stamp.sec = res_end.tv_sec;
+        last_stamp.nsec = res_end.tv_usec * 1000;
     }
 
     fprintf(stderr, "Archive basename: %s\n", archName);
@@ -1300,8 +1546,13 @@ main(int argc, char **argv)
 	__pmServerCreatePIDFile(pmGetProgname(), 0);
     }
 
-    /* set up control ports and signal handlers */
+    /* set up control port socket and external map files */
     init_ports();
+
+    if (pmDebugOptions.appl4)
+	pmNotifyErr(LOG_INFO, "Setup pmlc socket and map files done");
+
+    /* initialize select mask */
     __pmFD_ZERO(&fds);
     for (i = 0; i < CFD_NUM; ++i) {
 	if (ctlfds[i] >= 0)
@@ -1325,190 +1576,156 @@ main(int argc, char **argv)
     __pmAFunblock();
 
     /* create the Latest folio */
-    if (isdaemon) {
+    if (isdaemon)
 	updateLatestFolio(pmcd_host, archName);
-    }
+
+    if (vol_switch_time.tv_sec > 0)
+	vol_switch_afid = __pmAFregister(&vol_switch_time, NULL, 
+					 vol_switch_callback);
+    if (exit_time.tv_sec > 0)
+	__pmAFregister(&exit_time, NULL, run_done_callback);
 
     for ( ; ; ) {
 	int		nready;
 
 	if (pmDebugOptions.appl2 && pmDebugOptions.desperate) {
-	    fprintf(stderr, "before __pmSelectRead(%d,...): run_done_alarm=%d vol_switch_alarm=%d log_alarm=%d\n", numfds, run_done_alarm, vol_switch_alarm, log_alarm);
+	    fprintf(stderr, "mainloop: numfds=%d run_done_alarm=%d vol_switch_alarm=%d log_alarm=%d\n", numfds, run_done_alarm, vol_switch_alarm, log_alarm);
 	}
 
 	niter = 0;
 	while (log_alarm && niter++ < 10) {
-	    __pmAFblock();
+	    task_t	*alarmed = NULL;
+	    task_t	*last = NULL;
 	    log_alarm = 0;
-	    if (pmDebugOptions.appl2)
-		fprintf(stderr, "delayed callback: log_alarm\n");
+	    if (pmDebugOptions.appl2) {
+		if (niter == 1)
+		    pmNotifyErr(LOG_INFO, "main: log_alarm");
+		else
+		    pmNotifyErr(LOG_INFO, "main: delayed log_alarm");
+	    }
+	    /*
+	     * Scan the task list looking for ones with t_alarm
+	     * set, and link these together (add to end of chain
+	     * to preserved order the same as taslist->t_next)
+	     * ... do all this with async callbacks blocked
+	     */
+	    __pmAFblock();
 	    for (tp = tasklist; tp != NULL; tp = tp->t_next) {
 		if (tp->t_alarm) {
-		    tp->t_alarm = 0;
-		    do_work(tp);
+		    if (alarmed == NULL)
+			alarmed = tp;
+		    if (last != NULL)
+			last->t_alarmed = tp;
+		    tp->t_alarmed = NULL;
+		    last = tp;
 		}
 	    }
 	    __pmAFunblock();
+
+	    /*
+	     * now execute the alarmed tasks
+	     */
+	    for (tp = alarmed; tp != NULL; tp = tp->t_alarmed) {
+		/*
+		 * before executing a task, check if there is
+		 * control port work to be done
+		 */
+		__pmFD_COPY(&readyfds, &fds);
+		if (pmDebugOptions.appl2 && pmDebugOptions.desperate) {
+		    int	j;
+		    fprintf(stderr, "readyfds {");
+		    for (j = 0; j < numfds; j++) {
+			if (__pmFD_ISSET(j, &readyfds))
+			    fprintf(stderr, " %d", j);
+		    }
+		    fprintf(stderr, " }\n");
+		}
+		/* poll, don't block here */
+		nready = __pmSelectRead(numfds, &readyfds, &nowait);
+		while (nready > 0) {
+		    /* something to do .. */
+		    if (pmDebugOptions.appl2 && pmDebugOptions.desperate) {
+			fprintf(stderr, "inner __pmSelectRead(%d,...) done: run_done_alarm=%d vol_switch_alarm=%d log_alarm=%d nready=%d", numfds, nready, run_done_alarm, vol_switch_alarm, log_alarm);
+			if (nready > 0) {
+			    int	j;
+			    fprintf(stderr, " fds {");
+			    for (j = 0; j < numfds; j++) {
+				if (__pmFD_ISSET(j, &readyfds))
+				    fprintf(stderr, " %d", j);
+			    }
+			    fprintf(stderr, " }");
+			}
+			fputc('\n', stderr);
+		    }
+		    control_port_ready();
+		    __pmFD_COPY(&readyfds, &fds);
+		    if (pmDebugOptions.appl2 && pmDebugOptions.desperate) {
+			int	j;
+			fprintf(stderr, "readyfds {");
+			for (j = 0; j < numfds; j++) {
+			    if (__pmFD_ISSET(j, &readyfds))
+				fprintf(stderr, " %d", j);
+			}
+			fprintf(stderr, " }\n");
+		    }
+		    /* try for more work, poll, don't block here */
+		    nready = __pmSelectRead(numfds, &readyfds, &nowait);
+		}
+		if (nready < 0 && neterror() != EINTR)
+		    fprintf(stderr, "Error: inner select: %s\n", netstrerror());
+		__pmAFblock();
+		do_work(tp);
+		__pmAFunblock();
+		tp->t_alarm = 0;
+	    }
 	}
 
 	if (vol_switch_alarm) {
-	    __pmAFblock();
 	    vol_switch_alarm = 0;
 	    if (pmDebugOptions.appl2)
-		fprintf(stderr, "delayed callback: vol_switch_alarm\n");
+		pmNotifyErr(LOG_INFO, "main: vol_switch_alarm");
+	    __pmAFblock();
 	    newvolume(VOL_SW_TIME);
 	    __pmAFunblock();
 	}
 
 	if (run_done_alarm) {
 	    if (pmDebugOptions.appl2)
-		fprintf(stderr, "delayed callback: run_done_alarm\n");
+		pmNotifyErr(LOG_INFO, "main: run_done_alarm");
 	    run_done(0, NULL);
 	    /*NOTREACHED*/
 	}
 
+	/*
+	 * if log_alarm was not set, we need to wait for control port
+	 * work to be done, or next SIGALARM ...
+	 */
 	__pmFD_COPY(&readyfds, &fds);
-	nready = __pmSelectRead(numfds, &readyfds, NULL);
+	nready = __pmSelectRead(numfds, &readyfds, NULL);	/* block */
 
 	if (pmDebugOptions.appl2 && pmDebugOptions.desperate) {
-	    fprintf(stderr, "__pmSelectRead(%d,...) done: nready=%d run_done_alarm=%d vol_switch_alarm=%d log_alarm=%d\n", numfds, nready, run_done_alarm, vol_switch_alarm, log_alarm);
+	    fprintf(stderr, "outer __pmSelectRead(%d,...) done: run_done_alarm=%d vol_switch_alarm=%d log_alarm=%d nready=%d", numfds, nready, run_done_alarm, vol_switch_alarm, log_alarm);
+	    if (nready > 0) {
+		int	j;
+		fprintf(stderr, " fds {");
+		for (j = 0; j < numfds; j++) {
+		    if (__pmFD_ISSET(j, &readyfds))
+			fprintf(stderr, " %d", j);
+		}
+		fprintf(stderr, " }");
+	    }
+	    fputc('\n', stderr);
 	}
 
 	__pmAFblock();
-	if (nready > 0) {
-
-	    /* handle request on control port */
-	    for (i = 0; i < CFD_NUM; ++i) {
-		if (ctlfds[i] >= 0 && __pmFD_ISSET(ctlfds[i], &readyfds)) {
-		    if (control_req(ctlfds[i])) {
-			/* new client has connected */
-			__pmFD_SET(clientfd, &fds);
-			if (clientfd >= numfds)
-			    numfds = clientfd + 1;
-		    }
-		}
-	    }
-	    if (clientfd >= 0 && __pmFD_ISSET(clientfd, &readyfds)) {
-		/* process request from client, save clientfd in case client
-		 * closes connection, resetting clientfd to -1
-		 */
-		int	fd = clientfd;
-
-		if (client_req()) {
-		    /* client closed connection */
-		    __pmFD_CLR(fd, &fds);
-		    __pmCloseSocket(clientfd);
-		    clientfd = -1;
-		    pmlc_host[0] = '\0';
-		    numfds = maxfd() + 1;
-		    qa_case = 0;
-		}
-	    }
-#ifndef IS_MINGW
-	    if (pmcdfd >= 0 && __pmFD_ISSET(pmcdfd, &readyfds)) {
-		/*
-		 * do not expect this, given synchronous commumication with the
-		 * pmcd ... either pmcd has terminated, or bogus PDU ... or its
-		 * Win32 and we are operating under the different conditions of
-		 * our AF.c implementation there, which has to deal with a lack
-		 * of signal support on Windows - race condition exists between
-		 * this check and the async event timer callback.
-		 */
-		__pmPDU		*pb;
-		__pmPDUHdr	*php;
-		sts = __pmGetPDU(pmcdfd, ANY_SIZE, TIMEOUT_NEVER, &pb);
-		if (sts <= 0) {
-		    if (sts < 0)
-			fprintf(stderr, "Error: __pmGetPDU: %s\n", pmErrStr(sts));
-		    disconnect(sts);
-		}
-		else {
-		    php = (__pmPDUHdr *)pb;
-		    fprintf(stderr, "Error: Unsolicited %s PDU from PMCD\n",
-			__pmPDUTypeStr(php->type));
-		    disconnect(PM_ERR_IPC);
-		}
-		if (sts > 0)
-		    __pmUnpinPDUBuf(pb);
-	    }
-#endif
-	    if (rsc_fd >= 0 && __pmFD_ISSET(rsc_fd, &readyfds)) {
-		/*
-		 * some action on the recording session control fd
-		 * end-of-file means launcher has quit, otherwise we
-		 * expect one of these commands
-		 *	V<number>\n	- version
-		 *	F<folio>\n	- folio name
-		 *	P<name>\n	- launcher's name
-		 *	R\n		- launcher can replay
-		 *	D\n		- detach from launcher
-		 *	Q\n		- quit pmlogger
-		 */
-		char	rsc_buf[MAXPATHLEN];
-		char	*rp = rsc_buf;
-		char	myc;
-		int	fake_x = 0;
-
-		for (rp = rsc_buf; ; rp++) {
-		    if (read(rsc_fd, &myc, 1) <= 0) {
-			if (pmDebugOptions.appl2)
-			    fprintf(stderr, "recording session control: eof\n");
-			if (rp != rsc_buf) {
-			    *rp = '\0';
-			    fprintf(stderr, "Error: incomplete recording session control message: \"%s\"\n", rsc_buf);
-			}
-			fake_x = 1;
-			break;
-		    }
-		    if (rp >= &rsc_buf[MAXPATHLEN]) {
-			fprintf(stderr, "Error: absurd recording session control message: \"%100.100s ...\"\n", rsc_buf);
-			fake_x = 1;
-			break;
-		    }
-		    if (myc == '\n') {
-			*rp = '\0';
-			break;
-		    }
-		    *rp = myc;
-		}
-
-		if (pmDebugOptions.appl2) {
-		    if (fake_x == 0)
-			fprintf(stderr, "recording session control: \"%s\"\n", rsc_buf);
-		}
-
-		if (fake_x)
-		    do_dialog('X');
-		else if (strcmp(rsc_buf, "Q") == 0 ||
-		         strcmp(rsc_buf, "D") == 0 ||
-			 strcmp(rsc_buf, "?") == 0)
-		    do_dialog(rsc_buf[0]);
-		else if (rsc_buf[0] == 'F')
-		    folio_name = strdup(&rsc_buf[1]);
-		else if (rsc_buf[0] == 'P')
-		    rsc_prog = strdup(&rsc_buf[1]);
-		else if (strcmp(rsc_buf, "R") == 0)
-		    rsc_replay = 1;
-		else if (rsc_buf[0] == 'V' && rsc_buf[1] == '0') {
-		    /*
-		     * version 0 of the recording session control ...
-		     * this is all we grok at the moment
-		     */
-		    ;
-		}
-		else {
-		    fprintf(stderr, "Error: illegal recording session control message: \"%s\"\n", rsc_buf);
-		    do_dialog('X');
-		}
-	    }
-	}
+	if (nready > 0)
+	    control_port_ready();
 	else if (vol_switch_flag) {
 	    newvolume(VOL_SW_SIGHUP);
 	    vol_switch_flag = 0;
 	}
 	else if (nready < 0 && neterror() != EINTR)
-	    fprintf(stderr, "Error: select: %s\n", netstrerror());
-
+	    fprintf(stderr, "Error: outer select: %s\n", netstrerror());
 	__pmAFunblock();
 
 	if (target_pid && !__pmProcessExists(target_pid)) {
@@ -1561,20 +1778,19 @@ newvolume(int vol_switch_type)
     }
 
     if ((newfp = __pmLogNewFile(archName, nextvol)) != NULL) {
-	if (logctl.l_state == PM_LOG_STATE_NEW) {
+	if (logctl.state == PM_LOG_STATE_NEW) {
 	    /*
 	     * nothing has been logged as yet, force out the label records
 	     */
-	    pmtimevalNow(&last_stamp);
-	    logctl.l_label.ill_start.tv_sec = (__int32_t)last_stamp.tv_sec;
-	    logctl.l_label.ill_start.tv_usec = (__int32_t)last_stamp.tv_usec;
-	    logctl.l_label.ill_vol = PM_LOG_VOL_TI;
-	    __pmLogWriteLabel(logctl.l_tifp, &logctl.l_label);
-	    logctl.l_label.ill_vol = PM_LOG_VOL_META;
-	    __pmLogWriteLabel(logctl.l_mdfp, &logctl.l_label);
-	    logctl.l_label.ill_vol = 0;
-	    __pmLogWriteLabel(archctl.ac_mfp, &logctl.l_label);
-	    logctl.l_state = PM_LOG_STATE_INIT;
+	    __pmGetTimestamp(&last_stamp);
+	    logctl.label.start = last_stamp;	/* struct assignment */
+	    logctl.label.vol = PM_LOG_VOL_TI;
+	    __pmLogWriteLabel(logctl.tifp, &logctl.label);
+	    logctl.label.vol = PM_LOG_VOL_META;
+	    __pmLogWriteLabel(logctl.mdfp, &logctl.label);
+	    logctl.label.vol = 0;
+	    __pmLogWriteLabel(archctl.ac_mfp, &logctl.label);
+	    logctl.state = PM_LOG_STATE_INIT;
 	}
 
 	/*
@@ -1588,8 +1804,8 @@ newvolume(int vol_switch_type)
 
 	__pmFclose(archctl.ac_mfp);
 	archctl.ac_mfp = newfp;
-	logctl.l_label.ill_vol = archctl.ac_curvol = nextvol;
-	__pmLogWriteLabel(archctl.ac_mfp, &logctl.l_label);
+	logctl.label.vol = archctl.ac_curvol = nextvol;
+	__pmLogWriteLabel(archctl.ac_mfp, &logctl.label);
 	time(&now);
 	fprintf(stderr, "New log volume %d, via %s at %s",
 		nextvol, vol_sw_strs[vol_switch_type], ctime(&now));

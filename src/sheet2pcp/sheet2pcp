@@ -53,6 +53,8 @@ my $label_zone;
 my $datefmt = "DMY";	# default order of date fields
 my %options;		# for command line arguments
 
+my $version;		# -V version
+
 sub dodate($)
 {
     # convert datetime format DD[/-]MM[/-]YY[YY] HH:MM[:SS] from spreadsheet
@@ -355,7 +357,7 @@ sub domap($)
 				}
 				my $h = pmiGetHandle($name, $instance);
 				if ($h < 0) {
-				    die "pmiGetHandle: failed to create handle for metricspec $name" . "[" . $instance . "]: " . pmiErrStr($sts) . "\n";
+				    die "pmiGetHandle: failed to create handle for metricspec $name" . "[" . $instance . "]: " . pmiErrStr($h) . "\n";
 				    $sts++;
 				}
 				else {
@@ -365,7 +367,7 @@ sub domap($)
 			    else {
 				my $h = pmiGetHandle($name, "");
 				if ($h < 0) {
-				    die "pmiGetHandle: failed to create handle for metricspec $name: " . pmiErrStr($sts) . "\n";
+				    die "pmiGetHandle: failed to create handle for metricspec $name: " . pmiErrStr($h) . "\n";
 				}
 				else {
 				    push(@handle, $h);
@@ -441,10 +443,10 @@ sub domap($)
     }
 }
 
-my $sts = getopts('h:Z:', \%options);
+my $sts = getopts('D:h:V:Z:', \%options);
 
 if (!defined($sts) || $#ARGV != 2) {
-    print "Usage: sheet2pcp [-h host] [-Z timezone] infile mapfile outfile\n";
+    print "Usage: sheet2pcp [-h host] [-V version] [-Z timezone] infile mapfile outfile\n";
     exit(1);
 }
 
@@ -456,9 +458,24 @@ if (exists($options{Z})) {
     }
 }
 
+if (exists($options{D})) {
+    if (pmSetDebug($options{D}) < 0) {
+	print "sheet2pcp: Illegal -D value: " . $options{D} . "\n";
+	exit(1);
+    }
+}
+
 # initialize the output archive so we can add the metadata from the mapfile
 #
 pmiStart($ARGV[2], 0);
+
+if (exists($options{V})) {
+    $version = $options{V};
+    if (pmiSetVersion($version) < 0) {
+	print "sheet2pcp: Illegal -V value, must be 2 or 3\n";
+	exit(1);
+    }
+}
 
 if (exists($options{h})) {
     if (pmiSetHostname($options{h}) < 0) {

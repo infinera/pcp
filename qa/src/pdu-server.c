@@ -21,6 +21,7 @@
 #include "localconfig.h"
 
 static int	raw;		/* if set, echo PDUs, do not decode/encode */
+static int	newfd;		/* client connects here */
 
 typedef struct {		/* from src/libpcp/src/p_pmns.c */
     __pmPDUHdr   hdr;
@@ -28,6 +29,12 @@ typedef struct {		/* from src/libpcp/src/p_pmns.c */
     int         numids;
     pmID        idlist[1];
 } idlist_t;
+
+typedef struct {		/* from src/libpcp/src/p_desc.c */
+    __pmPDUHdr  hdr;
+    int         numdescs;
+    pmDesc      descs[1];
+} descs_t;
 
 /*
  * use pid as "from" context for backwards compatibility to
@@ -42,11 +49,11 @@ decode_encode(int fd, __pmPDU *pb, int type)
     int		e;
     int		code;
     int		proto;
-    pmResult	*rp;
+    __pmResult	*rp;
     pmProfile	*profp;
     int		ctxnum;
     int		fail = -1;
-    pmTimeval	now;
+    pmTimeval	nowtv;
     int		numpmid;
     pmID	*pmidp;
     pmID	pmid;
@@ -70,6 +77,10 @@ decode_encode(int fd, __pmPDU *pb, int type)
     int		sender;
     int		count;
     __pmCred	*creds;
+    descs_t	*descs_p;
+    static int	numdesclist;
+    static pmDesc *desclist;
+    int		numdesc;
     idlist_t	*idlist_p;
     static int	numpmidlist;
     static pmID	*pmidlist;
@@ -77,7 +88,7 @@ decode_encode(int fd, __pmPDU *pb, int type)
     const char	**names;
     char	**namelist;
     int		*statlist;
-    __pmLoggerStatus	*lsp;
+    __pmLoggerStatus *lsp;
     double	value;
 
     switch (type) {
@@ -103,12 +114,30 @@ decode_encode(int fd, __pmPDU *pb, int type)
 	    }
 	    if (pmDebugOptions.appl0) {
 		fprintf(stderr, "+ PDU_RESULT:\n");
-		__pmDumpResult(stderr, rp);
+		__pmPrintResult(stderr, rp);
 	    }
 	    e = __pmSendResult(fd, mypid, rp);
-	    pmFreeResult(rp);
+	    __pmFreeResult(rp);
 	    if (e < 0) {
 		fprintf(stderr, "%s: Error: SendResult: %s\n", pmGetProgname(), pmErrStr(e));
+		break;
+	    }
+	    fail = 0;
+	    break;
+
+	case PDU_HIGHRES_RESULT:
+	    if ((e = __pmDecodeHighResResult(pb, &rp)) < 0) {
+		fprintf(stderr, "%s: Error: DecodeHighResResult: %s\n", pmGetProgname(), pmErrStr(e));
+		break;
+	    }
+	    if (pmDebugOptions.appl0) {
+		fprintf(stderr, "+ PDU_HIGHRES_RESULT:\n");
+		__pmPrintResult(stderr, rp);
+	    }
+	    e = __pmSendHighResResult(fd, mypid, rp);
+	    __pmFreeResult(rp);
+	    if (e < 0) {
+		fprintf(stderr, "%s: Error: SendHighResResult: %s\n", pmGetProgname(), pmErrStr(e));
 		break;
 	    }
 	    fail = 0;
@@ -134,7 +163,7 @@ decode_encode(int fd, __pmPDU *pb, int type)
 	    break;
 
 	case PDU_FETCH:
-	    if ((e = __pmDecodeFetch(pb, &ctxnum, &now, &numpmid, &pmidp)) < 0) {
+	    if ((e = __pmDecodeFetch(pb, &ctxnum, &nowtv, &numpmid, &pmidp)) < 0) {
 		fprintf(stderr, "%s: Error: DecodeFetch: %s\n", pmGetProgname(), pmErrStr(e));
 		break;
 	    }
@@ -142,19 +171,41 @@ decode_encode(int fd, __pmPDU *pb, int type)
 		int		j;
 		struct timeval	foo;
 		fprintf(stderr, "+ PDU_FETCH: ctxnum=%d now=%d.%06d ",
-		    ctxnum, now.tv_sec, now.tv_usec);
-		foo.tv_sec = now.tv_sec;
-		foo.tv_usec = now.tv_usec;
+		    ctxnum, nowtv.tv_sec, nowtv.tv_usec);
+		foo.tv_sec = nowtv.tv_sec;
+		foo.tv_usec = nowtv.tv_usec;
 		pmPrintStamp(stderr, &foo);
 		fprintf(stderr, " numpmid=%d\n+ PMIDs:", numpmid);
 		for (j = 0; j < numpmid; j++)
 		    fprintf(stderr, " %s", pmIDStr(pmidp[j]));
 		fputc('\n', stderr);
 	    }
-	    e = __pmSendFetch(fd, mypid, ctxnum, &now, numpmid, pmidp);
+	    e = __pmSendFetch(fd, mypid, ctxnum, numpmid, pmidp);
 	    __pmUnpinPDUBuf(pmidp);
 	    if (e < 0) {
 		fprintf(stderr, "%s: Error: SendFetch: %s\n", pmGetProgname(), pmErrStr(e));
+		break;
+	    }
+	    fail = 0;
+	    break;
+
+	case PDU_HIGHRES_FETCH:
+	    if ((e = __pmDecodeHighResFetch(pb, &ctxnum, &numpmid, &pmidp)) < 0) {
+		fprintf(stderr, "%s: Error: DecodeHighResFetch: %s\n", pmGetProgname(), pmErrStr(e));
+		break;
+	    }
+	    if (pmDebugOptions.appl0) {
+		int		j;
+		fprintf(stderr, "+ PDU_HIGHRES_FETCH: ctxnum=%d ", ctxnum);
+		fprintf(stderr, "numpmid=%d\n+ PMIDs:", numpmid);
+		for (j = 0; j < numpmid; j++)
+		    fprintf(stderr, " %s", pmIDStr(pmidp[j]));
+		fputc('\n', stderr);
+	    }
+	    e = __pmSendHighResFetch(fd, mypid, ctxnum, numpmid, pmidp);
+	    __pmUnpinPDUBuf(pmidp);
+	    if (e < 0) {
+		fprintf(stderr, "%s: Error: SendHighResFetch: %s\n", pmGetProgname(), pmErrStr(e));
 		break;
 	    }
 	    fail = 0;
@@ -190,18 +241,43 @@ decode_encode(int fd, __pmPDU *pb, int type)
 	    fail = 0;
 	    break;
 
+	case PDU_DESCS:
+	    descs_p = (descs_t *)pb;
+	    numdesc = ntohl(descs_p->numdescs);
+	    if (numdesc > numdesclist) {
+		if (desclist != NULL)
+		    free(desclist);
+		if ((desclist = (pmDesc *)calloc(numdesc, sizeof(desclist[0]))) == NULL) {
+		    fprintf(stderr, "calloc desclist[%d]: %s\n", numdesc, strerror(errno));
+		    numdesclist = 0;
+		    break;
+		}
+		numdesclist = numdesc;
+	    }
+	    if ((e = __pmDecodeDescs(pb, numdesc, desclist)) < 0) {
+		fprintf(stderr, "%s: Error: DecodeDescs: %s\n", pmGetProgname(), pmErrStr(e));
+		break;
+	    }
+	    if (pmDebugOptions.appl0) {
+		int	i;
+		fprintf(stderr, "+ PDU_DESCS: ");
+		for (i = 0; i < numdesc; i++)
+		    pmPrintDesc(stderr, &desclist[i]);
+	    }
+	    if ((e = __pmSendDescs(fd, mypid, numdesc, desclist)) < 0) {
+		fprintf(stderr, "%s: Error: SendDescs: %s\n", pmGetProgname(), pmErrStr(e));
+		break;
+	    }
+	    fail = 0;
+	    break;
+
 	case PDU_INSTANCE_REQ:
-	    if ((e = __pmDecodeInstanceReq(pb, &now, &indom, &inst, &name)) < 0) {
+	    if ((e = __pmDecodeInstanceReq(pb, &indom, &inst, &name)) < 0) {
 		fprintf(stderr, "%s: Error: DecodeInstanceReq: %s\n", pmGetProgname(), pmErrStr(e));
 		break;
 	    }
 	    if (pmDebugOptions.appl0) {
-		struct timeval	foo;
-		fprintf(stderr, "+ PDU_INSTANCE_REQ: now=%d.%06d ",
-		    now.tv_sec, now.tv_usec);
-		foo.tv_sec = now.tv_sec;
-		foo.tv_usec = now.tv_usec;
-		pmPrintStamp(stderr, &foo);
+		fprintf(stderr, "+ PDU_INSTANCE_REQ: ");
 		fprintf(stderr, " indom=%s", pmInDomStr(indom));
 		if (inst == PM_IN_NULL)
 		    fprintf(stderr, " inst=PM_IN_NULL");
@@ -212,7 +288,7 @@ decode_encode(int fd, __pmPDU *pb, int type)
 		else
 		    fprintf(stderr, " name=\"%s\"\n", name);
 	    }
-	    e = __pmSendInstanceReq(fd, mypid, &now, indom, inst, name);
+	    e = __pmSendInstanceReq(fd, mypid, indom, inst, name);
 	    if (name)
 		free(name);
 	    if (e < 0) {
@@ -389,6 +465,7 @@ decode_encode(int fd, __pmPDU *pb, int type)
 	    fail = 0;
 	    break;
 
+	case PDU_DESC_IDS:
 	case PDU_PMNS_IDS:
 	    idlist_p = (idlist_t *)pb;
 	    numpmid = ntohl(idlist_p->numids);
@@ -407,7 +484,8 @@ decode_encode(int fd, __pmPDU *pb, int type)
 		break;
 	    }
 	    if (pmDebugOptions.appl0) {
-		fprintf(stderr, "+ PDU_PMNS_IDS: sts arg=%d\n", code);
+		fprintf(stderr, "+ %s: sts arg=%d\n", type == PDU_DESC_IDS?
+				"PDU_DESC_IDS" : "PDU_PMNS_IDS", code);
 		__pmDumpIDList(stderr, numpmid, pmidlist);
 	    }
 	    e = __pmSendIDList(fd, mypid, numpmid, pmidlist, code);
@@ -485,10 +563,10 @@ decode_encode(int fd, __pmPDU *pb, int type)
 	    if (pmDebugOptions.appl0) {
 		fprintf(stderr, "+ PDU_LOG_CONTROL: control=%d state=%d rate=%d\n",
 		    control, state, rate);
-		__pmDumpResult(stderr, rp);
+		__pmPrintResult(stderr, rp);
 	    }
 	    e = __pmSendLogControl(fd, rp, control, state, rate);
-	    pmFreeResult(rp);
+	    __pmFreeResult(rp);
 	    if (e < 0) {
 		fprintf(stderr, "%s: Error: SendLogControl: %s\n", pmGetProgname(), pmErrStr(e));
 		break;
@@ -497,33 +575,34 @@ decode_encode(int fd, __pmPDU *pb, int type)
 	    break;
 
 	case PDU_LOG_STATUS:
+	case PDU_LOG_STATUS_V2:
+	    if (type == PDU_LOG_STATUS)
+		__pmSetVersionIPC(newfd, LOG_PDU_VERSION3);
+	    else
+		__pmSetVersionIPC(newfd, LOG_PDU_VERSION2);
+
 	    if ((e = __pmDecodeLogStatus(pb, &lsp)) < 0) {
 		fprintf(stderr, "%s: Error: DecodeLogStatus: %s\n", pmGetProgname(), pmErrStr(e));
 		break;
 	    }
 	    if (pmDebugOptions.appl0) {
-		struct timeval	foo;
-		fprintf(stderr, "+ PDU_LOG_STATUS: start=%d.%06d ",
-		    lsp->ls_start.tv_sec, lsp->ls_start.tv_usec);
-		foo.tv_sec = lsp->ls_start.tv_sec;
-		foo.tv_usec = lsp->ls_start.tv_usec;
-		pmPrintStamp(stderr, &foo);
-		fprintf(stderr, "\nlast=%d.%06d ",
-		    lsp->ls_last.tv_sec, lsp->ls_last.tv_usec);
-		foo.tv_sec = lsp->ls_last.tv_sec;
-		foo.tv_usec = lsp->ls_last.tv_usec;
-		pmPrintStamp(stderr, &foo);
-		fprintf(stderr, " now=%d.%06d ",
-		    lsp->ls_timenow.tv_sec, lsp->ls_timenow.tv_usec);
-		foo.tv_sec = lsp->ls_timenow.tv_sec;
-		foo.tv_usec = lsp->ls_timenow.tv_usec;
-		pmPrintStamp(stderr, &foo);
-		fprintf(stderr, "\nstate=%d vol=%d size=%" FMT_INT64 " host=%s tz=\"%s\" tzlogger=\"%s\"\n",
-		    lsp->ls_state, lsp->ls_vol, (__int64_t)lsp->ls_size,
-		    lsp->ls_hostname, lsp->ls_tz, lsp->ls_tzlogger);
+		fprintf(stderr, "+ PDU_LOG_STATUS: start=%" FMT_INT64 ".%09d ",
+		    lsp->start.sec, lsp->start.nsec);
+		__pmPrintTimestamp(stderr, &lsp->start);
+		fprintf(stderr, "\nlast=% "FMT_INT64 ".%09d ",
+		    lsp->last.sec, lsp->last.nsec);
+		__pmPrintTimestamp(stderr, &lsp->last);
+		fprintf(stderr, " now=% "FMT_INT64 ".%09d ",
+		    lsp->now.sec, lsp->now.nsec);
+		__pmPrintTimestamp(stderr, &lsp->now);
+		fprintf(stderr, "\nstate=%d vol=%d size=%" FMT_INT64 " pmcd.host=%s pmcd.timezone=\"%s\" pmlogger.timezone=\"%s\"\n",
+		    lsp->state, lsp->vol, lsp->size,
+		    lsp->pmcd.hostname,
+		    lsp->pmcd.timezone, lsp->pmlogger.timezone);
 	    }
 	    e = __pmSendLogStatus(fd, lsp);
-	    __pmUnpinPDUBuf(pb);
+	    __pmSetVersionIPC(newfd, PDU_VERSION);
+	    __pmFreeLogStatus(lsp, 1);
 	    if (e < 0) {
 		fprintf(stderr, "%s: Error: SendLogStatus: %s\n", pmGetProgname(), pmErrStr(e));
 		break;
@@ -619,7 +698,6 @@ main(int argc, char *argv[])
 			/* default port for remote connection to pdu-server */
     int		i, sts;
     int		c;
-    int		newfd;
     int		new;
     struct sockaddr_in	myAddr;
     struct linger	noLinger = {1, 0};

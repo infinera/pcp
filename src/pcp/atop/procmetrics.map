@@ -21,6 +21,7 @@ procmetrics {
 	hotproc.psinfo.processor		TASK_CPU_CURCPU
 	hotproc.psinfo.rt_priority		TASK_CPU_RTPRIO
 	hotproc.psinfo.policy			TASK_CPU_POLICY
+	hotproc.psinfo.delayacct_blkio_time	TASK_CPU_BLKDELAY
 	hotproc.psinfo.wchan_s			TASK_GEN_WCHAN
 
 	# /proc/pid/status
@@ -61,8 +62,15 @@ procmetrics {
 	hotproc.id.suid_nm			TASK_GEN_SUIDNM
 	hotproc.id.fsuid_nm			TASK_GEN_FSUIDNM
 
+	# getgruid
+	hotproc.id.gid_nm			TASK_GEN_RGIDNM
+	hotproc.id.egid_nm			TASK_GEN_EGIDNM
+	hotproc.id.sgid_nm			TASK_GEN_SGIDNM
+	hotproc.id.fsgid_nm			TASK_GEN_FSGIDNM
+
 	# /proc/pid/cgroup
 	hotproc.id.container			TASK_GEN_CONTAINER
+	hotproc.psinfo.cgroups			TASK_GEN_CGROUP
 
 	# end marker - provides count
 	.					TASK_NMETRICS

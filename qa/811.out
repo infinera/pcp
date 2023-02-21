@@ -2,10 +2,11 @@ QA output created by 811
 === _cpu defined, config from -c ===
 Log for pmlogger on HOST started DATE
 
+[DATE] pmlogger(PID) Info: Start
 Config parsed
 Starting logger for host "HOST"
 Archive basename: ARCHIVE
-pmlogger: Sample limit reached, exiting
+[DATE] pmlogger(PID) Info: pmlogger: Sample limit reached, exiting
 
 Log finished DATE
 event.flags
@@ -21,10 +22,11 @@ pmcd.seqnum
 === _cpu defined, config from stdin ===
 Log for pmlogger on HOST started DATE
 
+[DATE] pmlogger(PID) Info: Start
 Config parsed
 Starting logger for host "HOST"
 Archive basename: ARCHIVE
-pmlogger: Sample limit reached, exiting
+[DATE] pmlogger(PID) Info: pmlogger: Sample limit reached, exiting
 
 Log finished DATE
 event.flags
@@ -40,10 +42,11 @@ pmcd.seqnum
 === _cpu not defined, config from stdin ===
 Log for pmlogger on HOST started DATE
 
+[DATE] pmlogger(PID) Info: Start
 Config parsed
 Starting logger for host "HOST"
 Archive basename: ARCHIVE
-pmlogger: Sample limit reached, exiting
+[DATE] pmlogger(PID) Info: pmlogger: Sample limit reached, exiting
 
 Log finished DATE
 event.flags

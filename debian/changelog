@@ -1,9 +1,77 @@
+pcp (6.0.3-1) unstable; urgency=low
+
+  * New release (full details in CHANGELOG).
+
+ -- Nathan Scott <nathans@debian.org>  Mon, 17 Apr 2023 11:03:00 +1100
+
+pcp (6.0.2-1) unstable; urgency=low
+
+  * New release (full details in CHANGELOG).
+
+ -- Nathan Scott <nathans@debian.org>  Sun, 12 Feb 2023 07:53:22 +1100
+
+pcp (6.0.1-1) unstable; urgency=low
+
+  * New release (full details in CHANGELOG).
+
+ -- Nathan Scott <nathans@debian.org>  Thu, 27 Oct 2022 10:33:30 +1100
+
+pcp (6.0.0-1) unstable; urgency=low
+
+  * New release (full details in CHANGELOG).
+
+ -- Nathan Scott <nathans@debian.org>  Wed, 31 Aug 2022 11:14:41 +1000
+
+pcp (5.3.7-1) unstable; urgency=low
+
+  * New release (full details in CHANGELOG).
+  * Updates for reproducible-builds (closes: #1006860, #1006861, #1006864)
+
+ -- Nathan Scott <nathans@debian.org>  Tue, 05 Apr 2022 09:12:16 +1000
+
+pcp (5.3.6-1) unstable; urgency=low
+
+  * New release (full details in CHANGELOG).
+
+ -- Nathan Scott <nathans@debian.org>  Wed, 02 Feb 2022 12:08:13 +1100
+
+pcp (5.3.5-1) unstable; urgency=low
+
+  * New release (full details in CHANGELOG).
+
+ -- Nathan Scott <nathans@debian.org>  Wed, 10 Nov 2021 10:46:50 +1100
+
+pcp (5.3.4-1) unstable; urgency=low
+
+  * New release (full details in CHANGELOG).
+  * Add pmlogger zeroconf file for interval (closes: #990223)
+
+ -- Nathan Scott <nathans@debian.org>  Fri, 08 Oct 2021 08:53:32 +1100
+
+pcp (5.3.3-1) unstable; urgency=low
+
+  * New release (full details in CHANGELOG).
+
+ -- Nathan Scott <nathans@debian.org>  Wed, 15 Sep 2021 10:08:32 +1000
+
+pcp (5.3.2-1) unstable; urgency=low
+
+  * New release (full details in CHANGELOG).
+
+ -- Nathan Scott <nathans@debian.org>  Fri, 30 Jul 2021 11:37:57 +1000
+
+pcp (5.3.1-1) unstable; urgency=low
+
+  * New release (full details in CHANGELOG).
+
+ -- Nathan Scott <nathans@debian.org>  Fri, 04 Jun 2021 09:21:45 +1000
+
 pcp (5.3.0-1) unstable; urgency=low
 
   * New release (full details in CHANGELOG).
   * Resolve pmfind log path permissions (closes: #985384)
 
- -- Nathan Scott <nathans@debian.org>  Fri, 16 Apr 2021 21:25:03 +1000
+ -- Nathan Scott <nathans@debian.org>  Fri, 16 Apr 2021 10:07:03 +1000
 
 pcp (5.2.6-1) unstable; urgency=low
 

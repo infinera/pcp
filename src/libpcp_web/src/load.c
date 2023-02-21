@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2017-2020 Red Hat.
+ * Copyright (c) 2017-2022 Red Hat.
  *
  * This library is free software; you can redistribute it and/or modify it
  * under the terms of the GNU Lesser General Public License as published
@@ -15,6 +15,7 @@
 #include <limits.h>
 #include <assert.h>
 #include <ctype.h>
+#include <fnmatch.h>
 #include "encoding.h"
 #include "discover.h"
 #include "schema.h"
@@ -93,7 +94,7 @@ load_prepare_metric(const char *name, void *arg)
     if ((sts = pmLookupName(1, &name, &pmid)) < 0) {
 	if (sts == PM_ERR_IPC)
 	    cp->setup = 0;
-	infofmt(msg, "failed to lookup metric name (pmid=%s): %s",
+	infofmt(msg, "failed to lookup metric name (name=%s): %s",
 		name, pmErrStr_r(sts, pmmsg, sizeof(pmmsg)));
 	batoninfo(baton, PMLOG_WARNING, msg);
     } else if ((hname = strdup(name)) == NULL) {
@@ -439,14 +440,14 @@ series_cache_update(seriesLoadBaton *baton, struct dict *exclude)
 {
     seriesGetContext	*context = &baton->pmapi;
     context_t		*cp = &context->context;
-    pmResult		*result = context->result;
+    pmHighResResult	*result = context->result;
     pmValueSet		*vsp;
     metric_t		*metric = NULL;
     char		ts[64];
     sds			timestamp;
     int			i, write_meta, write_inst, write_data;
 
-    timestamp = sdsnew(timeval_stream_str(&result->timestamp, ts, sizeof(ts)));
+    timestamp = sdsnew(timespec_stream_str(&result->timestamp, ts, sizeof(ts)));
     write_data = (!(baton->flags & PM_SERIES_FLAG_METADATA));
 
     if (result->numpmid == 0) {
@@ -455,7 +456,7 @@ series_cache_update(seriesLoadBaton *baton, struct dict *exclude)
 	goto out;
     }
 
-    pmSortInstances(result);
+    pmSortHighResInstances(result);
 
     for (i = 0; i < result->numpmid; i++) {
 	vsp = result->vset[i];
@@ -517,8 +518,8 @@ server_cache_series(seriesLoadBaton *baton)
     if (baton->pmapi.context.type != PM_CONTEXT_ARCHIVE)
 	return -ENOTSUP;
 
-    if ((sts = pmSetMode(PM_MODE_FORW, &baton->timing.start, 0)) < 0) {
-	infofmt(msg, "pmSetMode failed: %s",
+    if ((sts = pmSetModeHighRes(PM_MODE_FORW, &baton->timing.start, NULL)) < 0) {
+	infofmt(msg, "pmSetModeHighRes failed: %s",
 		pmErrStr_r(sts, pmmsg, sizeof(pmmsg)));
 	batoninfo(baton, PMLOG_ERROR, msg);
 	return sts;
@@ -548,7 +549,7 @@ server_cache_update_done(void *arg)
     seriesGetContext	*context = &baton->pmapi;
 
     /* finish book-keeping for the current record */
-    pmFreeResult(context->result);
+    pmFreeHighResResult(context->result);
     context->result = NULL;
     context->count++;
     context->done = NULL;
@@ -557,48 +558,91 @@ server_cache_update_done(void *arg)
     server_cache_window(baton);
 }
 
+#if defined(HAVE_LIBUV)
+/* this function runs in a worker thread */
+static void
+fetch_archive(uv_work_t *req)
+{
+    seriesLoadBaton	*baton = (seriesLoadBaton *)req->data;
+    seriesGetContext	*context = &baton->pmapi;
+    context_t		*cp = &context->context;
+    pmHighResResult	*result;
+    int			sts;
+
+    assert(context->result == NULL);
+    if ((context->error = sts = pmUseContext(cp->context)) >= 0)
+	if ((context->error = sts = pmFetchHighResArchive(&result)) >= 0)
+	    context->result = result;
+}
+
+/* this function runs in the main thread */
+static void
+fetch_archive_done(uv_work_t *req, int status)
+{
+    seriesLoadBaton	*baton = (seriesLoadBaton *)req->data;
+    seriesGetContext	*context = &baton->pmapi;
+    struct timespec	*finish = &baton->timing.end;
+    int 		sts = context->error;
+
+    free(req);
+    if (context->loaded) {
+	assert(context->result == NULL);
+        doneSeriesGetContext(context, "fetch_archive_done");
+    } else if (sts >= 0) {
+	if (finish->tv_sec > context->result->timestamp.tv_sec ||
+	    (finish->tv_sec == context->result->timestamp.tv_sec &&
+	     finish->tv_nsec >= context->result->timestamp.tv_nsec)) {
+	    context->done = server_cache_update_done;
+	    series_cache_update(baton, baton->exclude_pmids);
+	}
+	else {
+	    if (pmDebugOptions.series)
+		fprintf(stderr, "%s: time window end\n", "fetch_archive_done");
+	    sts = PM_ERR_EOL;
+	    pmFreeHighResResult(context->result);
+	    context->result = NULL;
+	}
+    }
+
+    if (sts < 0) {
+	if (sts != PM_ERR_EOL)
+	    baton->error = sts;
+	doneSeriesGetContext(context, "fetch_archive_done");
+    }
+
+    doneSeriesLoadBaton(baton, "fetch_archive_done");
+}
+#endif
+
 void
 server_cache_window(void *arg)
 {
     seriesLoadBaton	*baton = (seriesLoadBaton *)arg;
     seriesGetContext	*context = &baton->pmapi;
-    struct timeval	*finish = &baton->timing.end;
-    pmResult		*result;
-    int			sts;
 
     seriesBatonCheckMagic(baton, MAGIC_LOAD, "server_cache_window");
     seriesBatonCheckCount(context, "server_cache_window");
     assert(context->result == NULL);
 
     if (pmDebugOptions.series)
-	fprintf(stderr, "server_cache_window: fetching next result\n");
+	fprintf(stderr, "%s: fetching next result\n", "server_cache_window");
 
+#if defined(HAVE_LIBUV)
+    seriesBatonReference(baton, "server_cache_window");
     seriesBatonReference(context, "server_cache_window");
     context->done = server_cache_series_finished;
 
-    if ((sts = pmFetchArchive(&result)) >= 0) {
-	context->result = result;
-	if (finish->tv_sec > result->timestamp.tv_sec ||
-	    (finish->tv_sec == result->timestamp.tv_sec &&
-	     finish->tv_usec >= result->timestamp.tv_usec)) {
-	    context->done = server_cache_update_done;
-	    series_cache_update(baton, NULL);
-	}
-	else {
-	    if (pmDebugOptions.series)
-		fprintf(stderr, "server_cache_window: end of time window\n");
-	    sts = PM_ERR_EOL;
-	    pmFreeResult(result);
-	    context->result = NULL;
-	}
-    }
-
-    if (sts < 0) {
-	context->error = sts;
-	if (sts != PM_ERR_EOL)
-	    baton->error = sts;
-	doneSeriesGetContext(context, "server_cache_window");
-    }
+    /*
+     * We must perform pmFetchArchive(3) in a worker thread
+     * because it contains blocking (synchronous) I/O calls
+     */
+    uv_work_t *req = malloc(sizeof(uv_work_t));
+    req->data = baton;
+    uv_queue_work(uv_default_loop(), req, fetch_archive, fetch_archive_done);
+#else
+    baton->error = -ENOTSUP;
+    server_cache_series_finished(arg);
+#endif
 }
 
 static void
@@ -640,7 +684,35 @@ add_source_metric(seriesLoadBaton *baton, const char *metric)
 }
 
 static void
-load_prepare_metrics(seriesLoadBaton *baton)
+load_prepare_exclude_metric(const char *name, void *arg)
+{
+    seriesLoadBaton	*baton = (seriesLoadBaton *)arg;
+    char		pmmsg[PM_MAXERRMSGLEN];
+    sds			msg;
+    pmID		pmid;
+    int			i;
+    int			sts;
+
+    /*
+     * check if this metric name matches any exclude pattern
+     * if it matches, add the pmID of this metric to the exclude list
+     */
+    for (i = 0; i < baton->exclude_npatterns; i++) {
+	if (fnmatch(baton->exclude_patterns[i], name, 0) == 0) {
+	    if ((sts = pmLookupName(1, &name, &pmid)) < 0) {
+		infofmt(msg, "failed to lookup metric name (name=%s): %s",
+				name, pmErrStr_r(sts, pmmsg, sizeof(pmmsg)));
+		batoninfo(baton, PMLOG_WARNING, msg);
+	    } else {
+		dictAdd(baton->exclude_pmids, &pmid, NULL);
+	    }
+	    break;
+	}
+    }
+}
+
+static void
+load_prepare_included_metrics(seriesLoadBaton *baton)
 {
     context_t		*cp = &baton->pmapi.context;
     const char		**metrics = baton->metrics;
@@ -659,11 +731,62 @@ load_prepare_metrics(seriesLoadBaton *baton)
     }
 }
 
+static void
+load_prepare_excluded_metrics(seriesLoadBaton *baton)
+{
+    pmSeriesModule	*module = (pmSeriesModule *)baton->module;
+    seriesModuleData	*data = getSeriesModuleData(module);
+    char		pmmsg[PM_MAXERRMSGLEN];
+    sds			msg;
+    int			i, sts;
+    sds			exclude_metrics_option;
+    sds			*patterns = NULL;
+    int			npatterns = 0;
+
+    if (data == NULL) {
+	baton->error = -ENOMEM;
+	return;
+    }
+
+    if (!(exclude_metrics_option = pmIniFileLookup(data->config, "discover", "exclude.metrics"))) {
+	/* option not set, using default value of no excluded metrics */
+	return;
+    }
+
+    if (!(patterns = sdssplitlen(exclude_metrics_option, sdslen(exclude_metrics_option), ",", 1, &npatterns))) {
+	/* empty option, ignore */
+	return;
+    }
+
+    /* trim each comma-separated entry */
+    for (i = 0; i < npatterns; i++)
+	patterns[i] = sdstrim(patterns[i], " ");
+
+    baton->exclude_patterns = patterns;
+    baton->exclude_npatterns = npatterns;
+
+    /*
+     * unfortunately we need to traverse the entire PMNS here to match the patterns (e.g. proc.*)
+     * against metrics and gather a list of pmIDs to exclude
+     *
+     * alternatively pattern matching could happen in series_cache_update(), however that will come
+     * with a performance penalty (looping through patterns + fnmatch() each in a hot path vs.
+     * simple pmID lookup in a dict)
+     */
+    if ((sts = pmTraversePMNS_r("", load_prepare_exclude_metric, baton)) < 0) {
+	infofmt(msg, "PMNS traversal failed: %s", pmErrStr_r(sts, pmmsg, sizeof(pmmsg)));
+	batoninfo(baton, PMLOG_WARNING, msg);
+    }
+
+    sdsfreesplitres(patterns, npatterns);
+    baton->exclude_patterns = NULL;
+}
+
 static int
 load_prepare_timing(seriesLoadBaton *baton)
 {
-    struct timeval	*finish = &baton->timing.end;
-    struct timeval	*start = &baton->timing.start;
+    struct timespec	*finish = &baton->timing.end;
+    struct timespec	*start = &baton->timing.start;
 
     /*
      * If no time window given,
@@ -812,11 +935,12 @@ doneSeriesGetContext(seriesGetContext *context, const char *caller)
     if (seriesBatonDereference(context, caller) && context->done != NULL)
 	context->done(baton);
 
-    if (context->error) {
+    if (context->error && !context->loaded) {
 	char		pmmsg[PM_MAXERRMSGLEN];
 	sds		msg;
 
 	if (context->error == PM_ERR_EOL) {
+	    context->loaded = 1;
 	    infofmt(msg, "processed %llu archive records from %s",
 			context->count, context->context.name.sds);
 	    batoninfo(baton, PMLOG_INFO, msg);
@@ -893,7 +1017,8 @@ connect_pmapi_source_service(void *arg)
     } else if (baton->error == 0) {
 	/* setup metric and time-based filtering for source load */
 	load_prepare_timing(baton);
-	load_prepare_metrics(baton);
+	load_prepare_included_metrics(baton);
+	load_prepare_excluded_metrics(baton);
     }
     series_load_end_phase(baton);
 }
@@ -904,6 +1029,7 @@ connect_redis_source_service(seriesLoadBaton *baton)
     pmSeriesModule	*module = (pmSeriesModule *)baton->module;
     seriesModuleData	*data = getSeriesModuleData(module);
     redisSlotsFlags	flags;
+    sds			option;
 
     /* attempt to re-use existing slots connections */
     if (data == NULL) {
@@ -912,26 +1038,41 @@ connect_redis_source_service(seriesLoadBaton *baton)
 	baton->slots = data->slots;
 	series_load_end_phase(baton);
     } else {
-	flags = SLOTS_VERSION;
-	if ((baton->flags & PM_SERIES_FLAG_TEXT))
-	    flags |= SLOTS_SEARCH;
-	baton->slots = data->slots =
-	    redisSlotsConnect(
-		data->config, flags, baton->info,
-		series_load_end_phase, baton->userdata,
-		data->events, (void *)baton);
+	option = pmIniFileLookup(data->config, "redis", "enabled");
+	if (option && strcmp(option, "false") == 0) {
+	    baton->error = -ENOTSUP;
+	} else {
+	    flags = SLOTS_VERSION;
+	    if ((baton->flags & PM_SERIES_FLAG_TEXT))
+		flags |= SLOTS_SEARCH;
+	    baton->slots = data->slots =
+		redisSlotsConnect(
+		    data->config, flags, baton->info,
+		    series_load_end_phase, baton->userdata,
+		    data->events, (void *)baton);
+	}
     }
 }
 
 static void
-setup_source_services(void *arg)
+setup_pmapi_source_service(void *arg)
 {
     seriesLoadBaton	*baton = (seriesLoadBaton *)arg;
 
-    seriesBatonCheckMagic(baton, MAGIC_LOAD, "setup_source_services");
-    seriesBatonReferences(baton, 2, "setup_source_services");
+    seriesBatonCheckMagic(baton, MAGIC_LOAD, "setup_pmapi_source_service");
+    seriesBatonReferences(baton, 1, "setup_pmapi_source_service");
 
     connect_pmapi_source_service(baton);
+}
+
+static void
+setup_redis_source_service(void *arg)
+{
+    seriesLoadBaton	*baton = (seriesLoadBaton *)arg;
+
+    seriesBatonCheckMagic(baton, MAGIC_LOAD, "setup_redis_source_service");
+    seriesBatonReferences(baton, 1, "setup_redis_source_service");
+
     connect_redis_source_service(baton);
 }
 
@@ -950,6 +1091,7 @@ initSeriesLoadBaton(seriesLoadBaton *baton, void *module, pmSeriesFlags flags,
 
     baton->errors = dictCreate(&intKeyDictCallBacks, baton);
     baton->wanted = dictCreate(&intKeyDictCallBacks, baton);
+    baton->exclude_pmids = dictCreate(&intKeyDictCallBacks, baton);
 }
 
 void
@@ -963,6 +1105,7 @@ freeSeriesLoadBaton(seriesLoadBaton *baton)
     freeSeriesGetContext(&baton->pmapi, 0);
     dictRelease(baton->errors);
     dictRelease(baton->wanted);
+    dictRelease(baton->exclude_pmids);
     free(baton->metrics);
 
     memset(baton, 0, sizeof(*baton));
@@ -1014,7 +1157,9 @@ series_load(pmSeriesSettings *settings,
     /* ordering of async operations */
     i = 0;
     baton->current = &baton->phases[i];
-    baton->phases[i++].func = setup_source_services;
+    /* Coverity CID341699 - split pmapi and redis setup to avoid use after free */
+    baton->phases[i++].func = setup_pmapi_source_service;
+    baton->phases[i++].func = setup_redis_source_service;
     /* assign source/host string map (series_source_mapping) */
     baton->phases[i++].func = series_source_mapping;
     /* write source info into schema (series_cache_source) */
@@ -1060,7 +1205,7 @@ pmSeriesDiscoverSource(pmDiscoverEvent *event, void *arg)
     sds			msg;
     int			i;
 
-    if (data == NULL || data->slots == NULL || data->slots->setup == 0)
+    if (data == NULL || data->slots == NULL || data->slots->state != SLOTS_READY)
 	return;
 
     baton = (seriesLoadBaton *)calloc(1, sizeof(seriesLoadBaton));
@@ -1141,7 +1286,7 @@ pmSeriesDiscoverLabels(pmDiscoverEvent *event,
     sds			msg;
     int			i, id;
 
-    if (baton == NULL || baton->slots == NULL || baton->slots->setup == 0)
+    if (baton == NULL || baton->slots == NULL || baton->slots->state != SLOTS_READY)
 	return;
 
     switch (type) {
@@ -1280,7 +1425,7 @@ pmSeriesDiscoverMetric(pmDiscoverEvent *event,
 			i + 1, numnames, pmIDStr(desc->pmid), names[i]);
     }
 
-    if (baton == NULL || baton->slots == NULL || baton->slots->setup == 0)
+    if (baton == NULL || baton->slots == NULL || baton->slots->state != SLOTS_READY)
 	return;
 
     if ((metric = pmwebapi_add_metric(&baton->pmapi.context,
@@ -1292,7 +1437,7 @@ pmSeriesDiscoverMetric(pmDiscoverEvent *event,
 }
 
 void
-pmSeriesDiscoverValues(pmDiscoverEvent *event, pmResult *result, void *arg)
+pmSeriesDiscoverValues(pmDiscoverEvent *event, pmHighResResult *result, void *arg)
 {
     pmDiscoverModule	*module = event->module;
     pmDiscover		*p = (pmDiscover *)event->data;
@@ -1303,7 +1448,13 @@ pmSeriesDiscoverValues(pmDiscoverEvent *event, pmResult *result, void *arg)
     if (pmDebugOptions.discovery)
 	fprintf(stderr, "%s: result numpmids=%d\n", "pmSeriesDiscoverValues", result->numpmid);
 
-    if (baton == NULL || baton->slots == NULL || baton->slots->setup == 0)
+    if (data == NULL) {
+	/* calloc failed in getDiscoverModuleData() */
+    	baton->error = -ENOMEM;
+	return;
+    }
+
+    if (baton == NULL || baton->slots == NULL || baton->slots->state != SLOTS_READY)
 	return;
 
     seriesBatonReference(context, "pmSeriesDiscoverValues");
@@ -1328,19 +1479,21 @@ pmSeriesDiscoverInDom(pmDiscoverEvent *event, pmInResult *in, void *arg)
     if (pmDebugOptions.discovery)
 	fprintf(stderr, "%s: %s\n", "pmSeriesDiscoverInDom", pmInDomStr(id));
 
-    if (baton == NULL || baton->slots == NULL || baton->slots->setup == 0)
+    if (baton == NULL || baton->slots == NULL || baton->slots->state != SLOTS_READY)
 	return;
 
     if ((domain = pmwebapi_add_domain(context, pmInDom_domain(id))) == NULL) {
 	infofmt(msg, "%s: failed indom discovery (domain %u)",
 			"pmSeriesDiscoverInDom", pmInDom_domain(id));
 	moduleinfo(event->module, PMLOG_ERROR, msg, arg);
+	baton->error = -ENOMEM;
 	return;
     }
     if ((indom = pmwebapi_add_indom(context, domain, id)) == NULL) {
 	infofmt(msg, "%s: failed indom discovery (indom %s)",
 			"pmSeriesDiscoverInDom", pmInDomStr(id));
 	moduleinfo(event->module, PMLOG_ERROR, msg, arg);
+	baton->error = -ENOMEM;
 	return;
     }
     for (i = 0; i < in->numinst; i++) {
@@ -1350,6 +1503,8 @@ pmSeriesDiscoverInDom(pmDiscoverEvent *event, pmInResult *in, void *arg)
 			"pmSeriesDiscoverInDom", pmInDomStr(id),
 			in->instlist[i], in->namelist[i]);
 	moduleinfo(event->module, PMLOG_ERROR, msg, arg);
+	/* Coverity CID:328046 - resource leak from earlier pmwebapi_add_instance calls. */
+	baton->error = -ENOMEM;
 	return;
     }
 }

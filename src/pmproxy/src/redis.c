@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2018-2020 Red Hat.
+ * Copyright (c) 2018-2021 Red Hat.
  *
  * This program is free software; you can redistribute it and/or modify it
  * under the terms of the GNU Lesser General Public License as published
@@ -13,6 +13,8 @@
  */
 #include "server.h"
 #include "discover.h"
+
+#define REDIS_RECONNECT_INTERVAL 2
 
 static int search_queries;
 static int series_queries;
@@ -38,6 +40,8 @@ static pmDiscoverCallBacks redis_search = {
 static pmDiscoverSettings redis_discover = {
     .module.on_info	= proxylog,
 };
+
+static void redis_reconnect_worker(void *);
 
 static sds
 redisfmt(redisReply *reply)
@@ -87,6 +91,7 @@ redisfmt(redisReply *reply)
     case REDIS_REPLY_BOOL:
 	return sdscatfmt(command, "#%s\r\n", reply->integer ? "t" : "f");
     case REDIS_REPLY_NIL:
+	return sdscat(command, "$-1\r\n");
     default:
 	break;
     }
@@ -95,12 +100,12 @@ redisfmt(redisReply *reply)
 
 static void
 on_redis_server_reply(
-	redisAsyncContext *c, redisReply *reply, const sds cmd, void *arg)
+	redisClusterAsyncContext *c, void *r, void *arg)
 {
     struct client	*client = (struct client *)arg;
+    redisReply          *reply = r;
 
     (void)c;
-    sdsfree(cmd);
     client_write(client, redisfmt(reply), NULL);
 }
 
@@ -136,7 +141,6 @@ static void
 on_redis_connected(void *arg)
 {
     struct proxy	*proxy = (struct proxy *)arg;
-    mmv_registry_t	*metric_registry = proxymetrics(proxy, METRICS_REDIS);
     sds			message;
 
     message = sdsnew("Redis slots");
@@ -149,6 +153,10 @@ on_redis_connected(void *arg)
     pmNotifyErr(LOG_INFO, "%s setup\n", message);
     sdsfree(message);
 
+    /* Redis was already connected before */
+    if (proxy->redisetup == 1)
+	return;
+
     if (series_queries) {
 	if (search_queries)
 	    redis_series.next = &redis_search;
@@ -158,14 +166,31 @@ on_redis_connected(void *arg)
     }
 
     if (archive_discovery && (series_queries || search_queries)) {
+	mmv_registry_t	*registry = proxymetrics(proxy, METRICS_DISCOVER);
+
 	pmDiscoverSetEventLoop(&redis_discover.module, proxy->events);
 	pmDiscoverSetConfiguration(&redis_discover.module, proxy->config);
-	pmDiscoverSetMetricRegistry(&redis_discover.module, metric_registry);
+	pmDiscoverSetMetricRegistry(&redis_discover.module, registry);
 	pmDiscoverSetup(&redis_discover.module, &redis_discover.callbacks, proxy);
 	pmDiscoverSetSlots(&redis_discover.module, proxy->slots);
     }
 
     proxy->redisetup = 1;
+}
+
+static redisSlotsFlags
+get_redis_slots_flags()
+{
+    redisSlotsFlags	flags = SLOTS_NONE;
+
+    if (redis_protocol)
+	flags |= SLOTS_KEYMAP;
+    if (series_queries)
+	flags |= SLOTS_VERSION;
+    if (search_queries)
+	flags |= SLOTS_SEARCH;
+
+    return flags;
 }
 
 /*
@@ -176,29 +201,59 @@ on_redis_connected(void *arg)
 void
 setup_redis_module(struct proxy *proxy)
 {
-    redisSlotsFlags	flags = SLOTS_NONE;
     sds			option;
 
-    if ((option = pmIniFileLookup(config, "pmproxy", "redis.enabled")))
-	redis_protocol = (strncmp(option, "true", sdslen(option)) == 0);
-    if ((option = pmIniFileLookup(config, "pmseries", "enabled")))
-	series_queries = (strncmp(option, "true", sdslen(option)) == 0);
-    if ((option = pmIniFileLookup(config, "pmsearch", "enabled")))
-	search_queries = (strncmp(option, "true", sdslen(option)) == 0);
-    if ((option = pmIniFileLookup(config, "discover", "enabled")))
-	archive_discovery = (strncmp(option, "true", sdslen(option)) == 0);
+    if ((option = pmIniFileLookup(config, "redis", "enabled")) &&
+	(strcmp(option, "false") == 0))
+	return;
 
-    if (proxy->slots == NULL) {
-	if (redis_protocol)
-	    flags |= SLOTS_KEYMAP;
-	if (series_queries)
-	    flags |= SLOTS_VERSION;
-	if (search_queries)
-	    flags |= SLOTS_SEARCH;
+    if ((option = pmIniFileLookup(config, "pmproxy", "redis.enabled")))
+	redis_protocol = (strcmp(option, "true") == 0);
+    if ((option = pmIniFileLookup(config, "pmseries", "enabled")))
+	series_queries = (strcmp(option, "true") == 0);
+    if ((option = pmIniFileLookup(config, "pmsearch", "enabled")))
+	search_queries = (strcmp(option, "true") == 0);
+    if ((option = pmIniFileLookup(config, "discover", "enabled")))
+	archive_discovery = (strcmp(option, "true") == 0);
+
+    if (proxy->slots == NULL && (redis_protocol || series_queries || search_queries || archive_discovery)) {
+	mmv_registry_t	*registry = proxymetrics(proxy, METRICS_REDIS);
+	redisSlotsFlags	flags = get_redis_slots_flags();
+
 	proxy->slots = redisSlotsConnect(proxy->config,
 			flags, proxylog, on_redis_connected,
 			proxy, proxy->events, proxy);
+	redisSlotsSetMetricRegistry(proxy->slots, registry);
+	redisSlotsSetupMetrics(proxy->slots);
+	pmWebTimerRegister(redis_reconnect_worker, proxy);
     }
+}
+
+static void
+redis_reconnect_worker(void *arg)
+{
+    struct proxy	*proxy = (struct proxy *)arg;
+    static unsigned int	wait_sec = REDIS_RECONNECT_INTERVAL;
+
+    /* wait X seconds, because this timer callback is called every second */
+    if (wait_sec > 1) {
+	wait_sec--;
+	return;
+    }
+    wait_sec = REDIS_RECONNECT_INTERVAL;
+
+    /*
+     * skip if Redis is disabled or state is not SLOTS_DISCONNECTED
+     */
+    if (!proxy->slots || proxy->slots->state != SLOTS_DISCONNECTED)
+	return;
+
+    if (pmDebugOptions.desperate)
+	proxylog(PMLOG_INFO, "Trying to connect to Redis ...", arg);
+
+    redisSlotsFlags	flags = get_redis_slots_flags();
+    redisSlotsReconnect(proxy->slots, flags, proxylog, on_redis_connected,
+			proxy, proxy->events, proxy);
 }
 
 void
@@ -213,4 +268,5 @@ close_redis_module(struct proxy *proxy)
 	pmDiscoverClose(&redis_discover.module);
 
     proxymetrics_close(proxy, METRICS_REDIS);
+    proxymetrics_close(proxy, METRICS_DISCOVER);
 }

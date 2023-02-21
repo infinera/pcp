@@ -106,7 +106,7 @@ NetBSD       8\.0     -       py27-{.*} dtrace
 # qtsvg is not needed without Qt5
 # valgrind is available, but segv's
 # we're using python3
-OpenBSD      6\.[3-7] -       qtbase qtsvg valgrind python-{.*} {.*}-python cpan(Spreadsheet::ReadSXC) cpan(XML::TokeParser)
+OpenBSD      6\.[3-7] -       qtbase qtsvg valgrind python-{.*} {.*}-python cpan(XML::TokeParser)
 #-- RedHat
 # we're using python2
 # As of 8.2 ...
@@ -178,3 +178,9 @@ CentOS       7\.       -      389-ds
 CentOS       -         -      ccache
 Fedora       32        -      coreutils-single infiniband-diags-devel
 Fedora       -         -      ccache
+#-- OpenMandriva
+# as of (at least) 4.0 we're going to use only Python3 (which is called
+# python in the package names), and lots of Perl stuff is available in
+# (rpm) packages ... this looks a lot like RHEL 8.0
+#
+OpenMandriva 4\.[0-2] -       cpan(Net::LDAP) cpan(Spreadsheet::XLSX) cpan(Text::CSV_XS) cpan(XML::LibXML) cpan(XML::TokeParser) perl(autodie) perl(Date::Manip) perl(DBD::mysql) perl(Net::LDAP) perl(Net::SNMP) perl-Net-SNMP perl(Spreadsheet::WriteExcel) perl-Spreadsheet-WriteExcel perl(Spreadsheet::XLSX) perl(Text::CSV_XS) perl(XML::LibXML) perl(XML::TokeParser) .*-python2 python2-.* system-python-libs

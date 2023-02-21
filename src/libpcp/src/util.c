@@ -1,7 +1,7 @@
 /*
  * General Utility Routines
  *
- * Copyright (c) 2012-2018 Red Hat.
+ * Copyright (c) 2012-2018,2021-2022 Red Hat.
  * Copyright (c) 2009 Aconex.  All Rights Reserved.
  * Copyright (c) 1995-2002,2004 Silicon Graphics, Inc.  All Rights Reserved.
  *
@@ -745,7 +745,6 @@ dump_valueset(__pmContext *ctxp, FILE *f, pmValueSet *vsp)
     if ((n = pmNameAll_ctx(ctxp, vsp->pmid, &names)) < 0)
 	fprintf(f, "  %s (%s):", pmid, "<noname>");
     else {
-	int	j;
 	fprintf(f, "  %s (", pmid);
 	for (j = 0; j < n; j++) {
 	    if (j > 0)
@@ -829,6 +828,31 @@ __pmDumpResult(FILE *f, const pmResult *resp)
     __pmDumpResult_ctx(NULL, f, resp);
 }
 
+/* Internal variant of __pmPrintResult() with current context. */
+void
+__pmPrintResult_ctx(__pmContext *ctxp, FILE *f, const __pmResult *resp)
+{
+    int		i;
+
+    if (ctxp != NULL)
+	PM_ASSERT_IS_LOCKED(ctxp->c_lock);
+
+    save_debug();
+    fprintf(f, "__pmResult dump from " PRINTF_P_PFX "%p timestamp: %" FMT_INT64 ".%09d ",
+	resp, resp->timestamp.sec, resp->timestamp.nsec);
+    __pmPrintTimestamp(f, &resp->timestamp);
+    fprintf(f, " numpmid: %d\n", resp->numpmid);
+    for (i = 0; i < resp->numpmid; i++)
+	dump_valueset(ctxp, f, resp->vset[i]);
+    restore_debug();
+}
+
+void
+__pmPrintResult(FILE *f, const __pmResult *resp)
+{
+    __pmPrintResult_ctx(NULL, f, resp);
+}
+
 /* Internal variant of __pmDumpHighResResult() with current context. */
 void
 __pmDumpHighResResult_ctx(__pmContext *ctxp, FILE *f, const pmHighResResult *hresp)
@@ -839,8 +863,10 @@ __pmDumpHighResResult_ctx(__pmContext *ctxp, FILE *f, const pmHighResResult *hre
 	PM_ASSERT_IS_LOCKED(ctxp->c_lock);
 
     save_debug();
-    fprintf(f, "pmHighResResult dump from " PRINTF_P_PFX "%p timestamp: %d.%09d ",
-	hresp, (int)hresp->timestamp.tv_sec, (int)hresp->timestamp.tv_nsec);
+    fprintf(f, "%s dump from " PRINTF_P_PFX "%p timestamp: %lld.%09lld ",
+	    "pmHighResResult", hresp,
+	    (long long)hresp->timestamp.tv_sec,
+	    (long long)hresp->timestamp.tv_nsec);
     pmPrintHighResStamp(f, &hresp->timestamp);
     fprintf(f, " numpmid: %d\n", hresp->numpmid);
     for (i = 0; i < hresp->numpmid; i++)
@@ -852,7 +878,6 @@ void
 __pmDumpHighResResult(FILE *f, const pmHighResResult *hresp)
 {
     __pmDumpHighResResult_ctx(NULL, f, hresp);
-
 }
 
 static void
@@ -1150,9 +1175,8 @@ void
 pmNoMem(const char *where, size_t size, int fatal)
 {
     char	errmsg[PM_MAXERRMSGLEN];
-    pmNotifyErr(fatal ? LOG_ERR : LOG_WARNING,
-			"%s: malloc(%d) failed: %s",
-			where, (int)size, osstrerror_r(errmsg, sizeof(errmsg)));
+    pmNotifyErr(fatal ? LOG_ERR : LOG_WARNING, "%s: malloc(%zu) failed: %s",
+			where, size, osstrerror_r(errmsg, sizeof(errmsg)));
     if (fatal == PM_FATAL_ERR)
 	exit(1);
 }
@@ -1201,6 +1225,25 @@ __pmGetTimespec(struct timespec *ts)
 #endif
 }
 
+int
+pmtimespecNow(struct timespec *ts)
+{
+    return __pmGetTimespec(ts);
+}
+
+int
+__pmGetTimestamp(__pmTimestamp *timestamp)
+{
+    struct timespec ts;
+    int sts;
+
+    if ((sts = pmtimespecNow(&ts)) < 0)
+	return sts;
+    timestamp->sec = ts.tv_sec;
+    timestamp->nsec = ts.tv_nsec;
+    return sts;
+}
+
 /*
  * a : b for pmTimeval ... <0 for a<b, ==0 for a==b, >0 for a>b
  */
@@ -1216,6 +1259,20 @@ __pmTimevalCmp(const pmTimeval *a, const pmTimeval *b)
 }
 
 /*
+ * a : b for __pmTimestamp ... <0 for a<b, ==0 for a==b, >0 for a>b
+ */
+int
+__pmTimestampCmp(const __pmTimestamp *a, const __pmTimestamp *b)
+{
+    int res = (int)(a->sec - b->sec);
+
+    if (res == 0)
+	res = (int)(a->nsec - b->nsec);
+
+    return res;
+}
+
+/*
  * Difference for two of the internal timestamps ...
  * Same as pmtimevalSub() in tv.c, just with pmTimeval args
  * rather than struct timeval args.
@@ -1224,6 +1281,56 @@ double
 __pmTimevalSub(const pmTimeval *ap, const pmTimeval *bp)
 {
      return (double)(ap->tv_sec - bp->tv_sec + (long double)(ap->tv_usec - bp->tv_usec) / (long double)1000000);
+}
+
+/*
+ * Difference for two of the internal highres timestamps ...
+ * Same as pmtimespecSub() in tv.c, just with pmTimespec args
+ * rather than struct timespec args.
+ */
+double
+__pmTimespecSub(const pmTimespec *ap, const pmTimespec *bp)
+{
+     return (double)(ap->tv_sec - bp->tv_sec + (long double)(ap->tv_nsec - bp->tv_nsec) / (long double)1000000000);
+}
+
+/*
+ * Difference for two of the universal timestamps ...
+ * Same as pmtimespecSub() in tv.c, just with __pmTimestamp args
+ * rather than struct timespec args.
+ */
+double
+__pmTimestampSub(const __pmTimestamp *ap, const __pmTimestamp *bp)
+{
+     return (double)(ap->sec - bp->sec + (long double)(ap->nsec - bp->nsec) / (long double)1000000000);
+}
+
+/*
+ * Increment a universal timestamps ...
+ */
+void
+__pmTimestampInc(__pmTimestamp *ap, const __pmTimestamp *bp)
+{
+     ap->sec += bp->sec;
+     ap->nsec += bp->nsec;
+     if (ap->nsec > 1000000000) {
+	 ap->sec++;
+	 ap->nsec -= 1000000000;
+    }
+}
+
+/*
+ * Decrement a universal timestamps ...
+ */
+void
+__pmTimestampDec(__pmTimestamp *ap, const __pmTimestamp *bp)
+{
+     ap->sec -= bp->sec;
+     ap->nsec -= bp->nsec;
+     if (ap->nsec < 0) {
+	 ap->sec--;
+	 ap->nsec += 1000000000;
+    }
 }
 
 /*
@@ -1259,7 +1366,7 @@ pmPrintHighResStamp(FILE *f, const struct timespec *tp)
 
 /*
  * print pmTimeval timestamp in HH:MM:SS.XXXXXX format (usec precision)
- * (pmTimeval variant used in PDUs, archives and internally)
+ * (pmTimeval variant used in historical PDUs, archives and internally)
  */
 void
 __pmPrintTimeval(FILE *f, const pmTimeval *tp)
@@ -1270,6 +1377,35 @@ __pmPrintTimeval(FILE *f, const pmTimeval *tp)
     now = (time_t)tp->tv_sec;
     pmLocaltime(&now, &tmp);
     fprintf(f, "%02d:%02d:%02d.%06d", tmp.tm_hour, tmp.tm_min, tmp.tm_sec, (int)tp->tv_usec);
+}
+
+/*
+ * print pmTimespec timestamp in HH:MM:SS.XXXXXXXXX format (nsec precision)
+ * (pmTimespec variant used in the latest PDUs, archives and internally)
+ */
+void
+__pmPrintTimespec(FILE *f, const pmTimespec *tp)
+{
+    struct tm	tmp;
+    time_t	now;
+
+    now = (time_t)tp->tv_sec;
+    pmLocaltime(&now, &tmp);
+    fprintf(f, "%02d:%02d:%02d.%09d", tmp.tm_hour, tmp.tm_min, tmp.tm_sec, (int)tp->tv_nsec);
+}
+
+/*
+ * print universal __pmTimestamp timestamp in HH:MM:SS.XXXXXXXXX format
+ */
+void
+__pmPrintTimestamp(FILE *f, const __pmTimestamp *tsp)
+{
+    struct tm	tmp;
+    time_t	now;
+
+    now = (time_t)tsp->sec;
+    pmLocaltime(&now, &tmp);
+    fprintf(f, "%02d:%02d:%02d.%09d", tmp.tm_hour, tmp.tm_min, tmp.tm_sec, (int)tsp->nsec);
 }
 
 /*
@@ -1293,10 +1429,41 @@ pmTypeStr(int type)
     return "???";
 }
 
+/*
+ * thread-safe version of __pmLogMetaTypeStr() ... buflen
+ * should be at least 17
+ */
 char *
 pmTypeStr_r(int type, char *buf, int buflen)
 {
     pmsprintf(buf, buflen, "%s", pmTypeStr(type));
+    return buf;
+}
+
+/*
+ * Return the name of metadata record type
+ */
+const char *
+__pmLogMetaTypeStr(int type)
+{
+    static char		*typename[] = {
+	"???", "DESC", "INDOM_V2", "LABEL_V2", "TEXT", "INDOM",
+	"INDOM_DELTA", "LABEL"
+    };
+
+    if (type >= 0 && type < sizeof(typename) / sizeof(typename[0]))
+	return typename[type];
+    return "???";
+}
+
+/*
+ * thread-safe version of __pmLogMetaTypeStr() ... buflen
+ * should be at least 15
+ */
+char *
+__pmLogMetaTypeStr_r(int type, char *buf, int buflen)
+{
+    pmsprintf(buf, buflen, "%s", __pmLogMetaTypeStr(type));
     return buf;
 }
 
@@ -1681,7 +1848,7 @@ PM_FAULT_POINT("libpcp/" __FILE__ ":2", PM_FAULT_ALLOC);
 	msgbuf_tmp = realloc(msgbuf, msgbuflen);
 	if (msgbuf_tmp == NULL) {
 	    int		msgbuflen_tmp = msgbuflen;
-	    msgbuf[msgbuflen - MSGCHUNK] = '\0';
+	    msgbuf[msgbuflen - MSGCHUNK - 1] = '\0';
 	    fprintf(stderr, "%s", msgbuf);
 	    vfprintf(stderr, fmt, arg);
 	    fputc('\n', stderr);
@@ -1825,7 +1992,7 @@ __pmSetClientId(const char *id)
     const char		*name = "pmcd.client.whoami";
     pmID		pmid;
     int			sts;
-    pmResult		store;
+    __pmResult		store;
     pmValueSet		pmvs;
     pmValueBlock	*pmvb;
     char        	host[MAXHOSTNAMELEN];
@@ -2056,7 +2223,7 @@ int
 getmachineid(char *buffer, size_t length)
 {
     FILE *fp = fopen("/etc/machine-id", "r");
-    char machine[MAXMACHINEIDLEN];
+    char machine[MAXMACHINEIDLEN+1];
 
     if (fp) {
 	int i = fscanf(fp, "%" STR(MAXMACHINEIDLEN) "s", machine);
@@ -2702,8 +2869,6 @@ __pmShutdown(void)
 
     if ((sts = __pmShutdownLocal()) < 0 && !code)
 	code = sts;
-    if ((sts = __pmShutdownCertificates()) < 0 && !code)
-	code = sts;
     if ((sts = __pmShutdownSecureSockets()) < 0 && !code)
 	code = sts;
     return code;
@@ -2726,13 +2891,25 @@ __pmMemoryUnmap(void *addr, size_t sz)
 }
 #endif /* !IS_MINGW */
 
+static char	*text_start = NULL;
+
+void
+__pmDumpStackInit(void *addr)
+{
+    /*
+     * Inititialization call ... caller knows where their text
+     * segment starts
+     */
+    text_start = (char *)addr;
+}
+
 #if HAVE_TRACE_BACK_STACK
 #include <libexc.h>
 #define MAX_DEPTH 30	/* max callback procedure depth */
 #define MAX_SIZE 48	/* max function name length */
 
 void
-__pmDumpStack(FILE *f)
+__pmDumpStack(void)
 {
     __uint64_t	call_addr[MAX_DEPTH];
     char	*call_fn[MAX_DEPTH];
@@ -2740,47 +2917,123 @@ __pmDumpStack(FILE *f)
     int		res;
     int		i;
 
+    fprintf(stderr, "Procedure call traceback ...\n");
     for (i = 0; i < MAX_DEPTH; i++)
 	call_fn[i] = names[i];
     res = trace_back_stack(MAX_DEPTH, call_addr, call_fn, MAX_DEPTH, MAX_SIZE);
     for (i = 1; i < res; i++) {
 	if (sizeof(void *) == sizeof(long long))
-	    fprintf(f, "  0x%016llx [%s]\n", call_addr[i], call_fn[i]);
+	    fprintf(stderr, "  0x%016llx [%s]\n", call_addr[i], call_fn[i]);
 	else
-	    fprintf(f, "  0x%08lx [%s]\n", (__uint32_t)call_addr[i], call_fn[i]);
+	    fprintf(stderr, "  0x%08lx [%s]\n", (__uint32_t)call_addr[i], call_fn[i]);
     }
 }
 
 #elif HAVE_BACKTRACE
 #include <execinfo.h>
-#define MAX_DEPTH 30	/* max callback procedure depth */
 
 void
-__pmDumpStack(FILE *f)
+__pmDumpStack(void)
 {
-    int		nframe;
-    void	*buf[MAX_DEPTH];
-    char	**symbols;
-    int		i;
+#define MAX_TRACE_DEPTH 32	/* max callback procedure depth */
+#define MAX_SYMBOL_LENGTH 128	/* max length of a function name */
+    void	*backaddr[MAX_TRACE_DEPTH] = { 0 };
+    int		nsymbols;
+#ifdef HAVE___ETEXT
+    extern char	__etext;
+    char	*text_end = &__etext;
+#else
+#ifdef HAVE__ETEXT
+    extern char	_etext;
+    char	*text_end = &_etext;
+#else
+#ifdef HAVE_ETEXT
+    extern char	etext;
+    char	*text_end = &etext;
+#else
+    char	*text_end = NULL;
+#endif
+#endif
+#endif
 
-    nframe = backtrace(buf, MAX_DEPTH);
-    if (nframe < 1) {
-	fprintf(f, "backtrace -> %d frames?\n", nframe);
-	return;
+    fprintf(stderr, "Procedure call traceback ...\n");
+    if (text_start != NULL)
+	fprintf(stderr, "executable text segment: " PRINTF_P_PFX "%p ... " PRINTF_P_PFX "%p\n", text_start, text_end);
+
+    nsymbols = backtrace(backaddr, MAX_TRACE_DEPTH);
+    if (nsymbols > 0) {
+	int	fd;
+	char	**symbols = NULL;
+	int	i;
+
+	/*
+	 * Possible name collision here to simplify the code ... we unlink()
+	 * as soon as it is created so the risk is small.
+	 */
+	fd = open("/tmp/dumpstack", O_CREAT|O_RDWR, 0644);
+	if (fd < 0) {
+	    fprintf(stderr, "Failed to create \"/tmp/dumpstack\", falling back to backtrace_symbols()\n");
+	    symbols = backtrace_symbols(backaddr, nsymbols);
+	}
+	else {
+	    /*
+	     * Preferred path to avoid calling malloc() in backtrace_symbols()
+	     * in case that's the real cause of a problem that got us here.
+	     */
+	    unlink("/tmp/dumpstack");
+	    backtrace_symbols_fd(backaddr, nsymbols, fd);
+	    lseek(fd, (off_t)0, SEEK_SET);
+	}
+
+	for (i = 0; i < nsymbols; i++) {
+	    if (fd >= 0) {
+		char	c;
+		fprintf(stderr, "  ");
+		for ( ; ; ) {
+		    int		sts;
+		    sts = read(fd, &c, 1);
+		    if (sts < 0) {
+			fprintf(stderr, "Botch: read() returns %d\n", sts);
+			break;
+		    }
+		    else if (sts == 0)
+			break;
+		    else if (c == '\n')
+			break;
+		    fputc(c, stderr);
+		}
+	    }
+	    else if (symbols != NULL)
+		fprintf(stderr, "  %s", symbols[i]);
+	    else
+		fprintf(stderr, "  %p ??unknown??", backaddr[i]);
+	    if (text_start != NULL) {
+		/*
+		 * report address offset from the base of the text segment
+		 * ... this matches addresses from nm(1), but more importantly
+		 * is the address that is needed for addr2line(1)
+		 */
+		if (text_start  <= (char *)backaddr[i] && 
+		    (text_end == NULL || (char *)backaddr[i] <= text_end))
+		    fprintf(stderr, " (0x%llx)", (long long)((char *)backaddr[i]-text_start));
+	    }
+	    fputc('\n', stderr);
+	}
+	if (fd >= 0)
+	    close(fd);
+	else if (symbols != NULL)
+	    free(symbols);
     }
-    symbols = backtrace_symbols(buf, nframe);
-    if (symbols == NULL) {
-	fprintf(f, "backtrace_symbols failed!\n");
-	return;
+    else {
+	fprintf(stderr, "backtrace() returns %d, nothing to report\n", nsymbols);
     }
-    for (i = 1; i < nframe; i++)
-	fprintf(f, "  " PRINTF_P_PFX "%p [%s]\n", buf[i], symbols[i]);
+    return;
 }
 #else	/* no known mechanism, provide a stub (called unconditionally) */
 void
-__pmDumpStack(FILE *f)
+__pmDumpStack(void)
 {
-    fprintf(f, "[No backtrace support available]\n");
+    fprintf(stderr, "[No backtrace support available]\n");
 }
 #endif /* HAVE_BACKTRACE */
 
@@ -2848,4 +3101,64 @@ pmInDom_build(unsigned int domain, unsigned int serial)
     indom_int.serial = serial;
     memcpy(&indom, &indom_int, sizeof(indom));
     return indom;
+}
+
+/*
+ * Convert archive feature bits into a string ... result is variable
+ * length and not static, so result is malloc'd and 
+ * __pmLogFeaturesStr_r() is not required.
+ *
+ * Return NULL on alloc error ... caller should test before calling
+ * free().
+ */
+char *
+__pmLogFeaturesStr(__uint32_t features)
+{
+    char	*ans = (char *)malloc(1);
+    int		len = 1;
+    __uint32_t	check = features;
+    int		pos;
+    int		unknown = 0;
+    char	buf[8];		/* enough for bit_NN */
+
+    if (ans == NULL) {
+	pmNoMem("__pmLogFeaturesStr: malloc", 1, PM_RECOV_ERR);
+	return NULL;
+    }
+    ans[0] = '\0';
+
+    for (pos = 31; pos >= 0; pos--) {
+	if (check & 0x80000000) {
+	    char	*ans_tmp;
+	    char	*append;
+	    switch (pos) {
+		case 31:	/* QA */
+			append = "QA";
+			break;
+
+		default:
+			append = buf;
+			snprintf(buf, 8, "bit_%02d", pos);
+			break;
+	    }
+	    len += strlen(append) + 1;
+	    if (unknown > 0)
+		len++;
+	    ans_tmp = (char *)realloc(ans, len);
+	    if (ans_tmp == NULL) {
+		pmNoMem("__pmLogFeaturesStr: realloc", len, PM_RECOV_ERR);
+		/* best we can do ... */
+		free(ans);
+		return NULL;
+	    }
+	    ans = ans_tmp;
+	    if (unknown > 0)
+		strcat(ans, " ");
+	    strcat(ans, append);
+	    unknown++;
+	}
+	check = check << 1;
+    }
+
+    return(ans);
 }

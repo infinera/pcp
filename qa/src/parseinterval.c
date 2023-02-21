@@ -15,8 +15,8 @@ main(int argc, char *argv[])
 	    free(err);
 	}
 	else if (sts == 0) {
-	    printf(" Time: %ld.%06ld sec\n",
-			(long)time.tv_sec, (long)time.tv_usec);
+	    printf(" Time: %lld.%06ld sec\n",
+			(long long)time.tv_sec, (long)time.tv_usec);
 	}
 	else {
 	    printf(" Bogus return value: %d\n", sts);

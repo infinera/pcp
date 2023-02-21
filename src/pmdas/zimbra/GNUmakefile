@@ -28,20 +28,26 @@ MAN_SECTION = 1
 MAN_PAGES = pmda$(IAM).$(MAN_SECTION)
 MAN_DEST = $(PCP_MAN_DIR)/man$(MAN_SECTION)
 
-default: check_domain
+default: build-me check_domain runaszimbra
 
 include $(BUILDRULES)
 
+ifeq "$(HAVE_PERL)" "true"
+build-me:
 install: default
 	$(INSTALL) -m 755 -d $(PMDAADMDIR)
 	$(INSTALL) -m 755 -d $(PMDATMPDIR)
-	$(INSTALL) -m 755 -t $(PMDATMPDIR) Install Remove $(PMDAADMDIR)
+	$(INSTALL) -m 755 -t $(PMDATMPDIR) runaszimbra Install Remove $(PMDAADMDIR)
 	$(INSTALL) -m 755 -t $(PMDATMPDIR)/zimbraprobe zimbraprobe.sh $(PMDAADMDIR)/zimbraprobe
 	$(INSTALL) -m 644 -t $(PMDATMPDIR)/pmda$(IAM).pl pmda$(IAM).pl $(PMDAADMDIR)/pmda$(IAM).pl
 	@$(INSTALL_MAN)
 	$(INSTALL) -m 755 -d $(LOGCONFDIR)
 	$(INSTALL) -m 755 -d $(LOGCONFVARDIR)
 	$(INSTALL) -m 644 -t $(LOGCONFVARDIR)/all pmlogconf.all $(LOGCONFDIR)/all
+else
+build-me:
+install:
+endif
 
 default_pcp : default
 

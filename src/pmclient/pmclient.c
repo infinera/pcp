@@ -1,14 +1,14 @@
 /*
  * pmclient - sample, simple PMAPI client
  *
- * Copyright (c) 2013-2014 Red Hat.
+ * Copyright (c) 2013-2014,2022 Red Hat.
  * Copyright (c) 1995-2002 Silicon Graphics, Inc.  All Rights Reserved.
- * 
+ *
  * This program is free software; you can redistribute it and/or modify it
  * under the terms of the GNU General Public License as published by the
  * Free Software Foundation; either version 2 of the License, or (at your
  * option) any later version.
- * 
+ *
  * This program is distributed in the hope that it will be useful, but
  * WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY
  * or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License
@@ -16,11 +16,25 @@
  */
 
 #include "pmapi.h"
-#include "libpcp.h"
 #include "pmnsmap.h"
+#include <errno.h>
 
 pmLongOptions longopts[] = {
-    PMAPI_GENERAL_OPTIONS,
+    PMAPI_OPTIONS_HEADER("General options"),
+    PMOPT_ALIGN,
+    PMOPT_ARCHIVE,
+    PMOPT_DEBUG,
+    PMOPT_HOST,
+    PMOPT_NAMESPACE,
+    PMOPT_ORIGIN,
+    PMOPT_START,
+    PMOPT_SAMPLES,
+    PMOPT_FINISH,
+    PMOPT_INTERVAL,
+    PMOPT_TIMEZONE,
+    PMOPT_HOSTZONE,
+    PMOPT_VERSION,
+    PMOPT_HELP,
     PMAPI_OPTIONS_HEADER("Reporting options"),
     { "pause", 0, 'P', 0, "pause between updates for archive replay" },
     PMAPI_OPTIONS_END
@@ -55,7 +69,7 @@ get_ncpu(void)
     pmAtomValue	atom;
     int		sts;
 
-    if ((sts = pmLookupName(1, pmclient_init, pmidlist)) < 0) {
+    if ((sts = pmLookupName(1, (const char **)pmclient_init, pmidlist)) < 0) {
 	fprintf(stderr, "%s: pmLookupName: %s\n", pmGetProgname(), pmErrStr(sts));
 	fprintf(stderr, "%s: metric \"%s\" not in name space\n",
 			pmGetProgname(), pmclient_init[0]);
@@ -76,7 +90,7 @@ get_ncpu(void)
 		   &atom, PM_TYPE_U32);
     pmFreeResult(rp);
 
-    return atom.ul;
+    return atom.ul ? atom.ul : 1;
 }
 
 static void
@@ -113,7 +127,7 @@ get_sample(info_t *ip)
 	    fprintf(stderr, "%s: get_sample: malloc: %s\n", pmGetProgname(), osstrerror());
 	    exit(1);
 	}
-	if ((sts = pmLookupName(numpmid, pmclient_sample, pmidlist)) < 0) {
+	if ((sts = pmLookupName(numpmid, (const char **)pmclient_sample, pmidlist)) < 0) {
 	    printf("%s: pmLookupName: %s\n", pmGetProgname(), pmErrStr(sts));
 	    for (i = 0; i < numpmid; i++) {
 		if (pmidlist[i] == PM_ID_NULL)
@@ -274,6 +288,24 @@ get_sample(info_t *ip)
     prp = crp;
 }
 
+void
+timeval_sleep(struct timeval delay)
+{
+    struct timespec	interval;
+    struct timespec	remaining;
+
+    interval.tv_sec = delay.tv_sec;
+    interval.tv_nsec = delay.tv_usec * 1000;
+
+    /* loop to catch early wakeup by nanosleep */
+    for (;;) {
+	int sts = nanosleep(&interval, &remaining);
+	if (sts == 0 || (sts < 0 && errno != EINTR))
+	    break;
+	interval = remaining;
+    }
+}
+
 int
 main(int argc, char **argv)
 {
@@ -387,7 +419,7 @@ X.XXX   XXX   X.XXX XXXXX.XXX XXXXXX  XXXX.XX XXXX.XX
 	    printf("  (Mbytes)   IOPS    1 Min  15 Min\n");
 	}
 	if (opts.context != PM_CONTEXT_ARCHIVE || pauseFlag)
-	    __pmtimevalSleep(opts.interval);
+	    timeval_sleep(opts.interval);
 	get_sample(&info);
 	if (info.cpu_util >= 0)
 	    printf("%5.2f", info.cpu_util);

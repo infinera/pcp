@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2013,2017 Red Hat.
+ * Copyright (c) 2013,2017,2022 Red Hat.
  * Copyright (c) 1995,2004 Silicon Graphics, Inc.  All Rights Reserved.
  * 
  * This program is free software; you can redistribute it and/or modify it
@@ -71,7 +71,7 @@ opendso(char *dso, char *init, int domain)
 	    challenge = 0xff;
 	    dispatch.comm.pmda_interface = challenge;
 	    /* set in 2 steps to avoid int to bitfield truncation warnings */
-	    dispatch.comm.pmapi_version = PMAPI_VERSION;
+	    dispatch.comm.pmapi_version = PMAPI_VERSION_2;   /* use oldest */
 	    dispatch.comm.pmapi_version = ~dispatch.comm.pmapi_version;
 	    dispatch.comm.flags = 0;
 	    dispatch.status = 0;
@@ -99,7 +99,8 @@ opendso(char *dso, char *init, int domain)
 		    dispatch.status = -1;
 		    dlclose(handle);
 		}
-		if (dispatch.comm.pmapi_version != PMAPI_VERSION_2) {
+		if (dispatch.comm.pmapi_version != PMAPI_VERSION_2 &&
+		    dispatch.comm.pmapi_version != PMAPI_VERSION_3) {
 		    printf("Error: Unsupported PMAPI version %d returned by DSO \"%s\"\n",
 			   dispatch.comm.pmapi_version, dso);
 		    dispatch.status = -1;
@@ -205,7 +206,7 @@ dodso(int pdu)
     pmDesc		*desc_list = NULL;
     pmResult		*result;
     pmLabelSet		*labelset = NULL;
-    pmInResult	*inresult;
+    pmInResult		*inresult;
     int			i;
     int			j;
     char		*buffer;
@@ -295,7 +296,7 @@ dodso(int pdu)
 		printindom(stdout, inresult);
 		__pmFreeInResult(inresult);
 	    }
-	    else if (sts < 0)
+	    else
 		printf("Error: DSO instance() failed: %s\n", pmErrStr(sts));
 	    break;
 
@@ -331,7 +332,7 @@ dodso(int pdu)
 	    else if (pmDebugOptions.fetch)
 		_dbDumpResult(stdout, result, desc_list);
 	 
-	    sts = fillResult(result, desc.type);
+	    sts = fillValues(result->vset[0], desc.type);
 	    if (sts < 0) {
 		pmFreeResult(result);
 		return;
@@ -414,9 +415,9 @@ dodso(int pdu)
 			printf("Labels:\n");
 		    for (j = 0; j < labelset[i].nlabels; j++) {
 			pmLabel	*lp = &labelset[i].labels[j];
-			char *name = labelset[i].json + lp->name;
+			char *label = labelset[i].json + lp->name;
 			char *value = labelset[i].json + lp->value;
-			printf("    %.*s=%.*s\n", lp->namelen, name, lp->valuelen, value);
+			printf("    %.*s=%.*s\n", lp->namelen, label, lp->valuelen, value);
 		    }
 		}
 		pmFreeLabelSets(labelset, sts);

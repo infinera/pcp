@@ -23,7 +23,6 @@ int
 pmLookupInDom_ctx(__pmContext *ctxp, pmInDom indom, const char *name)
 {
     int		sts;
-    pmInResult	*result;
     int		need_unlock = 0;
 
     if (pmDebugOptions.pmapi) {
@@ -49,15 +48,14 @@ pmLookupInDom_ctx(__pmContext *ctxp, pmInDom indom, const char *name)
 	else
 	    PM_ASSERT_IS_LOCKED(ctxp->c_lock);
 	if (ctxp->c_type == PM_CONTEXT_HOST) {
-	    sts = __pmSendInstanceReq(ctxp->c_pmcd->pc_fd, __pmPtrToHandle(ctxp),
-				    &ctxp->c_origin, indom, PM_IN_NULL, name);
+	    sts = __pmSendInstanceReq(ctxp->c_pmcd->pc_fd, __pmPtrToHandle(ctxp), indom, PM_IN_NULL, name);
 	    if (sts < 0)
 		sts = __pmMapErrno(sts);
 	    else {
 		__pmPDU	*pb;
 		int	pinpdu;
 
-PM_FAULT_POINT("libpcp/" __FILE__ ":3", PM_FAULT_TIMEOUT);
+PM_FAULT_POINT("libpcp/" __FILE__ ":3", PM_FAULT_CALL);
 		pinpdu = sts = __pmGetPDU(ctxp->c_pmcd->pc_fd, ANY_SIZE, 
 			       ctxp->c_pmcd->pc_tout_sec, &pb);
 		if (sts == PDU_INSTANCE) {
@@ -77,7 +75,8 @@ PM_FAULT_POINT("libpcp/" __FILE__ ":3", PM_FAULT_TIMEOUT);
 	    }
 	}
 	else if (ctxp->c_type == PM_CONTEXT_LOCAL) {
-	    __pmDSO		*dp;
+	    __pmDSO	*dp;
+	    pmInResult	*result;
 	    if (PM_MULTIPLE_THREADS(PM_SCOPE_DSO_PMDA))
 		/* Local context requires single-threaded applications */
 		sts = PM_ERR_THREAD;
@@ -138,7 +137,6 @@ pmNameInDom_ctx(__pmContext *ctxp, pmInDom indom, int inst, char **name)
 {
     int		need_unlock = 0;
     int		sts;
-    pmInResult	*result;
 
     if (pmDebugOptions.pmapi) {
 	char    dbgbuf[20];
@@ -163,15 +161,14 @@ pmNameInDom_ctx(__pmContext *ctxp, pmInDom indom, int inst, char **name)
 	else
 	    PM_ASSERT_IS_LOCKED(ctxp->c_lock);
 	if (ctxp->c_type == PM_CONTEXT_HOST) {
-	    sts = __pmSendInstanceReq(ctxp->c_pmcd->pc_fd, __pmPtrToHandle(ctxp),
-				    &ctxp->c_origin, indom, inst, NULL);
+	    sts = __pmSendInstanceReq(ctxp->c_pmcd->pc_fd, __pmPtrToHandle(ctxp), indom, inst, NULL);
 	    if (sts < 0)
 		sts = __pmMapErrno(sts);
 	    else {
 		__pmPDU	*pb;
 		int	pinpdu;
 
-PM_FAULT_POINT("libpcp/" __FILE__ ":2", PM_FAULT_TIMEOUT);
+PM_FAULT_POINT("libpcp/" __FILE__ ":2", PM_FAULT_CALL);
 		pinpdu = sts = __pmGetPDU(ctxp->c_pmcd->pc_fd, ANY_SIZE,
 					ctxp->c_pmcd->pc_tout_sec, &pb);
 		if (sts == PDU_INSTANCE) {
@@ -193,6 +190,7 @@ PM_FAULT_POINT("libpcp/" __FILE__ ":2", PM_FAULT_TIMEOUT);
 	}
 	else if (ctxp->c_type == PM_CONTEXT_LOCAL) {
 	    __pmDSO	*dp;
+	    pmInResult	*result;
 	    if (PM_MULTIPLE_THREADS(PM_SCOPE_DSO_PMDA))
 		/* Local context requires single-threaded applications */
 		sts = PM_ERR_THREAD;
@@ -252,9 +250,11 @@ inresult_to_lists(pmInResult *result, int **instlist, char ***namelist)
     int *ilist;
     char **nlist;
     
-    if (result->numinst == 0) {
+    if (result->numinst <= 0) {
+	/* no instances or error */
+	sts = result->numinst;
 	__pmFreeInResult(result);
-	return 0;
+	return sts;
     }
     need = 0;
     for (i = 0; i < result->numinst; i++) {
@@ -296,7 +296,6 @@ pmGetInDom(pmInDom indom, int **instlist, char ***namelist)
 {
     int			sts;
     int			i;
-    pmInResult	*result;
     __pmContext		*ctxp;
     char		*p;
     int			need;
@@ -321,15 +320,14 @@ pmGetInDom(pmInDom indom, int **instlist, char ***namelist)
 	    goto pmapi_return;
 	}
 	if (ctxp->c_type == PM_CONTEXT_HOST) {
-	    sts = __pmSendInstanceReq(ctxp->c_pmcd->pc_fd, __pmPtrToHandle(ctxp),
-				    &ctxp->c_origin, indom, PM_IN_NULL, NULL);
+	    sts = __pmSendInstanceReq(ctxp->c_pmcd->pc_fd, __pmPtrToHandle(ctxp), indom, PM_IN_NULL, NULL);
 	    if (sts < 0)
 		sts = __pmMapErrno(sts);
 	    else {
 		__pmPDU	*pb;
 		int	pinpdu;
 
-PM_FAULT_POINT("libpcp/" __FILE__ ":1", PM_FAULT_TIMEOUT);
+PM_FAULT_POINT("libpcp/" __FILE__ ":1", PM_FAULT_CALL);
 		pinpdu = sts = __pmGetPDU(ctxp->c_pmcd->pc_fd, ANY_SIZE,
 					ctxp->c_pmcd->pc_tout_sec, &pb);
 		if (sts == PDU_INSTANCE) {
@@ -353,6 +351,7 @@ PM_FAULT_POINT("libpcp/" __FILE__ ":1", PM_FAULT_TIMEOUT);
 	}
 	else if (ctxp->c_type == PM_CONTEXT_LOCAL) {
 	    __pmDSO	*dp;
+	    pmInResult	*result;
 	    if (PM_MULTIPLE_THREADS(PM_SCOPE_DSO_PMDA))
 		/* Local context requires single-threaded applications */
 		sts = PM_ERR_THREAD;

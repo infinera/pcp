@@ -12,8 +12,16 @@ echo "QA output created by $seq"
 . ./common.discovery
 
 _check_valgrind
+_check_helgrind
 _get_libpcp_config
 $service_discovery || _notrun "No support for service discovery"
+
+case `admin/whatami`
+in
+    *Fedora\ 32\ *)
+	_notrun "helgrind broken for this test on Fedora 32"
+	;;
+esac
 
 if sed -e 's/$/ /' /etc/hosts | grep '::1[ 	].*localhost ' >/dev/null
 then

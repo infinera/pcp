@@ -58,6 +58,7 @@ hinv {
 
 hinv.map {
     scsi		60:15:0
+    scsi_id		60:0:103
     cpu_num		60:18:6
     cpu_node		60:18:8
     dmname		60:54:13
@@ -76,6 +77,7 @@ hinv.cpu {
     cache_alignment	60:18:11
     online		60:55:0
     thermal_throttle
+    frequency_scaling
 }
 
 hinv.node {
@@ -95,6 +97,13 @@ hinv.cpu.thermal_throttle.core {
 hinv.cpu.thermal_throttle.package {
     count		60:55:4
     time		60:55:5
+}
+
+hinv.cpu.frequency_scaling {
+    count		60:55:6
+    time		60:55:7
+    max			60:55:8
+    min			60:55:9
 }
 
 kernel {
@@ -149,6 +158,7 @@ kernel.all.pressure {
     cpu
     memory
     io
+    irq
 }
 
 kernel.all.pressure.cpu {
@@ -188,6 +198,15 @@ kernel.all.pressure.io.some {
 kernel.all.pressure.io.full {
     avg			60:85:2
     total		60:85:3
+}
+
+kernel.all.pressure.irq {
+    full
+}
+
+kernel.all.pressure.irq.full {
+    avg			60:93:0
+    total		60:93:1
 }
 
 kernel.all.cpu {
@@ -362,6 +381,7 @@ disk {
     partitions
     dm
     md
+    wwid
 }
 
 disk.dev {
@@ -382,7 +402,7 @@ disk.dev {
     total_rawactive	60:0:79
     aveq		60:0:47
     scheduler		60:0:59
-    capacity		60:0:87
+    capacity            60:0:87
     discard		60:0:88
     blkdiscard		60:0:89
     discard_bytes	60:0:90
@@ -390,6 +410,7 @@ disk.dev {
     discard_rawactive	60:0:92
     flush		60:0:93
     flush_rawactive	60:0:94
+    inflight		60:0:95
 }
 
 disk.all {
@@ -416,6 +437,7 @@ disk.all {
     discard_rawactive	60:0:100
     flush		60:0:101
     flush_rawactive	60:0:102
+    inflight		60:0:104
 }
 
 disk.dm {
@@ -443,6 +465,7 @@ disk.dm {
     discard_rawactive	60:54:22
     flush		60:54:23
     flush_rawactive	60:54:24
+    inflight		60:54:25
 }
 
 disk.md {
@@ -471,6 +494,7 @@ disk.md {
     discard_rawactive	60:59:22
     flush		60:59:23
     flush_rawactive	60:59:24
+    inflight		60:59:25
 }
 
 disk.partitions {
@@ -498,6 +522,37 @@ disk.partitions {
     discard_rawactive	60:10:21
     flush		60:10:22
     flush_rawactive	60:10:23
+    inflight		60:10:24
+}
+
+disk.wwid {
+    scsi_paths		60:92:3
+    read		60:92:4
+    write		60:92:5
+    total		60:92:28
+    blkread		60:92:6
+    blkwrite		60:92:7
+    blktotal		60:92:36
+    read_bytes		60:92:38
+    write_bytes		60:92:39
+    total_bytes		60:92:40
+    read_merge		60:92:49
+    write_merge		60:92:50
+    avactive		60:92:46
+    read_rawactive	60:92:72
+    write_rawactive	60:92:73
+    total_rawactive	60:92:79
+    aveq		60:92:47
+    scheduler		60:92:59
+    capacity            60:92:87
+    discard		60:92:88
+    blkdiscard		60:92:89
+    discard_bytes	60:92:90
+    discard_merge	60:92:91
+    discard_rawactive	60:92:92
+    flush		60:92:93
+    flush_rawactive	60:92:94
+    inflight		60:92:95
 }
 
 zram {
@@ -525,6 +580,7 @@ zram {
     discard_rawactive	60:86:21
     flush		60:86:22
     flush_rawactive	60:86:23
+    inflight		60:86:24
     io_stat
     mm_stat
     bd_stat
@@ -758,6 +814,29 @@ mem.zoneinfo {
     workingset_nodereclaim        60:68:43
     nr_anon_transparent_hugepages 60:68:44
     nr_free_cma                   60:68:45
+    cma                           60:68:46
+    nr_swapcached                 60:68:47
+    nr_shmem_hugepages            60:68:48
+    nr_shmem_pmdmapped            60:68:49
+    nr_file_hugepages             60:68:50
+    nr_file_pmdmapped             60:68:51
+    nr_kernel_misc_reclaimable    60:68:52
+    nr_foll_pin_acquired          60:68:53
+    nr_foll_pin_released          60:68:54
+    workingset_refault_anon       60:68:55
+    workingset_refault_file       60:68:56
+    workingset_active_anon        60:68:57
+    workingset_active_file        60:68:58
+    workingset_restore_anon       60:68:59
+    workingset_restore_file       60:68:60
+    nr_zspages                    60:68:61
+    nr_zone_inactive_file         60:68:62
+    nr_zone_active_file           60:68:63
+    nr_zone_inactive_anon         60:68:64
+    nr_zone_active_anon           60:68:65
+    nr_zone_unevictable           60:68:66
+    nr_zone_write_pending         60:68:67
+
     protection		60:70:0
 }
 
@@ -836,6 +915,7 @@ network.interface {
     running		60:3:26
     wireless		60:3:28
     type		60:3:29
+    virtual		60:3:30
     inet_addr		60:33:0
     ipv6_addr		60:33:1
     ipv6_scope		60:33:2
@@ -969,6 +1049,7 @@ network.ip {
     ect1pkts            60:53:14
     ect0pkts            60:53:15
     cepkts              60:53:16
+    reasmoverlaps	60:53:168
 }
 
 network.icmp {
@@ -1119,6 +1200,40 @@ network.tcp {
     wantzerowindowadv	60:53:116
     synretrans		60:53:117
     origdatasent	60:53:118
+    tcpbacklogcoalesce		60:53:132
+    tcpmemorypressureschrono	60:53:133
+    tcpmd5failure		60:53:134
+    pfmemallocdrop		60:53:135
+    tcpfastopenactivefail	60:53:136
+    tcpfastopenblackhole	60:53:137
+    tcphystarttraindetect	60:53:141
+    tcphystarttraincwnd		60:53:142
+    tcphystartdelaydetect	60:53:143
+    tcphystartdelaycwnd		60:53:144
+    tcpackskippedsynrecv	60:53:145
+    tcpackskippedpaws		60:53:146
+    tcpackskippedseq		60:53:147
+    tcpackskippedfinwait2	60:53:148
+    tcpackskippedtimewait	60:53:149
+    tcpackskippedchallenge	60:53:150
+    tcpwinprobe			60:53:151
+    tcpkeepalive		60:53:152
+    tcpmtupfail			60:53:153
+    tcpmtupsuccess		60:53:154
+    tcpdelivered		60:53:155
+    tcpdeliveredce		60:53:156
+    tcpackcompressed		60:53:157
+    tcpzerowindowdrop		60:53:158
+    tcprcvqdrop			60:53:159
+    tcpwqueuetoobig		60:53:160
+    tcpfastopenpassivealtkey	60:53:161
+    tcptimeoutrehash		60:53:162
+    tcpduplicatedatarehash	60:53:163
+    tcpdsackrecvsegs		60:53:164
+    tcpdsackignoreddubious	60:53:165
+    tcpmigratereqsuccess	60:53:166
+    tcpmigratereqfailure	60:53:167
+    tcploss			60:53:189
 }
 
 network.mptcp {
@@ -1135,6 +1250,44 @@ network.mptcp {
     mpjoinackhmacfailure 60:53:129
     dssnotmatching	60:53:130
     infinitemaprx	60:53:131
+    mpcapablesyntx	60:53:138
+    mpcapablesynackrx	60:53:139
+    mpfallbacktokeninit	60:53:140
+    dssnomatchtcp	60:53:169
+    datacsumerr		60:53:170
+    ofoqueuetail	60:53:171
+    ofoqueue		60:53:172
+    ofomerge		60:53:173
+    nodssinwindow	60:53:174
+    duplicatedata	60:53:175
+    addaddr		60:53:176
+    echoadd		60:53:177
+    portadd		60:53:178
+    mpjoinportsynrx	60:53:179
+    mpjoinportsynackrx	60:53:180
+    mpjoinportackrx	60:53:181
+    mismatchportsynrx	60:53:182
+    mismatchportackrx	60:53:183
+    rmaddr		60:53:184
+    rmsubflow		60:53:185
+    mppriotx		60:53:186
+    mppriorx		60:53:187
+    rcvpruned		60:53:188
+    mpfailtx		60:53:190
+    mpfailrx		60:53:191
+    subflowstale	60:53:192
+    subflowrecover	60:53:193
+    addaddrdrop		60:53:194
+    rmaddrdrop		60:53:195
+    mpfastclosetx	60:53:196
+    mpfastcloserx	60:53:197
+    mprsttx		60:53:198
+    mprstrx		60:53:199
+    infinitemaptx	60:53:200
+    sndwndshared	60:53:201
+    rcvwndshared	60:53:202
+    rcvwndconflictupdate 60:53:203
+    rcvwndconflict	60:53:204
 }
 
 network.udp {
@@ -1145,6 +1298,8 @@ network.udp {
     recvbuferrors	60:14:75
     sndbuferrors	60:14:76
     incsumerrors	60:14:83
+    ignoredmulti	60:14:90
+    memerrors		60:14:91
 }
 
 network.udplite {
@@ -1155,6 +1310,8 @@ network.udplite {
     recvbuferrors	60:14:81
     sndbuferrors	60:14:82
     incsumerrors	60:14:84
+    ignoredmulti	60:14:92
+    memerrors		60:14:93
 }
 
 network.icmpmsg {
@@ -1749,6 +1906,11 @@ sysfs {
 
 sysfs.kernel {
     uevent_seqnum	60:35:0
+    debug
+}
+
+sysfs.kernel.debug {
+    extfrag_unusable	60:35:1
 }
 
 tape {

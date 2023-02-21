@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2012-2020 Red Hat.
+ * Copyright (C) 2012-2022 Red Hat.
  * Copyright (C) 2009-2012 Michael T. Werner
  *
  * This file is part of the "pcp" module, the python interfaces for the
@@ -23,11 +23,24 @@
 ** data structures are wrapped in pmapi.py and friends, using ctypes.     **
 **                                                                        **
 \**************************************************************************/
-
+#define PY_SSIZE_T_CLEAN
 #include <Python.h>
+#define PMAPI_VERSION 3
 #include <pcp/pmapi.h>
-#include <pcp/libpcp.h>
-#include <pcp/deprecated.h>
+
+/* libpcp internal routines used by this module */
+PCP_CALL extern void __pmAddOptArchiveFolio(pmOptions *, char *);
+PCP_CALL extern void __pmAddOptArchiveList(pmOptions *, char *);
+PCP_CALL extern void __pmAddOptArchivePath(pmOptions *);
+PCP_CALL extern void __pmAddOptArchive(pmOptions *, char *);
+PCP_CALL extern void __pmAddOptContainer(pmOptions *, char *);
+PCP_CALL extern void __pmAddOptHostList(pmOptions *, char *);
+PCP_CALL extern void __pmAddOptHost(pmOptions *, char *);
+PCP_CALL extern void __pmSetLocalContextTable(pmOptions *, char *);
+PCP_CALL extern void __pmSetLocalContextFlag(pmOptions *);
+PCP_CALL extern void __pmEndOptions(pmOptions *);
+PCP_CALL extern void __pmServerStart(int, char **, int);
+PCP_CALL extern time_t __pmMktime(struct tm *);
 
 #if PY_MAJOR_VERSION >= 3
 #define MOD_ERROR_VAL NULL
@@ -45,7 +58,7 @@
         ob = Py_InitModule3(name, methods, doc);
 #endif
 
-static pmOptions options;
+static pmOptions options = { .version = PMAPI_VERSION_3 };
 static char **argVector;
 static int argCount;
 static int longOptionsCount;
@@ -114,31 +127,31 @@ getExtendedTimeBase(PyObject *self, PyObject *args, PyObject *keywords)
 }
 
 static PyObject *
-timevalSleep(PyObject *self, PyObject *args, PyObject *keywords)
+timespecToReal(PyObject *self, PyObject *args, PyObject *keywords)
 {
-    struct timeval ctv;
-    long seconds, useconds;
-    char *keyword_list[] = {"seconds", "useconds", NULL};
+    struct timespec ts;
+    long long seconds;
+    long nanoseconds;
+    char *keyword_list[] = {"seconds", "nanoseconds", NULL};
 
     if (!PyArg_ParseTupleAndKeywords(args, keywords,
-                        "ll:pmtimevalSleep", keyword_list, &seconds, &useconds))
+                        "Ll:pmtimespecToReal", keyword_list, &seconds, &nanoseconds))
         return NULL;
-    ctv.tv_sec = seconds;
-    ctv.tv_usec = useconds;
-    __pmtimevalSleep(ctv);
-    Py_INCREF(Py_None);
-    return Py_None;
+    ts.tv_sec = seconds;
+    ts.tv_nsec = nanoseconds;
+    return Py_BuildValue("d", pmtimespecToReal(&ts));
 }
 
 static PyObject *
 timevalToReal(PyObject *self, PyObject *args, PyObject *keywords)
 {
     struct timeval ctv;
-    long seconds, useconds;
+    long long seconds;
+    long useconds;
     char *keyword_list[] = {"seconds", "useconds", NULL};
 
     if (!PyArg_ParseTupleAndKeywords(args, keywords,
-                        "ll:pmtimevalToReal", keyword_list, &seconds, &useconds))
+                        "Ll:pmtimevalToReal", keyword_list, &seconds, &useconds))
         return NULL;
     ctv.tv_sec = seconds;
     ctv.tv_usec = useconds;
@@ -446,6 +459,7 @@ resetAllOptions(PyObject *self, PyObject *args)
 {
     pmFreeOptions(&options);
     memset(&options, 0, sizeof(options));
+    options.version = PMAPI_VERSION_3;
     longOptionsCount = 0;
     Py_INCREF(Py_None);
     return Py_None;
@@ -676,10 +690,9 @@ setOptionInterval(PyObject *self, PyObject *args, PyObject *keywords)
 			"s:pmSetOptionInterval", keyword_list, &delta))
 	return NULL;
 
-    if (pmParseInterval(delta, &options.interval, &errmsg) < 0) {
-	pmprintf("%s: interval argument not in pmParseInterval(3) format:\n",
-		pmGetProgname());
-	pmprintf("%s\n", errmsg);
+    if (pmParseHighResInterval(delta, &options.interval, &errmsg) < 0) {
+	pmprintf("%s: interval argument not in %s(3) format:\n%s\n",
+		pmGetProgname(), "pmParseHighResInterval", errmsg);
 	options.errors++;
 	free(errmsg);
     }
@@ -717,7 +730,7 @@ override_callback(int opt, pmOptions *opts)
 	PyErr_Print();
 	return -ENOMEM;
     }
-    result = PyEval_CallObject(overridesCallback, arglist);
+    result = PyObject_Call(overridesCallback, arglist, NULL);
     Py_DECREF(arglist);
     if (!result) {
 	PyErr_Print();
@@ -743,7 +756,7 @@ options_callback(int opt, pmOptions *opts)
     if (!arglist) {
 	PyErr_Print();
     } else {
-	result = PyEval_CallObject(optionCallback, arglist);
+	result = PyObject_Call(optionCallback, arglist, NULL);
 	Py_DECREF(arglist);
         if (!result) {
             PyErr_Print();
@@ -891,7 +904,7 @@ serverStart(PyObject *self, PyObject *args, PyObject *keywords)
 static PyObject *
 setContextOptions(PyObject *self, PyObject *args, PyObject *keywords)
 {
-    int sts, ctx, step, mode, delta;
+    int sts, ctx, mode, delta;
     char *keyword_list[] = {"context", "mode", "delta", NULL};
 
     if (!PyArg_ParseTupleAndKeywords(args, keywords,
@@ -905,21 +918,14 @@ setContextOptions(PyObject *self, PyObject *args, PyObject *keywords)
     /* initial archive mode, position and delta */
     if (options.context == PM_CONTEXT_ARCHIVE &&
 	(options.flags & PM_OPTFLAG_BOUNDARIES)) {
-	const int SECONDS_IN_24_DAYS = 2073600;
-	struct timeval interval = options.interval;
-	struct timeval position = options.origin;
+	struct timespec interval = options.interval;
+	struct timespec position = options.origin;
 
-	if (interval.tv_sec > SECONDS_IN_24_DAYS) {
-	    step = interval.tv_sec;
-	    mode |= PM_XTB_SET(PM_TIME_SEC);
-	} else {
-	    if (interval.tv_sec == 0 && interval.tv_usec == 0)
-		interval.tv_sec = delta;
-	    step = interval.tv_sec * 1e3 + interval.tv_usec / 1e3;
-	    mode |= PM_XTB_SET(PM_TIME_MSEC);
-	}
-	if ((sts = pmSetMode(mode, &position, step)) < 0) {
-	    pmprintf("%s: pmSetMode: %s\n", pmGetProgname(), pmErrStr(sts));
+	if (interval.tv_sec == 0 && interval.tv_nsec == 0)
+	    interval.tv_sec = delta;
+	if ((sts = pmSetModeHighRes(mode, &position, &interval)) < 0) {
+	    pmprintf("%s: %s: %s\n", "pmSetModeHighRes",
+			    pmGetProgname(), pmErrStr(sts));
 	    options.flags |= PM_OPTFLAG_RUNTIME_ERR;
 	    options.errors++;
 	}
@@ -935,7 +941,7 @@ pmnsDecodeCallback(const char *name, void *closure)
     arglist = Py_BuildValue("(s)", name);
     if (arglist == NULL)
         return;
-    result = PyEval_CallObject(closure, arglist);
+    result = PyObject_Call(closure, arglist, NULL);
     Py_DECREF(arglist);
     if (!result)
         PyErr_Print();
@@ -1127,8 +1133,17 @@ getOptionArchives(PyObject *self, PyObject *args)
 static PyObject *
 getOptionStart_sec(PyObject *self, PyObject *args)
 {
-    if (options.start.tv_sec || options.start.tv_usec)
-	return Py_BuildValue("l", options.start.tv_sec);
+    if (options.start.tv_sec || options.start.tv_nsec)
+	return Py_BuildValue("L", (long long)options.start.tv_sec);
+    Py_INCREF(Py_None);
+    return Py_None;
+}
+
+static PyObject *
+getOptionStart_nsec(PyObject *self, PyObject *args)
+{
+    if (options.start.tv_sec || options.start.tv_nsec)
+	return Py_BuildValue("l", (long)options.start.tv_nsec);
     Py_INCREF(Py_None);
     return Py_None;
 }
@@ -1136,8 +1151,8 @@ getOptionStart_sec(PyObject *self, PyObject *args)
 static PyObject *
 getOptionStart_usec(PyObject *self, PyObject *args)
 {
-    if (options.start.tv_sec || options.start.tv_usec)
-	return Py_BuildValue("l", options.start.tv_usec);
+    if (options.start.tv_sec || options.start.tv_nsec)
+	return Py_BuildValue("l", (long)options.start.tv_nsec / 1000);
     Py_INCREF(Py_None);
     return Py_None;
 }
@@ -1163,8 +1178,17 @@ getOptionFinish_optarg(PyObject *self, PyObject *args)
 static PyObject *
 getOptionFinish_sec(PyObject *self, PyObject *args)
 {
-    if (options.finish.tv_sec || options.finish.tv_usec)
-	return Py_BuildValue("l", options.finish.tv_sec);
+    if (options.finish.tv_sec || options.finish.tv_nsec)
+	return Py_BuildValue("L", (long long)options.finish.tv_sec);
+    Py_INCREF(Py_None);
+    return Py_None;
+}
+
+static PyObject *
+getOptionFinish_nsec(PyObject *self, PyObject *args)
+{
+    if (options.finish.tv_sec || options.finish.tv_nsec)
+	return Py_BuildValue("l", (long)options.finish.tv_nsec);
     Py_INCREF(Py_None);
     return Py_None;
 }
@@ -1172,8 +1196,8 @@ getOptionFinish_sec(PyObject *self, PyObject *args)
 static PyObject *
 getOptionFinish_usec(PyObject *self, PyObject *args)
 {
-    if (options.finish.tv_sec || options.finish.tv_usec)
-	return Py_BuildValue("l", options.finish.tv_usec);
+    if (options.finish.tv_sec || options.finish.tv_nsec)
+	return Py_BuildValue("l", (long)options.finish.tv_nsec / 1000);
     Py_INCREF(Py_None);
     return Py_None;
 }
@@ -1181,8 +1205,17 @@ getOptionFinish_usec(PyObject *self, PyObject *args)
 static PyObject *
 getOptionOrigin_sec(PyObject *self, PyObject *args)
 {
-    if (options.origin.tv_sec || options.origin.tv_usec)
-	return Py_BuildValue("l", options.origin.tv_sec);
+    if (options.origin.tv_sec || options.origin.tv_nsec)
+	return Py_BuildValue("L", (long long)options.origin.tv_sec);
+    Py_INCREF(Py_None);
+    return Py_None;
+}
+
+static PyObject *
+getOptionOrigin_nsec(PyObject *self, PyObject *args)
+{
+    if (options.origin.tv_sec || options.origin.tv_nsec)
+	return Py_BuildValue("l", (long)options.origin.tv_nsec);
     Py_INCREF(Py_None);
     return Py_None;
 }
@@ -1190,8 +1223,8 @@ getOptionOrigin_sec(PyObject *self, PyObject *args)
 static PyObject *
 getOptionOrigin_usec(PyObject *self, PyObject *args)
 {
-    if (options.origin.tv_sec || options.origin.tv_usec)
-	return Py_BuildValue("l", options.origin.tv_usec);
+    if (options.origin.tv_sec || options.origin.tv_nsec)
+	return Py_BuildValue("l", (long)options.origin.tv_nsec / 1000);
     Py_INCREF(Py_None);
     return Py_None;
 }
@@ -1199,8 +1232,17 @@ getOptionOrigin_usec(PyObject *self, PyObject *args)
 static PyObject *
 getOptionInterval_sec(PyObject *self, PyObject *args)
 {
-    if (options.interval.tv_sec || options.interval.tv_usec)
-	return Py_BuildValue("l", options.interval.tv_sec);
+    if (options.interval.tv_sec || options.interval.tv_nsec)
+	return Py_BuildValue("L", (long long)options.interval.tv_sec);
+    Py_INCREF(Py_None);
+    return Py_None;
+}
+
+static PyObject *
+getOptionInterval_nsec(PyObject *self, PyObject *args)
+{
+    if (options.interval.tv_sec || options.interval.tv_nsec)
+	return Py_BuildValue("l", (long)options.interval.tv_nsec);
     Py_INCREF(Py_None);
     return Py_None;
 }
@@ -1208,8 +1250,8 @@ getOptionInterval_sec(PyObject *self, PyObject *args)
 static PyObject *
 getOptionInterval_usec(PyObject *self, PyObject *args)
 {
-    if (options.interval.tv_sec || options.interval.tv_usec)
-	return Py_BuildValue("l", options.interval.tv_usec);
+    if (options.interval.tv_sec || options.interval.tv_nsec)
+	return Py_BuildValue("l", (long)options.interval.tv_nsec / 1000);
     Py_INCREF(Py_None);
     return Py_None;
 }
@@ -1262,8 +1304,8 @@ static PyMethodDef methods[] = {
     { .ml_name = "PM_XTB_GET",
 	.ml_meth = (PyCFunction) getExtendedTimeBase,
         .ml_flags = METH_VARARGS | METH_KEYWORDS },
-    { .ml_name = "pmtimevalSleep",
-	.ml_meth = (PyCFunction) timevalSleep,
+    { .ml_name = "pmtimespecToReal",
+	.ml_meth = (PyCFunction) timespecToReal,
         .ml_flags = METH_VARARGS | METH_KEYWORDS },
     { .ml_name = "pmtimevalToReal",
 	.ml_meth = (PyCFunction) timevalToReal,
@@ -1406,6 +1448,9 @@ static PyMethodDef methods[] = {
     { .ml_name = "pmGetOptionStart_sec",
 	.ml_meth = (PyCFunction) getOptionStart_sec,
         .ml_flags = METH_NOARGS },
+    { .ml_name = "pmGetOptionStart_nsec",
+	.ml_meth = (PyCFunction) getOptionStart_nsec,
+        .ml_flags = METH_NOARGS },
     { .ml_name = "pmGetOptionStart_usec",
 	.ml_meth = (PyCFunction) getOptionStart_usec,
         .ml_flags = METH_NOARGS },
@@ -1418,17 +1463,26 @@ static PyMethodDef methods[] = {
     { .ml_name = "pmGetOptionFinish_sec",
 	.ml_meth = (PyCFunction) getOptionFinish_sec,
         .ml_flags = METH_NOARGS },
+    { .ml_name = "pmGetOptionFinish_nsec",
+	.ml_meth = (PyCFunction) getOptionFinish_nsec,
+        .ml_flags = METH_NOARGS },
     { .ml_name = "pmGetOptionFinish_usec",
 	.ml_meth = (PyCFunction) getOptionFinish_usec,
         .ml_flags = METH_NOARGS },
     { .ml_name = "pmGetOptionOrigin_sec",
 	.ml_meth = (PyCFunction) getOptionOrigin_sec,
         .ml_flags = METH_NOARGS },
+    { .ml_name = "pmGetOptionOrigin_nsec",
+	.ml_meth = (PyCFunction) getOptionOrigin_nsec,
+        .ml_flags = METH_NOARGS },
     { .ml_name = "pmGetOptionOrigin_usec",
 	.ml_meth = (PyCFunction) getOptionOrigin_usec,
         .ml_flags = METH_NOARGS },
     { .ml_name = "pmGetOptionInterval_sec",
 	.ml_meth = (PyCFunction) getOptionInterval_sec,
+        .ml_flags = METH_NOARGS },
+    { .ml_name = "pmGetOptionInterval_nsec",
+	.ml_meth = (PyCFunction) getOptionInterval_nsec,
         .ml_flags = METH_NOARGS },
     { .ml_name = "pmGetOptionInterval_usec",
 	.ml_meth = (PyCFunction) getOptionInterval_usec,
@@ -1502,6 +1556,7 @@ MOD_INIT(cpmapi)
     PyModule_AddObject(module, "pmErrSymDict", edict);
 
     dict_add(dict, "PMAPI_VERSION_2", PMAPI_VERSION_2);
+    dict_add(dict, "PMAPI_VERSION_3", PMAPI_VERSION_3);
     dict_add(dict, "PMAPI_VERSION", PMAPI_VERSION);
 
     dict_add_unsigned(dict, "PM_ID_NULL", PM_ID_NULL);
@@ -1600,11 +1655,17 @@ MOD_INIT(cpmapi)
     dict_add(dict, "PM_LABEL_OPTIONAL", PM_LABEL_OPTIONAL);
 
     dict_add(dict, "PM_MAXERRMSGLEN", PM_MAXERRMSGLEN);
-    dict_add(dict, "PM_TZ_MAXLEN",    PM_TZ_MAXLEN);
 
+    /* back-compat */
+    dict_add(dict, "PM_TZ_MAXLEN",    PM_TZ_MAXLEN);
     dict_add(dict, "PM_LOG_MAXHOSTLEN", PM_LOG_MAXHOSTLEN);
+
+    dict_add(dict, "PM_MAX_HOSTNAMELEN", PM_MAX_HOSTNAMELEN);
+    dict_add(dict, "PM_MAX_TIMEZONELEN", PM_MAX_TIMEZONELEN);
+    dict_add(dict, "PM_MAX_ZONEINFOLEN", PM_MAX_ZONEINFOLEN);
     dict_add(dict, "PM_LOG_MAGIC",    PM_LOG_MAGIC);
     dict_add(dict, "PM_LOG_VERS02",   PM_LOG_VERS02);
+    dict_add(dict, "PM_LOG_VERS03",   PM_LOG_VERS03);
     dict_add(dict, "PM_LOG_VOL_TI",   PM_LOG_VOL_TI);
     dict_add(dict, "PM_LOG_VOL_META", PM_LOG_VOL_META);
 
@@ -1615,6 +1676,7 @@ MOD_INIT(cpmapi)
 
     dict_add(dict, "PM_TEXT_PMID",    PM_TEXT_PMID);
     dict_add(dict, "PM_TEXT_INDOM",   PM_TEXT_INDOM);
+    dict_add(dict, "PM_TEXT_DIRECT",  PM_TEXT_DIRECT);
     dict_add(dict, "PM_TEXT_ONELINE", PM_TEXT_ONELINE);
     dict_add(dict, "PM_TEXT_HELP",    PM_TEXT_HELP);
 
@@ -1646,9 +1708,9 @@ MOD_INIT(cpmapi)
      * subset of the debug flags - all of 'em seems like overkill
      * order here the same as the output from pmdbg -l
      */
-    dict_add(dict, "PM_DEBUG_APPL0", DBG_TRACE_APPL0);
-    dict_add(dict, "PM_DEBUG_APPL1", DBG_TRACE_APPL1);
-    dict_add(dict, "PM_DEBUG_APPL2", DBG_TRACE_APPL2);
+    dict_add(dict, "PM_DEBUG_APPL0", (1<<11) /*DBG_TRACE_APPL0*/);
+    dict_add(dict, "PM_DEBUG_APPL1", (1<<12) /*DBG_TRACE_APPL1*/);
+    dict_add(dict, "PM_DEBUG_APPL2", (1<<13) /*DBG_TRACE_APPL2*/);
 
     /*
      * for ease of maintenance make the order of the error codes
@@ -1699,6 +1761,7 @@ MOD_INIT(cpmapi)
     edict_add(dict, edict, "PM_ERR_NONLEAF", PM_ERR_NONLEAF);
     edict_add(dict, edict, "PM_ERR_PMDAREADY", PM_ERR_PMDAREADY);
     edict_add(dict, edict, "PM_ERR_PMDANOTREADY", PM_ERR_PMDANOTREADY);
+    edict_add(dict, edict, "PM_ERR_BOTCH", PM_ERR_BOTCH);
     edict_add(dict, edict, "PM_ERR_TOOSMALL", PM_ERR_TOOSMALL);
     edict_add(dict, edict, "PM_ERR_TOOBIG", PM_ERR_TOOBIG);
     edict_add(dict, edict, "PM_ERR_FAULT", PM_ERR_FAULT);
@@ -1715,6 +1778,9 @@ MOD_INIT(cpmapi)
     edict_add(dict, edict, "PM_ERR_BADDERIVE", PM_ERR_BADDERIVE);
     edict_add(dict, edict, "PM_ERR_NOLABELS", PM_ERR_NOLABELS);
     edict_add(dict, edict, "PM_ERR_PMDAFENCED", PM_ERR_PMDAFENCED);
+    edict_add(dict, edict, "PM_ERR_RECTYPE", PM_ERR_RECTYPE);
+    edict_add(dict, edict, "PM_ERR_FEATURE", PM_ERR_FEATURE);
+    edict_add(dict, edict, "PM_ERR_TLS", PM_ERR_TLS);
     edict_add(dict, edict, "PM_ERR_NYI", PM_ERR_NYI);
 
     return MOD_SUCCESS_VAL(module);

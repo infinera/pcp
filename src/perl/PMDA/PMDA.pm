@@ -31,11 +31,12 @@ require DynaLoader;
 	PM_ERR_PERMISSION PM_ERR_CONNLIMIT PM_ERR_AGAIN PM_ERR_ISCONN
 	PM_ERR_NOTCONN PM_ERR_NEEDPORT PM_ERR_NONLEAF
 	PM_ERR_PMDANOTREADY PM_ERR_PMDAREADY
-	PM_ERR_TOOSMALL PM_ERR_TOOBIG PM_ERR_FAULT
+	PM_ERR_BOTCH PM_ERR_TOOSMALL PM_ERR_TOOBIG PM_ERR_FAULT
 	PM_ERR_THREAD PM_ERR_NOCONTAINER PM_ERR_BADSTORE PM_ERR_LOGHOST
 	PM_ERR_LOGCHANGETYPE PM_ERR_LOGCHANGESEM PM_ERR_LOGCHANGEINDOM
-	PM_ERR_LOGCHANGEUNITS PM_ERR_NEEDCLIENTCERT
-	PM_ERR_BADDERIVE PM_ERR_NOLABELS PM_ERR_PMDAFENCED
+	PM_ERR_LOGCHANGEUNITS PM_ERR_LOGOVERLAP PM_ERR_NEEDCLIENTCERT
+	PM_ERR_BADDERIVE PM_ERR_NOLABELS PM_ERR_PMDAFENCED PM_ERR_RECTYPE
+	PM_ERR_FEATURE PM_ERR_TLS
 	PM_ERR_NYI
 	PMDA_FETCH_NOVALUES PMDA_FETCH_STATIC PMDA_FETCH_DYNAMIC
 );
@@ -137,6 +138,7 @@ sub PM_ERR_NEEDPORT	{ -12392; }	# A non-null port name is required
 sub PM_ERR_NONLEAF	{ -12394; }	# Metric name is not a leaf in PMNS
 sub PM_ERR_PMDANOTREADY	{ -13394; }	# PMDA is not yet ready to respond to requests
 sub PM_ERR_PMDAREADY	{ -13393; }	# PMDA is now responsive to requests
+sub PM_ERR_BOTCH	{ -12442; }	# Internal inconsistency detected or assertion failed
 sub PM_ERR_TOOSMALL	{ -12443; }	# Insufficient elements in list
 sub PM_ERR_TOOBIG	{ -12444; }	# Result size exceeded
 sub PM_ERR_FAULT	{ -12445; }	# QA fault injected
@@ -153,6 +155,9 @@ sub PM_ERR_NEEDCLIENTCERT { -12408; }	# PMCD requires a client certificate
 sub PM_ERR_BADDERIVE	{ -12409; }	# Derived metric definition failed
 sub PM_ERR_NOLABELS	{ -12410; }	# No support for metric label metadata
 sub PM_ERR_PMDAFENCED	{ -12411; }	# PMDA is currently fenced and unable to respond to requests
+sub PM_ERR_RECTYPE	{ -12412; }	# Incorrect record type in an archive
+sub PM_ERR_FEATURE	{ -12413; }	# Archive feature not supported
+sub PM_ERR_TLS		{ -12414; }	# TLS protocol failure
 
 sub PM_ERR_NYI		{ -21344; }	# Functionality not yet implemented
 

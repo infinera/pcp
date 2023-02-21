@@ -31,26 +31,24 @@ then
 	#
 	for svc in \
 	    pmlogger_check.timer pmlogger_check.service \
-	    pmlogger_daily.timer pmlogger_daily.service \
-	    pmlogger_daily-poll.timer pmlogger_daily-poll.service \
-	    pmlogger_daily_report.timer pmlogger_daily_report.service \
-	    pmlogger_daily_report-poll.timer pmlogger_daily_report-poll.service
+	    pmlogger_daily.timer pmlogger_daily.service
 	do
 	    case "$svc" in
 		*.timer)
 			;;
 		*)
-			sudo systemctl disable $svc >>$seq.full 2>&1
+			$sudo systemctl disable $svc >>$seq.full 2>&1
 			;;
 	    esac
-	    sudo systemctl stop $svc >>$seq.full 2>&1
+	    $sudo systemctl stop $svc >>$seq.full 2>&1
 	    echo "+ after stop $svc ..." >>$seq.full
 	    _get_pids_by_name pmlogger >>$seq.full 2>&1
 	    $PCP_PS_PROG $PCP_PS_ALL_FLAGS | grep '[p]mlogger' >>$seq.full
 	done
 	# and now get a clean pmlogger without the other hangers-on
 	#
-	sudo systemctl restart pmlogger
+	$sudo systemctl restart pmlogger
+	_wait_for_pmlogger
     fi
 fi
 echo "Using system? \"$use_systemd\" (-s => yes)" >>$seq.full
@@ -66,8 +64,8 @@ _cleanup()
 	    pmlogger_daily.service \
 	    pmlogger_daily-poll.service
 	do
-	    sudo systemctl enable $svc >>$seq.full 2>&1
-	    sudo systemctl start $svc >>$seq.full 2>&1
+	    $sudo systemctl enable $svc >>$seq.full 2>&1
+	    $sudo systemctl start $svc >>$seq.full 2>&1
 	done
     fi
    # these come from src/pmcdgone running _wait_for_pmlogger w/out $tmp
@@ -82,6 +80,7 @@ $sudo src/pmcdgone $use_systemd 2>&1 \
 | sed \
     -e '/^+ /d' \
     -e '/__pmGetPDU: fd=3 BINARY hdr: Broken pipe/d' \
+    -e '/__pmGetPDU: fd=5 hdr read: len=-1: Bad file descriptor/d' \
     -e '/pmLookupDesc:/s/Connection reset by peer/IPC protocol failure/' \
     -e '/pmReconnectContext:/s/Operation/Connection/' \
 | _filter_pcp_start

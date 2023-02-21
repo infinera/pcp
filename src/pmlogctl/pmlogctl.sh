@@ -3,6 +3,7 @@
 # Control program for managing pmlogger and pmie instances.
 #
 # Copyright (c) 2020 Ken McDonell.  All Rights Reserved.
+# Copyright (c) 2021 Red Hat.
 #
 # This program is free software; you can redistribute it and/or modify it
 # under the terms of the GNU General Public License as published by the
@@ -28,6 +29,7 @@
 
 . "$PCP_DIR/etc/pcp.env"
 . "$PCP_SHARE_DIR/lib/rc-proc.sh"
+. "$PCP_SHARE_DIR/lib/utilproc.sh"
 
 prog=`basename "$0"`
 case "$prog"
@@ -60,8 +62,10 @@ cat >$tmp/usage <<End-of-File
 Options:
   -a,--all                      apply action to all matching hosts
   -c=NAME,--class=NAME    	${IAM} instances belong to the NAME class [default: default]
+  -C=ARGS,--checkargs=ARGS	pass command line ARGS to ${IAM}_check
   -f,--force                    force action if possible
   -i=IDENT,--ident=IDENT        over-ride instance id (only for create and cond-create)
+  -m,--migrate			migrate matching processes to farm services (for create and check)
   -N,--showme             	perform a dry run, showing what would be done
   -p=POLICY,--policy=POLICY	use POLICY as the class policy file [default: $PCP_ETC_DIR/pcp/${IAM}/class.d/<class>]
   -V,--verbose            	increase verbosity
@@ -194,7 +198,7 @@ _egrep()
 	# possible race here with async execution of ${IAM}_check removing
 	# the file after find saw it ... so check again for existance
 	#
-	[ -f "$__f" ] && egrep "$__pat" "$__f" 2>/dev/null >$tmp/_egrep
+	[ -f "$__f" ] && grep -E "$__pat" "$__f" 2>/dev/null >$tmp/_egrep
 	if [ -s $tmp/_egrep ]
 	then
 	    if $__text
@@ -218,7 +222,7 @@ _usage()
 Avaliable commands:
    [-c classname] create  host ...
    {-c classname|-i ident} cond-create host ...
-   [-c classname] {start|stop|restart|destroy|status} [host ...]
+   [-c classname] {start|stop|restart|destroy|check|status} [host ...]
 
    and host may be a valid hostname or an egrep(1) pattern that matches
    the start of a hostname
@@ -247,34 +251,56 @@ _get_matching_hosts()
 	#
 	set -- '[^#$]'
     fi
-    for host
+    for _host
     do
-	$VERY_VERBOSE && echo "Looking for host $host in class $CLASS ..."
+	$VERY_VERBOSE && echo "Looking for host $_host in class $CLASS ..."
 	rm -f $tmp/primary_seen
-	if [ "$host" = "$LOCALHOST" ]
+	if [ "$_host" = "$LOCALHOST" ]
 	then
-	    pat="($host|LOCALHOSTNAME)"
+	    pat="($_host|LOCALHOSTNAME)"
 	else
-	    pat="$host"
+	    pat="$_host"
 	fi
 	_egrep -r "^($pat|#!#$pat)" $CONTROLFILE $CONTROLDIR \
 	| sed -e 's/|/ /' \
-	| while read ctl_file ctl_line
+	| while read ctl_file host primary socks dir args
 	do
+	    # do shell expansion of $dir if needed ... may juggle
+	    # $dir and $args to ensure correct white space separation
+	    # after shell expansion
+	    #
+	    # small problem exposed by qa/1216 ... if $pat starts .*
+	    # we may pick up comments and _do_dir_and_args tries to
+	    # parse something that is not a real control line
+	    #
+	    case "$host"
+	    in
+		\#!#*)
+			_do_dir_and_args
+			;;
+
+		\#*)	# other non-control comment line
+			;;
+		*)
+			_do_dir_and_args
+			;;
+	    esac
+	    ctl_line="$host $primary $socks $dir $args"
+
 	    # the pattern above returns all possible control lines, but
 	    # may need some further culling
 	    #
 	    ctl_host="`echo "$ctl_line" | sed -e 's/[ 	].*//'`"
-	    if echo "$host" | grep '^[a-zA-Z0-9][a-zA-Z0-9.-]*$' >/dev/null
+	    if echo "$_host" | grep '^[a-zA-Z0-9][a-zA-Z0-9.-]*$' >/dev/null
 	    then
-		# $host is a syntactically correct hostname so we need
+		# $_host is a syntactically correct hostname so we need
 		# an exact match on the first field (up to the first white
 		# space)
 		#
 		if [ "$ctl_host" = "$pat" -o "$ctl_host" = "#!#$pat" ]
 		then
 		    :
-		elif [ "$host" = "$LOCALHOST" ]
+		elif [ "$_host" = "$LOCALHOST" ]
 		then
 		    if [ "$ctl_host" = "LOCALHOSTNAME" -o "$ctl_host" = "#!#LOCALHOSTNAME" ]
 		    then
@@ -288,10 +314,10 @@ _get_matching_hosts()
 		    continue
 		fi
 	    else
-		# otherwise assume $host is a regexp and this could match
+		# otherwise assume $_host is a regexp and this could match
 		# all manner of lines, including comments (consider .*pat)
 		#
-		if echo "$ctl_host" | egrep "^($pat|#!#$pat)" >/dev/null
+		if echo "$ctl_host" | grep -E "^($pat|#!#$pat)" >/dev/null
 		then
 		    # so far so good (matches first field, not just whole
 		    # line ... still some false matches to weed out
@@ -337,7 +363,9 @@ _get_matching_hosts()
 		    # don't dink with the primary ... systemctl (or the
 		    # "rc" script) must be used to control the primary ${IAM}
 		    #
-		    _warning "$ctl_file: cannot $ACTION the primary ${IAM} from $prog"
+		    if [ "$ACTION" != "check" ]; then
+			_warning "$ctl_file: cannot $ACTION the primary ${IAM} from $prog"
+		    fi
 		    continue
 		fi
 	    fi
@@ -413,21 +441,21 @@ _get_matching_hosts()
 	    else
 		if $EXPLICIT_CLASS
 		then
-		    _warning "host $host not defined in class $CLASS for any ${IAM} control file"
+		    _warning "host $_host not defined in class $CLASS for any ${IAM} control file"
 		elif [ -f $tmp/primary_seen ]
 		then
 		    # Warning reported above, don't add chatter here
 		    #
 		    :
 		else
-		    _warning "host $host not defined in any ${IAM} control file"
+		    _warning "host $_host not defined in any ${IAM} control file"
 		fi
 	    fi
 	    continue
 	fi
 	if [ "$ACTION" != status ]
 	then
-	    $PCP_AWK_PROG <$tmp/tmp '{ print $3 }' \
+	    $PCP_AWK_PROG <$tmp/tmp '$4 != "?" { print $3 }' \
 	    | LC_COLLATE=POSIX sort \
 	    | uniq -c \
 	    | grep -v ' 1 ' >$tmp/tmp2
@@ -583,7 +611,7 @@ _check_started()
 {
     $SHOWME && return 0
     dir="$1"
-    max=100		# 1/10 of a second, so 10 secs max
+    max=600		# 1/10 of a second, so 1 minute max
     i=0
     $VERY_VERBOSE && $PCP_ECHO_PROG $PCP_ECHO_N "Started? ""$PCP_ECHO_C"
     while [ $i -lt $max ]
@@ -603,6 +631,13 @@ _check_started()
 	sts=1
     else
 	$VERY_VERBOSE && $PCP_ECHO_PROG " yes"
+	if $MIGRATE
+	then
+	    # Add new process to the farm service (pmlogger_farm or pmie_farm).
+	    # It will be removed automatically if/when it exits.
+	    $VERBOSE && vflag="-v"
+	    migrate_pid_service $vflag "$pid" ${IAM}_farm.service
+	fi
 	sts=0
     fi
     return $sts
@@ -617,7 +652,7 @@ _check_stopped()
 {
     $SHOWME && return 0
     dir="$1"
-    max=30		# 1/10 of a second, so 3 secs max
+    max=50		# 1/10 of a second, so 5 secs max
     i=0
     $VERY_VERBOSE && $PCP_ECHO_PROG $PCP_ECHO_N "Stopped? ""$PCP_ECHO_C"
     while [ $i -lt $max ]
@@ -734,6 +769,12 @@ $2 ~ /eval_actual=/	{ evals = $2
 	| _expand_control \
 	| while read host primary socks dir args
 	do
+	    # do shell expansion of $dir if needed ... may juggle
+	    # $dir and $args to ensure correct white space separation
+	    # after shell expansion
+	    #
+	    _do_dir_and_args
+
 	    state=running
 	    case "$host"
 	    in
@@ -1156,7 +1197,7 @@ END	{ exit(sts) }'
 			    ;;
 
 			hostname)
-			    if echo "$host" | egrep "$args" >/dev/null
+			    if echo "$host" | grep -E "$args" >/dev/null
 			    then
 				touch $tmp/match
 				$VERBOSE && echo "$policy: host $host hostname($args) true"
@@ -1272,7 +1313,7 @@ $1 == "'"$host"'"	{ print $4 }'`
 	$VERBOSE && echo "Installing control file: $CONTROLDIR/$ident"
 
 	$CP $tmp/control "$CONTROLDIR/$ident"
-	$CHECK -c "$CONTROLDIR/$ident"
+	$CHECK $CHECKARGS -c "$CONTROLDIR/$ident"
 	dir_args="`echo "$dir" | _expand_control`"
 	_check_started "$dir_args" || sts=1
     done
@@ -1389,7 +1430,7 @@ $1 == "'"$host"'"	{ print $4 }'`
 	    fi
 	    $VERBOSE && echo "Installing control file: $CONTROLDIR/$ident"
 	    $CP $tmp/control "$CONTROLDIR/$ident"
-	    $CHECK -c "$CONTROLDIR/$ident"
+	    $CHECK $CHECKARGS -c "$CONTROLDIR/$ident"
 	    dir_args="`echo "$dir" | _expand_control`"
 	    _check_started "$dir_args" || sts=1
 	fi
@@ -1469,6 +1510,11 @@ _do_start()
 	then
 	    $VERBOSE && echo "${IAM} PID $pid already running for host $args_host, nothing to do"
 	    $VERBOSE && $restart && echo "Not expected for restart!"
+	    if $MIGRATE
+	    then
+		$VERBOSE && vflag="-v"
+		migrate_pid_service $vflag "$pid" ${IAM}_farm.service
+	    fi
 	    continue
 	fi
 	if $VERBOSE
@@ -1510,12 +1556,19 @@ $1 == "'"#!#$host"'" && $4 == "'"$dir"'"	{ sub(/^#!#/,"",$1) }
 	    fi
 	    $CP $tmp/control "$control"
 	fi
-	$CHECK -c "$control"
+	$CHECK $CHECKARGS -c "$control"
 
 	_check_started "$args_dir" || sts=1
     done
 
     return $sts
+}
+
+# check command - start dead hosts, if any
+#
+_do_check()
+{
+    _do_start $*
 }
 
 # stop command
@@ -1625,7 +1678,9 @@ SHOWME=false
 CP=cp
 RM=rm
 CHECK="sudo -u $PCP_USER -g $PCP_GROUP $PCP_BINADM_DIR/${IAM}_check"
+CHECKARGS=''
 KILL="$PCP_BINADM_DIR/pmsignal -s"
+MIGRATE=false
 VERBOSE=false
 VERY_VERBOSE=false
 VERY_VERY_VERBOSE=false
@@ -1643,10 +1698,15 @@ do
 		EXPLICIT_CLASS=true
 		shift
 		;;
+	-C)	CHECKARGS="$CHECKARGS $2"
+		shift
+		;;
 	-f)	FORCE=true
 		;;
 	-i)	IDENT="$2"
 		shift
+		;;
+	-m)	MIGRATE=true
 		;;
 	-N)	SHOWME=true
 		CP="echo + $CP"
@@ -1773,14 +1833,17 @@ _get_pids_by_name ${IAM} | sed -e 's/.*/^&$/' >$tmp/pids
 
 case "$ACTION"
 in
-    create|cond-create|start|stop|restart|destroy)
+    check|create|cond-create|start|stop|restart|destroy)
 	    if [ `id -u` != 0 -a "$SHOWME" = false ]
 	    then
 		_error "you must be root (uid 0) to change the Performance Co-Pilot logger setup"
 	    fi
 	    # need --class and/or hostname
 	    #
-	    if [ $# -eq 0 ]
+	    if [ "$ACTION" = "check" ]
+	    then
+		FIND_ALL_HOSTS=true
+	    elif [ $# -eq 0 ]
 	    then
 		$EXPLICIT_CLASS || _error "\"$ACTION\" command requres hostname(s) and/or a --class"
 		FIND_ALL_HOSTS=true
@@ -1792,8 +1855,15 @@ in
 		_get_matching_hosts "$@"
 		if [ ! -f $tmp/args ]
 		then
-		    _error "no matching host(s) to $ACTION"
-		    exit
+		    if [ "$ACTION" = check ]
+		    then
+			# special case: successfully check nothing
+			status=0
+			exit
+		    else
+			_error "no matching host(s) to $ACTION"
+			exit
+		    fi
 		fi
 	    fi
 	    # small wrinkle: map - to _ in action, e.g.

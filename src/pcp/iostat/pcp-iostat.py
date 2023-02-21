@@ -1,9 +1,10 @@
 #!/usr/bin/env pmpython
+#
 # Copyright (C) 2014-2016,2020 Red Hat.
 #
 # This program is free software; you can redistribute it and/or modify it
 # under the terms of the GNU General Public License as published by the
-# Iostat Software Foundation; either version 2 of the License, or (at your
+# Free Software Foundation; either version 2 of the License, or (at your
 # option) any later version.
 #
 # This program is distributed in the hope that it will be useful, but
@@ -44,11 +45,9 @@ def aggregate(method, aggr_value, value):
     elif method == 'avg':
         aggr_value += value
     elif method == 'min':
-        if aggr_value > value:
-            aggr_value = value
+        aggr_value = min(aggr_value, value)
     elif method == 'max':
-        if aggr_value < value:
-            aggr_value = value
+        aggr_value = max(aggr_value, value)
     else:
         raise pmapi.pmUsageErr
     return aggr_value
@@ -164,22 +163,16 @@ class IostatReport(pmcc.MetricGroupPrinter):
                 self.Hcount = 1
             if self.Hcount == 1:
                 if "t" in IostatOptions.xflag:
-                    heading = ('# Timestamp', 'Device',rrqmspace,
-                               'rrqm/s',wrqmspace, 'wrqm/s',precision+5,
-                               'r/s',precision+4, 'w/s',precision+6,
-                               'rkB/s',precision+6, 'wkB/s',
-                               avgrqszspace,'avgrq-sz',precision+6,
-                               'avgqu-sz',precision+5, 'await',precision+5,
-                               'r_await', precision+5,'w_await',utilspace,
-                               '%util')
+                    heading = ('# Timestamp', 'Device',rrqmspace)
                 else:
-                    heading = ('# Device',rrqmspace, 'rrqm/s',wrqmspace,
-                               'wrqm/s',precision+5, 'r/s',precision+4,
-                               'w/s',precision+6, 'rkB/s',precision+6,
-                               'wkB/s', avgrqszspace,'avgrq-sz',precision+6,
-                               'avgqu-sz',precision+5, 'await',awaitspace,
-                               'r_await',awaitspace, 'w_await',utilspace,
-                               '%util')
+                    heading = ('# Device',rrqmspace)
+                heading = heading + tuple(
+                           ['rrqm/s',wrqmspace, 'wrqm/s',precision+5,
+                           'r/s',precision+4, 'w/s',precision+6,
+                           'rkB/s',precision+6, 'wkB/s',
+                           avgrqszspace,'avgrq-sz',precision+6,
+                           'avgqu-sz',precision+5, 'await',precision+5,
+                           'r_await', precision+5,'w_await',utilspace, '%util'])
                 print(headfmt % heading)
 
         if p_rrqm == {} or p_wrqm == {} or p_r == {} or p_w == {} or \
@@ -187,12 +180,14 @@ class IostatReport(pmcc.MetricGroupPrinter):
            p_rkb == {} or p_wkb == {}:
             # no values for some metric (e.g. near start of archive)
             if "t" in IostatOptions.xflag:
-                print(headfmt % (timestamp, 'NODATA',rrqmspace, '?',wrqmspace,
-                                 '?',precision+5, '?',precision+4,
-                                 '?',precision+6, '?',precision+6,
-                                 '?',headfmtavgspace, '?',headfmtquspace,
-                                 '?',precision+5, '?',awaitspace,
-                                 '?',awaitspace, '?',utilspace, '?'))
+                headfmt = "%-24s %-12s %*s %*s %*s %*s %*s %*s %*s %*s %*s %*s %*s %*s"
+                print(headfmt % (timestamp, 'NODATA',
+                    rrqmspace, '?', rrqmspace, '?',
+                    precision+5, '?', precision+4, '?',
+                    precision+6, '?', precision+6, '?',
+                    headfmtavgspace, '?', headfmtquspace, '?',
+                    precision+5, '?', awaitspace, '?',
+                    awaitspace,'?', utilspace, '?'))
             return
 
         try:
@@ -218,7 +213,7 @@ class IostatReport(pmcc.MetricGroupPrinter):
                 # total active time in seconds (same units as dt)
                 tot_active = (float)(c_avactive[inst] - p_avactive[inst]) / 1000.0
 
-                avgrqsz = avgqsz = t_await = r_await = w_await = util = 0.0
+                avgrqsz = t_await = r_await = w_await = util = 0.0
 
                 # average request size units are KB (sysstat reports in units of sectors)
                 if tot_ios:

@@ -1,11 +1,11 @@
 /*
- * Copyright (c) 2020 Red Hat.  All Rights Reserved.
- * 
+ * Copyright (c) 2020-2021 Red Hat.  All Rights Reserved.
+ *
  * This program is free software; you can redistribute it and/or modify it
  * under the terms of the GNU General Public License as published by the
  * Free Software Foundation; either version 2 of the License, or (at your
  * option) any later version.
- * 
+ *
  * This program is distributed in the hope that it will be useful, but
  * WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY
  * or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License
@@ -37,7 +37,7 @@ override(int opt, pmOptions *opts)
 static pmOptions opts = {
     .short_options = "D:h:cd:g:qrs:vV?",
     .long_options = longopts,
-    .short_usage = "[options] ...",
+    .short_usage = "[options] configfile",
     .override = override,
 };
 
@@ -473,13 +473,19 @@ fetch_groups(void)
 {
     static pmResult	*result;
     const char		**names;
+    pmDesc		*descs;
     pmID		*pmids;
-    int			i, n, sts;
+    int			i, n, sts, count;
 
-    /* prepare arrays of names and identifiers for PMAPI metric lookup */
+    /* prepare arrays of names, descriptors and IDs for PMAPI metric lookup */
     if ((names = calloc(ngroups, sizeof(char *))) == NULL)
 	return -ENOMEM;
+    if ((descs = calloc(ngroups, sizeof(pmDesc))) == NULL) {
+	free(names);
+	return -ENOMEM;
+    }
     if ((pmids = calloc(ngroups, sizeof(pmID))) == NULL) {
+	free(descs);
 	free(names);
 	return -ENOMEM;
     }
@@ -490,17 +496,20 @@ fetch_groups(void)
 	    continue;
 	names[n++] = (const char *)groups[i].metric;
     }
+    count = n;
 
-    if ((sts = pmLookupName(n, names, pmids)) < 0) {
-	if (n == 1)
+    if ((sts = pmLookupName(count, names, pmids)) < 0) {
+	if (count == 1)
 	    groups[0].pmid = PM_ID_NULL;
 	else
 	    fprintf(stderr, "%s: cannot lookup metric names: %s\n",
 			    pmGetProgname(), pmErrStr(sts));
+	free(descs);
     }
-    else if ((sts = pmFetch(n, pmids, &result)) < 0) {
+    else if ((sts = pmFetch(count, pmids, &result)) < 0) {
 	fprintf(stderr, "%s: cannot fetch metric values: %s\n",
 			pmGetProgname(), pmErrStr(sts));
+	free(descs);
     }
     else {
 	/* associate metric identifier with each logging group */
@@ -510,6 +519,13 @@ fetch_groups(void)
 	    else
 		groups[i].pmid = pmids[n++];
 	}
+	/* descriptor lookup, descs_hash handles failure here */
+	(void) pmLookupDescs(count, pmids, descs);
+
+	/* create a hash over the descs for quick PMID lookup */
+	if ((sts = descs_hash(count, descs)) < 0)
+	    fprintf(stderr, "%s: cannot hash metric descs: %s\n",
+			    pmGetProgname(), pmErrStr(sts));
 	/* create a hash over the result for quick PMID lookup */
 	if ((sts = values_hash(result)) < 0)
 	    fprintf(stderr, "%s: cannot hash metric values: %s\n",
@@ -806,14 +822,16 @@ evaluate_string_regexp(group_t *group, regex_cmp_t compare)
     int			i, found;
     pmValueSet		*vsp;
     pmValue		*vp;
+    pmDesc		*dp;
     pmAtomValue		atom;
     regex_t		regex;
     int			sts, type;
 
-    if ((vsp = metric_values(group->pmid)) == NULL)
+    if ((vsp = metric_values(group->pmid)) == NULL ||
+        (dp = metric_desc(group->pmid)) == NULL)
 	return 0;
 
-    type = metric_type(group->pmid);
+    type = dp->type;
     if (type < 0 || type > PM_TYPE_STRING) {
 	fprintf(stderr, "%s: %s uses regular expression on non-scalar metric\n",
 		pmGetProgname(), group->tag);
@@ -849,11 +867,14 @@ evaluate_string_regexp(group_t *group, regex_cmp_t compare)
 static int
 evaluate_values(group_t *group, numeric_cmp_t ncmp, string_cmp_t scmp)
 {
-    int			type = metric_type(group->pmid);
+    pmDesc		*dp;
 
-    if (type == PM_TYPE_STRING)
+    if ((dp = metric_desc(group->pmid)) == NULL)
+	return 0;
+
+    if (dp->type == PM_TYPE_STRING)
 	return evaluate_string_values(group, scmp);
-    return evaluate_number_values(group, type, ncmp);
+    return evaluate_number_values(group, dp->type, ncmp);
 }
 
 int
@@ -913,16 +934,13 @@ evaluate_state(group_t *group)
     if ((group->pmlogger || group->pmrep) && !group->pmlogconf) {
 	state = group->saved_state;
     } else if (evaluate_group(group)) {	/* probe */
-	if (reprobe == 0 && group->saved_state != 0)
-	    state = group->saved_state;
-	else
+	if ((state = group->saved_state) != STATE_INCLUDE)
 	    state = group->true_state;
 	group->success = 1;
     } else {
-	if (reprobe == 0 && group->saved_state != 0)
-	    state = group->saved_state;
-	else
+	if ((state = group->saved_state) != STATE_EXCLUDE)
 	    state = group->false_state;
+	group->success = 0;
     }
     group->probe_state = state;
     return state;
@@ -985,7 +1003,7 @@ sigintproc(int sig)
 void
 create_tempfile(FILE *file, FILE **tempfile, struct stat *stat)
 {
-    int			fd, mode = S_IRUSR|S_IWUSR|S_IRGRP|S_IWGRP|S_IROTH;
+    int			fd, sts, mode = S_IRUSR|S_IWUSR|S_IRGRP|S_IWGRP|S_IROTH;
     FILE		*fp;
     char		bytes[BUFSIZ];
     mode_t		cur_umask;
@@ -1011,12 +1029,24 @@ create_tempfile(FILE *file, FILE **tempfile, struct stat *stat)
     umask(cur_umask);
 
     if (stat) {
-	if (fchown(fd, stat->st_uid, stat->st_gid) < 0) {
-	    fprintf(stderr, "%s: Warning: fchown() failed: %s\n",
+#if defined(HAVE_FCHOWN)
+	sts = fchown(fd, stat->st_uid, stat->st_gid);
+#elif defined(HAVE_CHOWN)
+	sts = chown(tmpconfig, stat->st_uid, stat->st_gid);
+#else
+	sts = 0;
+#endif
+	if (sts < 0) {
+	    fprintf(stderr, "%s: Warning: chown() failed: %s\n",
 			pmGetProgname(), osstrerror());
 	}
-	if (fchmod(fd, stat->st_mode) < 0) {
-	    fprintf(stderr, "%s: Warning: fchmod() failed: %s\n",
+#if defined(HAVE_FCHMOD)
+	sts = fchmod(fd, stat->st_mode);
+#else
+	sts = chmod(tmpconfig, stat->st_mode);
+#endif
+	if (sts < 0) {
+	    fprintf(stderr, "%s: Warning: chmod() failed: %s\n",
 			pmGetProgname(), osstrerror());
 	}
     }
@@ -1240,13 +1270,20 @@ update_callback(const char *line, int length, void *arg)
 	printf("       %.*s\n", length, line);
 }
 
+static void
+update_delta(group_t *group, const char *delta)
+{
+    free(group->delta);
+    group->delta = copy_string(delta);
+}
+
 char *
 update_groups(FILE *tempfile, const char *pattern)
 {
     group_t		*group;
     struct timeval	interval;
-    static char		answer[64];
-    char		buffer[128];
+    static char		*answer;
+    static char		buffer[128]; /* returned 'answer' points into this */
     char		*state = NULL, *errmsg, *p;
     unsigned int	i, m, count;
 
@@ -1274,7 +1311,12 @@ update_groups(FILE *tempfile, const char *pattern)
 			    update_callback, &count);
 	    printf("Log this group? [%s] ", state);
 	}
-	if (autocreate || fgets(answer, sizeof(answer), stdin) == NULL)
+	answer = memset(buffer, 0, sizeof(buffer));
+	if (autocreate || fgets(answer, sizeof(buffer), stdin) == NULL)
+	    answer[0] = *state;
+	else
+	    answer = chop(trim(answer));
+	if (answer[0] == '\0')	/* keep group as-is */
 	    answer[0] = *state;
 
 	switch (answer[0]) {
@@ -1311,9 +1353,6 @@ y         log this group\n\
 	    group->saved_state = STATE_INCLUDE;
 	    break;
 
-	case '\n':	/* keep group as-is */
-	    break;
-
 	case '/':
 	    if ((p = strrchr(answer + 1, '\n')) != NULL)
 		*p = '\0';
@@ -1340,13 +1379,21 @@ y         log this group\n\
 	    } else {
 		do {
 		    printf("Logging interval? [%s] ", pmlogger_group_delta(group));
-		    if (fgets(answer, sizeof(answer), stdin) == NULL)
+		    answer = memset(buffer, 0, sizeof(buffer));
+		    if (fgets(answer, sizeof(buffer), stdin) == NULL)
 			break;
+		    answer = chop(trim(answer));
+		    if (answer == NULL || answer[0] == '\0')
+			answer = "default";
 		    if (strcmp(answer, "once") == 0 ||
-			strcmp(answer, "default") == 0)
+			strcmp(answer, "default") == 0) {
+			update_delta(group, answer);
 			break;
-		    if (pmParseInterval(answer, &interval, &errmsg) >= 0)
+		    }
+		    if (pmParseInterval(answer, &interval, &errmsg) >= 0) {
+			update_delta(group, answer);
 			break;
+		    }
 		    free(errmsg);
 		    printf("Error: logging interval must be of the form "
 			   "\"once\" or \"default\" or \"<integer> <scale>\","
@@ -1577,7 +1624,7 @@ pmlogger_update(FILE *file, struct stat *stat)
 }
 
 void
-pmapi_setup(pmOptions *opts)
+pmapi_setup(pmOptions *options)
 {
     const char	*hostspec;
     int		sts;
@@ -1587,8 +1634,8 @@ pmapi_setup(pmOptions *opts)
     setenv("LC_COLLATE", "POSIX", 1);
 
     /* setup connection to pmcd in order to query metric states */
-    if (opts->nhosts > 0)
-	hostspec = opts->hosts[0];
+    if (options->nhosts > 0)
+	hostspec = options->hosts[0];
     else
 	hostspec = "local:";
     if ((sts = pmNewContext(PM_CONTEXT_HOST, hostspec)) < 0) {

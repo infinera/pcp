@@ -32,6 +32,7 @@
 #include "photoproc.h"
 #include "photosyst.h"
 #include "hostmetrics.h"
+#include "gpucom.h"
 
 extern const char *hostmetrics[];
 extern const char *ifpropmetrics[];
@@ -248,7 +249,7 @@ normalize_epoch(time_t epoch, long secondsinday)
 ** Function val2valstr() converts a positive value to an ascii-string of a 
 ** fixed number of positions; if the value does not fit, it will be formatted
 ** to exponent-notation (as short as possible, so not via the standard printf-
-** formatters %f or %e). The offered string should have a length of width+1.
+** formatters %f or %e). The offered buffer should have a length of width+1.
 ** The value might even be printed as an average for the interval-time.
 */
 char *
@@ -302,7 +303,7 @@ val2valstr(count_t value, char *strvalue, size_t buflen, int width, int avg, int
 				value /= 10;
 			}
 
-			if (remain >= 5)
+			if (remain >= 5 && value < maxval)
 				value++;
 
 			pmsprintf(strvalue, buflen, "%*llde%d%s",
@@ -469,11 +470,17 @@ val2Hzstr(count_t value, char *strvalue, size_t buflen)
 #define	ONETBYTE	1099511627776LL
 #define	ONEPBYTE	1125899906842624LL
 
-#define	MAXBYTE		1024
-#define	MAXKBYTE	ONEKBYTE*99999L
+#define	MAXBYTE		999
+#define	MAXKBYTE	ONEKBYTE*999L
+#define	MAXKBYTE9	ONEKBYTE*9L
 #define	MAXMBYTE	ONEMBYTE*999L
+#define	MAXMBYTE9	ONEMBYTE*9L
 #define	MAXGBYTE	ONEGBYTE*999LL
+#define	MAXGBYTE9	ONEGBYTE*9LL
 #define	MAXTBYTE	ONETBYTE*999LL
+#define	MAXTBYTE9	ONETBYTE*9LL
+#define	MAXPBYTE9	ONEPBYTE*9LL
+
 
 char *
 val2memstr(count_t value, char *strvalue, size_t buflen, int pformat, int avgval, int nsecs)
@@ -499,31 +506,71 @@ val2memstr(count_t value, char *strvalue, size_t buflen, int pformat, int avgval
 	*/
 	if (avgval && nsecs)
 	{
-		value     /= nsecs;
-		verifyval  = verifyval * 100 /nsecs;
-		basewidth -= 2;
-		suffix     = "/s";
-	}
-	
-	/*
-	** determine which format will be used on bases of the value itself
-	*/
-	if (verifyval <= MAXBYTE)	/* bytes ? */
-		aformat = ANYFORMAT;
-	else
-		if (verifyval <= MAXKBYTE)	/* kbytes ? */
-			aformat = KBFORMAT;
+		value         = llround((double)((double)value/(double)nsecs));
+		verifyval     = llround((double)((double)verifyval/(double)nsecs));
+		basewidth    -= 2;
+		suffix        = "/s";
+
+		if (verifyval <= MAXBYTE)	/* bytes ? */
+			aformat = BFORMAT;
 		else
-			if (verifyval <= MAXMBYTE)	/* mbytes ? */
-				aformat = MBFORMAT;
+			if (verifyval <= MAXKBYTE9)	/* kbytes 1-9 ? */
+				aformat = KBFORMAT;
 			else
-				if (verifyval <= MAXGBYTE)	/* gbytes ? */
-					aformat = GBFORMAT;
+				if (verifyval <= MAXKBYTE)	/* kbytes ? */
+					aformat = KBFORMAT_INT;
 				else
-					if (verifyval <= MAXTBYTE)/* tbytes? */
-						aformat = TBFORMAT;/* tbytes! */
+					if (verifyval <= MAXMBYTE9)	/* mbytes 1-9 ? */
+						aformat = MBFORMAT;
 					else
-						aformat = PBFORMAT;/* pbytes! */
+						if (verifyval <= MAXMBYTE)	/* mbytes 10-999 ? */
+							aformat = MBFORMAT_INT;
+						else
+							if (verifyval <= MAXGBYTE9)	/* gbytes 1-9 ? */
+								aformat = GBFORMAT;
+							else
+								if (verifyval <= MAXGBYTE)	/* gbytes 10-999 ? */
+									aformat = GBFORMAT_INT;
+								else
+									if (verifyval <= MAXTBYTE9)/* tbytes 1-9 ? */
+										aformat = TBFORMAT;/* tbytes! */
+									else
+										if (verifyval <= MAXTBYTE)/* tbytes 10-999? */
+											aformat = TBFORMAT_INT;/* tbytes! */
+										else
+											if (verifyval <= MAXPBYTE9)/* pbytes 1-9 ? */
+												aformat = PBFORMAT;/* pbytes! */
+											else
+												aformat = PBFORMAT_INT;/* pbytes! */
+
+	} else 
+	/*
+	** printed value per interval (normal mode) 
+	*/
+	{
+		/*
+		** determine which format will be used on bases of the value itself
+		*/
+		if (verifyval <= MAXBYTE)	/* bytes ? */
+			aformat = BFORMAT;
+		else
+			if (verifyval <= MAXKBYTE)	/* kbytes ? */
+				aformat = KBFORMAT;
+			else
+				if (verifyval <= MAXMBYTE)	/* mbytes ? */
+					aformat = MBFORMAT;
+				else
+					if (verifyval <= MAXGBYTE)	/* gbytes ? */
+						aformat = GBFORMAT;
+					else
+						if (verifyval <= MAXTBYTE)/* tbytes? */
+							aformat = TBFORMAT;/* tbytes! */
+						else
+							aformat = PBFORMAT;/* pbytes! */
+
+
+	}
+
 
 	/*
 	** check if this is also the preferred format
@@ -533,14 +580,19 @@ val2memstr(count_t value, char *strvalue, size_t buflen, int pformat, int avgval
 
 	switch (aformat)
 	{
-	   case	ANYFORMAT:
-		pmsprintf(strvalue, buflen, "%*lld%s",
-				basewidth, value, suffix);
+	   case	BFORMAT:
+		pmsprintf(strvalue, buflen, "%*lldB%s",
+				basewidth-1, value, suffix);
 		break;
 
 	   case	KBFORMAT:
+		pmsprintf(strvalue, buflen, "%*.1lfK%s",
+			basewidth-1, (double)((double)value/ONEKBYTE), suffix); 
+		break;
+
+	   case	KBFORMAT_INT:
 		pmsprintf(strvalue, buflen, "%*lldK%s",
-				basewidth-1, value/ONEKBYTE, suffix);
+				basewidth-1, llround((double)((double)value/ONEKBYTE)), suffix);
 		break;
 
 	   case	MBFORMAT:
@@ -548,9 +600,19 @@ val2memstr(count_t value, char *strvalue, size_t buflen, int pformat, int avgval
 			basewidth-1, (double)((double)value/ONEMBYTE), suffix); 
 		break;
 
+	   case	MBFORMAT_INT:
+		pmsprintf(strvalue, buflen, "%*lldM%s",
+			basewidth-1, llround((double)((double)value/ONEMBYTE)), suffix); 
+		break;
+
 	   case	GBFORMAT:
 		pmsprintf(strvalue, buflen, "%*.1lfG%s",
 			basewidth-1, (double)((double)value/ONEGBYTE), suffix);
+		break;
+
+	   case	GBFORMAT_INT:
+		pmsprintf(strvalue, buflen, "%*lldG%s",
+			basewidth-1, llround((double)((double)value/ONEGBYTE)), suffix);
 		break;
 
 	   case	TBFORMAT:
@@ -558,9 +620,19 @@ val2memstr(count_t value, char *strvalue, size_t buflen, int pformat, int avgval
 			basewidth-1, (double)((double)value/ONETBYTE), suffix);
 		break;
 
+	   case	TBFORMAT_INT:
+		pmsprintf(strvalue, buflen, "%*lldT%s",
+			basewidth-1, llround((double)((double)value/ONETBYTE)), suffix);
+		break;
+
 	   case	PBFORMAT:
 		pmsprintf(strvalue, buflen, "%*.1lfP%s",
 			basewidth-1, (double)((double)value/ONEPBYTE), suffix);
+		break;
+
+	   case	PBFORMAT_INT:
+		pmsprintf(strvalue, buflen, "%*lldP%s",
+			basewidth-1, llround((double)((double)value/ONEPBYTE)), suffix);
 		break;
 
 	   default:
@@ -649,11 +721,11 @@ cleanstop(int exitcode)
 ** establish an async timer alarm with microsecond-level precision
 */
 void
-setalarm(struct timeval *interval)
+setalarm(struct timeval *delta)
 {
 	struct itimerval val;
 
-	val.it_value = *interval;
+	val.it_value = *delta;
 	val.it_interval.tv_sec = val.it_interval.tv_usec = 0;
 	setitimer(ITIMER_REAL, &val, NULL);
 }
@@ -661,11 +733,11 @@ setalarm(struct timeval *interval)
 void
 setalarm2(int sec, int usec)
 {
-	struct timeval interval;
+	struct timeval delta;
 
-	interval.tv_sec = sec;
-	interval.tv_usec = usec;
-	setalarm(&interval);
+	delta.tv_sec = sec;
+	delta.tv_usec = usec;
+	setalarm(&delta);
 }
 
 void
@@ -846,18 +918,20 @@ setup_globals(pmOptions *opts)
 
 	setup_photosyst();
 	setup_photoproc();
+	setup_gpuphotoproc();
 
 	if ((hertz = extract_integer(result, descs, HOST_HERTZ)) <= 0)
 		hertz = sysconf(_SC_CLK_TCK);
 	if ((pidmax = extract_integer(result, descs, HOST_PID_MAX)) <= 0)
 		pidmax = getmaxpid();
+	pidwidth = getpidwidth();
 	if ((pagesize = extract_integer(result, descs, HOST_PAGESIZE)) <= 0)
 		pagesize = getpagesize();
 	if ((system_boottime = extract_count_t(result, descs, HOST_BTIME)) <= 0)
 		system_boottime = result->timestamp.tv_sec - interval.tv_sec;
 
 	extract_string(result, descs, HOST_RELEASE, sysname.release, sizeof sysname.release);
-	sscanf(sysname.release, "%d.%d.%d", &osrel, &osvers, &ossub);
+	sscanf(sysname.release, "%d.%d.%d", &os_rel, &os_vers, &os_sub);
 	extract_string(result, descs, HOST_VERSION, sysname.version, sizeof sysname.version);
 	extract_string(result, descs, HOST_MACHINE, sysname.machine, sizeof sysname.machine);
 	extract_string(result, descs, HOST_NODENAME, sysname.nodename, sizeof sysname.nodename);
@@ -872,6 +946,8 @@ setup_globals(pmOptions *opts)
 		hinv_nrgpus = 1;
 	if ((hinv_nrdisk = extract_integer(result, descs, NRDISK)) <= 0)
 		hinv_nrdisk = 1;
+	if ((hinv_nrnuma = extract_integer(result, descs, NRNUMA)) <= 0)
+		hinv_nrnuma = 1;
 	if ((hinv_nrintf = extract_integer(result, descs, NRINTF)) <= 0)
 		hinv_nrintf = 1;
 
@@ -914,6 +990,26 @@ int
 extract_integer(pmResult *result, pmDesc *descs, int value)
 {
 	return extract_integer_index(result, descs, value, 0);
+}
+
+int
+extract_integer_instmap_count(pmResult *result, pmDesc *descs, int value, int inst)
+{
+	pmAtomValue atom = { 0 };
+	pmValueSet *values = result->vset[value];
+	int i, count = 0;
+
+	if (values->numval <= 0)
+		return 0;
+
+	for (i = 0; i < values->numval; i++)
+	{
+		pmExtractValue(values->valfmt, &values->vlist[i],
+			descs[value].type, &atom, PM_TYPE_32);
+		if (atom.l == inst)
+			count++;
+	}
+	return count;
 }
 
 int
@@ -1336,7 +1432,8 @@ rawarchive_from_midnight(pmOptions *opts)
 	pmLocaltime(&now, &today);
 	pmsprintf(midnight, sizeof(midnight), "@ %04d-%02d-%02d 00:00:00",
 		today.tm_year+1900, today.tm_mon+1, today.tm_mday);
-	opts->origin_optarg = midnight;	/* also enables archive mode */
+	/* setting origin_optarg also enables archive mode */
+	opts->origin_optarg = opts->start_optarg = midnight;
 }
 
 void
@@ -1440,10 +1537,10 @@ rawarchive(pmOptions *opts, const char *name)
 ** Write a pmlogger configuration file for recording.
 */
 static void
-rawconfig(FILE *fp, double interval)
+rawconfig(FILE *fp, double delta)
 {
 	const char		**p;
-	unsigned int		delta;
+	unsigned int		logdelta;
 
 	fprintf(fp, "log mandatory on once {\n");
 	for (p = hostmetrics; (*p)[0] != '.'; p++)
@@ -1452,8 +1549,8 @@ rawconfig(FILE *fp, double interval)
 		fprintf(fp, "    %s\n", *p);
 	fprintf(fp, "}\n\n");
 
-	delta = (unsigned int)(interval * 1000.0);	/* msecs */
-	fprintf(fp, "log mandatory on every %u milliseconds {\n", delta);
+	logdelta = (unsigned int)(delta * 1000.0);	/* msecs */
+	fprintf(fp, "log mandatory on every %u milliseconds {\n", logdelta);
 	for (p = systmetrics; (*p)[0] != '.'; p++)
 		fprintf(fp, "    %s\n", *p);
 	for (p = procmetrics; (*p)[0] != '.'; p++)
@@ -1467,15 +1564,14 @@ rawwrite(pmOptions *opts, const char *name,
 {
 	pmRecordHost	*record;
 	struct timeval	elapsed;
-	double		duration;
-	double		interval;
+	double		duration, ddelta;
 	char		args[MAXPATHLEN];
 	char		*host;
 	int		sts;
 
 	host = (opts->nhosts > 0) ? opts->hosts[0] : "local:";
-	interval = pmtimevalToReal(delta);
-	duration = interval * nsamples;
+	ddelta = pmtimevalToReal(delta);
+	duration = ddelta * nsamples;
 
 	if (midnightflag)
 	{
@@ -1534,7 +1630,7 @@ rawwrite(pmOptions *opts, const char *name,
 		cleanstop(1);
 	}
 
-	rawconfig(record->f_config, interval);
+	rawconfig(record->f_config, ddelta);
 
 	/*
 	** start pmlogger with a deadhand timer, ensuring it will stop
@@ -1591,3 +1687,81 @@ show_pcp_usage(pmOptions *opts)
 	}
 }
 
+/*
+ * Manage a cache of user and group names, such that
+ * uid and gid based lookups can be performed into a
+ * hash with one copy of each name.  Also, this hash
+ * table is temporal in that an insert with a fresh,
+ * different value replaces any earlier observation.
+ */
+static __pmHashCtl users;
+static __pmHashCtl groups;
+
+static void
+add_name(__pmHashCtl *cache, int key, const char *name)
+{
+	__pmHashNode	*hp;
+
+	if ((hp = __pmHashSearch(key, cache)) == NULL)
+	{
+		__pmHashAdd(key, strdup(name), cache);
+	}
+	else
+	{
+		if (strcmp(name, hp->data) == 0)
+			return;
+		free(hp->data);
+		hp->data = strdup(name);
+	}
+}
+
+static char *
+get_name(__pmHashCtl *cache, int key)
+{
+	__pmHashNode	*hp;
+
+	if ((hp = __pmHashSearch(key, cache)) == NULL)
+		return NULL;
+	return (char *)hp->data;
+}
+
+void
+add_username(int uid, const char *username)
+{
+	add_name(&users, uid, username);
+}
+
+char *
+get_username(int uid)
+{
+	return get_name(&users, uid);
+}
+
+void
+add_groupname(int gid, const char *groupname)
+{
+	add_name(&groups, gid, groupname);
+}
+
+char *
+get_groupname(int gid)
+{
+	return get_name(&groups, gid);
+}
+/*
+** return maximum number of digits for PID/TID
+*/
+int
+getpidwidth(void)
+{
+	char	linebuf[64];
+	int	numdigits = 5;
+
+	/*
+	** determine maximum number of digits for PID/TID
+	*/
+	if (pmsprintf(linebuf, sizeof linebuf, "%d", pidmax))
+		numdigits = strlen(linebuf);
+
+	return numdigits;
+}

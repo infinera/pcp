@@ -102,6 +102,8 @@ _filter_pmie()
 	-e '/^Log for pmie on .* started /d' \
 	-e 's/^[A-Za-z0-9 :]*: /DATESTAMP: /' \
 	-e '/^DATESTAMP: PID = /d' \
+	-e '/Unknown metric name/d' \
+	-e '/not in namespace for pmcd/d' \
     # end
 }
 
@@ -283,7 +285,7 @@ pmiectl -V status | _filter_status
 for metric in sample.lights network.interface.total.bytes
 do
     echo "check $metric ..."
-    egrep "$metric( |\$)" $PCP_LOG_DIR/pmie/$seq-a/$seq-a.config
+    grep -E "$metric( |\$)" $PCP_LOG_DIR/pmie/$seq-a/$seq-a.config
 done
 pmsleep 0.5		# give pmie a chance to warm up
 _filter_pmie <$PCP_LOG_DIR/pmie/$seq-a/pmie.log | sort | uniq
@@ -300,7 +302,7 @@ pmiectl -V status | _filter_status
 for metric in sample.lights network.interface.total.bytes
 do
     echo "check $metric ..."
-    egrep "$metric( |\$)" $PCP_LOG_DIR/pmie/$seq-b/$seq-b.config
+    grep -E "$metric( |\$)" $PCP_LOG_DIR/pmie/$seq-b/$seq-b.config
 done
 pmsleep 0.5		# give pmie a chance to warm up
 _filter_pmie <$PCP_LOG_DIR/pmie/$seq-b/pmie.log | sort | uniq
@@ -317,7 +319,7 @@ pmiectl -V status | _filter_status
 for metric in sample.lights network.interface.total.bytes
 do
     echo "check $metric ..."
-    egrep "$metric( |\$)" $PCP_LOG_DIR/pmie/$seq-c/$seq-c.config
+    grep -E "$metric( |\$)" $PCP_LOG_DIR/pmie/$seq-c/$seq-c.config
 done
 pmsleep 0.5		# give pmie a chance to warm up
 _filter_pmie <$PCP_LOG_DIR/pmie/$seq-c/pmie.log | sort | uniq

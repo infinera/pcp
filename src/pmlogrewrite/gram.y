@@ -405,7 +405,7 @@ new_domain_label(int domain)
     pmsprintf(buf, sizeof(buf), "{%s:%s}",
 	      current_label_name, current_label_value);
 
-    hcp = &ctxp->c_archctl->ac_log->l_hashpmid;
+    hcp = &ctxp->c_archctl->ac_log->hashpmid;
     for (node = __pmHashWalk(hcp, PM_HASH_WALK_START);
 	 node != NULL;
 	 node = __pmHashWalk(hcp, PM_HASH_WALK_NEXT)) {
@@ -486,7 +486,7 @@ new_cluster_label(int cluster)
     pmsprintf(buf, sizeof(buf), "{%s:%s}",
 	      current_label_name, current_label_value);
 
-    hcp = &ctxp->c_archctl->ac_log->l_hashpmid;
+    hcp = &ctxp->c_archctl->ac_log->hashpmid;
     for (node = __pmHashWalk(hcp, PM_HASH_WALK_START);
 	 node != NULL;
 	 node = __pmHashWalk(hcp, PM_HASH_WALK_NEXT)) {
@@ -575,7 +575,7 @@ new_item_label(int item)
     pmsprintf(buf, sizeof(buf), "{%s:%s}",
 	      current_label_name, current_label_value);
 
-    hcp = &ctxp->c_archctl->ac_log->l_hashpmid;
+    hcp = &ctxp->c_archctl->ac_log->hashpmid;
     for (node = __pmHashWalk(hcp, PM_HASH_WALK_START);
 	 node != NULL;
 	 node = __pmHashWalk(hcp, PM_HASH_WALK_NEXT)) {
@@ -662,7 +662,7 @@ new_indom_label(int indom)
     pmsprintf(buf, sizeof(buf), "{%s:%s}",
 	      current_label_name, current_label_value);
 
-    hcp = &ctxp->c_archctl->ac_log->l_hashindom;
+    hcp = &ctxp->c_archctl->ac_log->hashindom;
     for (node = __pmHashWalk(hcp, PM_HASH_WALK_START);
 	 node != NULL;
 	 node = __pmHashWalk(hcp, PM_HASH_WALK_NEXT)) {
@@ -754,7 +754,7 @@ new_indom_instance_label(int indom)
     pmsprintf(buf, sizeof(buf), "{%s:%s}",
 	      current_label_name, current_label_value);
 
-    hcp = &ctxp->c_archctl->ac_log->l_hashindom;
+    hcp = &ctxp->c_archctl->ac_log->hashindom;
     for (node = __pmHashWalk(hcp, PM_HASH_WALK_START);
 	 node != NULL;
 	 node = __pmHashWalk(hcp, PM_HASH_WALK_NEXT)) {
@@ -826,6 +826,7 @@ new_indom_instance_label(int indom)
 %union {
     char		*str;
     int			ival;
+    unsigned int	uival;
     double		dval;
     pmInDom		indom;
     pmID		pmid;
@@ -837,13 +838,17 @@ new_indom_instance_label(int indom)
 	TOK_MINUS
 	TOK_COLON
 	TOK_COMMA
+	TOK_LPAREN
+	TOK_RPAREN
 	TOK_ASSIGN
 	TOK_GLOBAL
 	TOK_INDOM
 	TOK_DUPLICATE
 	TOK_METRIC
 	TOK_HOSTNAME
-	TOK_TZ
+	TOK_TIMEZONE
+	TOK_ZONEINFO
+	TOK_FEATURES
 	TOK_TIME
 	TOK_NAME
 	TOK_INST
@@ -871,6 +876,7 @@ new_indom_instance_label(int indom)
 	TOK_INSTANCE
 	TOK_NEW
 	TOK_VALUE
+	TOK_BITS
 
 %token<str>	TOK_GNAME TOK_NUMBER TOK_STRING TOK_TEXT_STRING TOK_HNAME TOK_FLOAT
 %token<str>	TOK_JSON_STRING TOK_JSON_NUMBER
@@ -882,7 +888,10 @@ new_indom_instance_label(int indom)
 %type<str>	hname
 %type<indom>	indom_int null_or_indom
 %type<pmid>	pmid_int pmid_or_name
-%type<ival>	signnumber number rescaleopt duplicateopt texttype texttypes opttexttypes pmid_domain pmid_cluster
+%type<ival>	signnumber number
+%type<uival>	feature_bits bits_list
+%type<ival>	rescaleopt duplicateopt texttype texttypes opttexttypes
+%type<ival>	pmid_domain pmid_cluster
 %type<dval>	float
 %type<str>	textstring opttextvalue jsonname jsonvalue jsonnumber
 
@@ -916,37 +925,82 @@ globalopt	: TOK_HOSTNAME TOK_ASSIGN hname
 			    pmsprintf(mess, sizeof(mess), "Duplicate global hostname clause");
 			    yyerror(mess);
 			}
-			if (strcmp(inarch.label.ll_hostname, $3) == 0) {
+			if (inarch.label.hostname != NULL && strcmp(inarch.label.hostname, $3) == 0) {
 			    /* no change ... */
 			    if (wflag) {
-				pmsprintf(mess, sizeof(mess), "Global hostname (%s): No change", inarch.label.ll_hostname);
+				pmsprintf(mess, sizeof(mess), "Global hostname (%s): No change", inarch.label.hostname);
 				yywarn(mess);
 			    }
+			    free($3);
 			}
 			else {
-			    strncpy(global.hostname, $3, sizeof(global.hostname)-1);
+			    global.hostname = $3;
 			    global.flags |= GLOBAL_CHANGE_HOSTNAME;
 			}
-			free($3);
 		    }
-		| TOK_TZ TOK_ASSIGN TOK_STRING
+		| TOK_TIMEZONE TOK_ASSIGN TOK_STRING
 		    {
-			if (global.flags & GLOBAL_CHANGE_TZ) {
-			    pmsprintf(mess, sizeof(mess), "Duplicate global tz clause");
+			if (global.flags & GLOBAL_CHANGE_TIMEZONE) {
+			    pmsprintf(mess, sizeof(mess), "Duplicate global timezone clause");
 			    yyerror(mess);
 			}
-			if (strcmp(inarch.label.ll_tz, $3) == 0) {
+			if (inarch.label.timezone != NULL && strcmp(inarch.label.timezone, $3) == 0) {
 			    /* no change ... */
 			    if (wflag) {
-				pmsprintf(mess, sizeof(mess), "Global timezone (%s): No change", inarch.label.ll_tz);
+				pmsprintf(mess, sizeof(mess), "Global timezone (%s): No change", inarch.label.timezone);
+				yywarn(mess);
+			    }
+			    free($3);
+			}
+			else {
+			    global.timezone =  $3;
+			    global.flags |= GLOBAL_CHANGE_TIMEZONE;
+			}
+		    }
+		| TOK_ZONEINFO TOK_ASSIGN TOK_STRING
+		    {
+			if (global.flags & GLOBAL_CHANGE_ZONEINFO) {
+			    pmsprintf(mess, sizeof(mess), "Duplicate global zoneinfo clause");
+			    yyerror(mess);
+			}
+			if (outarch.version < PM_LOG_VERS03) {
+			    pmsprintf(mess, sizeof(mess), "Global zoneinfo clause requires output archive version of 3 or greater");
+			    yyerror(mess);
+			}
+			if (inarch.label.zoneinfo != NULL && strcmp(inarch.label.zoneinfo, $3) == 0) {
+			    /* no change ... */
+			    if (wflag) {
+				pmsprintf(mess, sizeof(mess), "Global zoneinfo (%s): No change", inarch.label.zoneinfo);
+				yywarn(mess);
+			    }
+			    free($3);
+			}
+			else {
+			    global.zoneinfo = $3;
+			    global.flags |= GLOBAL_CHANGE_ZONEINFO;
+			}
+		    }
+		| TOK_FEATURES TOK_ASSIGN feature_bits
+		    {
+			if (global.flags & GLOBAL_CHANGE_FEATURES) {
+			    pmsprintf(mess, sizeof(mess), "Duplicate global features clause");
+			    yyerror(mess);
+			}
+			if (outarch.version < PM_LOG_VERS03) {
+			    pmsprintf(mess, sizeof(mess), "Global features clause requires output archive version of 3 or greater");
+			    yyerror(mess);
+			}
+			if (inarch.label.features == $3) {
+			    /* no change ... */
+			    if (wflag) {
+				pmsprintf(mess, sizeof(mess), "Global features (%d): No change", inarch.label.features);
 				yywarn(mess);
 			    }
 			}
 			else {
-			    strncpy(global.tz, $3, sizeof(global.tz)-1);
-			    global.flags |= GLOBAL_CHANGE_TZ;
+			    global.features = $3;
+			    global.flags |= GLOBAL_CHANGE_FEATURES;
 			}
-			free($3);
 		    }
 		| TOK_TIME TOK_ASSIGN signtime
 		    {
@@ -954,7 +1008,7 @@ globalopt	: TOK_HOSTNAME TOK_ASSIGN hname
 			    pmsprintf(mess, sizeof(mess), "Duplicate global time clause");
 			    yyerror(mess);
 			}
-			if (global.time.tv_sec == 0 && global.time.tv_usec == 0) {
+			if (global.time.sec == 0 && global.time.nsec == 0) {
 			    /* no change ... */
 			    if (wflag) {
 				pmsprintf(mess, sizeof(mess), "Global time: No change");
@@ -974,14 +1028,34 @@ globalopt	: TOK_HOSTNAME TOK_ASSIGN hname
 			pmsprintf(mess, sizeof(mess), "Expecting -> in hostname clause");
 			yyerror(mess);
 		    }
-		| TOK_TZ TOK_ASSIGN
+		| TOK_TIMEZONE TOK_ASSIGN
 		    {
-			pmsprintf(mess, sizeof(mess), "Expecting timezone string in tz clause");
+			pmsprintf(mess, sizeof(mess), "Expecting timezone string in timezone clause");
 			yyerror(mess);
 		    }
-		| TOK_TZ
+		| TOK_TIMEZONE
 		    {
-			pmsprintf(mess, sizeof(mess), "Expecting -> in tz clause");
+			pmsprintf(mess, sizeof(mess), "Expecting -> in timezone clause");
+			yyerror(mess);
+		    }
+		| TOK_ZONEINFO TOK_ASSIGN
+		    {
+			pmsprintf(mess, sizeof(mess), "Expecting zoneinfo string in zoneinfo clause");
+			yyerror(mess);
+		    }
+		| TOK_ZONEINFO
+		    {
+			pmsprintf(mess, sizeof(mess), "Expecting -> in zoneinfo clause");
+			yyerror(mess);
+		    }
+		| TOK_FEATURES TOK_ASSIGN
+		    {
+			pmsprintf(mess, sizeof(mess), "Expecting features value in features clause");
+			yyerror(mess);
+		    }
+		| TOK_FEATURES
+		    {
+			pmsprintf(mess, sizeof(mess), "Expecting -> in features clause");
 			yyerror(mess);
 		    }
 		| TOK_TIME TOK_ASSIGN
@@ -995,6 +1069,58 @@ globalopt	: TOK_HOSTNAME TOK_ASSIGN hname
 			yyerror(mess);
 		    }
 		;
+
+feature_bits	: TOK_NUMBER
+		    {
+			char	*q;
+			$$ = (unsigned int)strtoul($1, &q, 10);
+			free($1);
+		    }
+		| TOK_BITS TOK_LPAREN bits_list TOK_RPAREN
+		    {
+			$$ = $3;
+		    }
+		| TOK_BITS TOK_LPAREN bits_list
+		    {
+			pmsprintf(mess, sizeof(mess), "Expecting ) after \"bits(\" in features clause");
+			yyerror(mess);
+		    }
+		| TOK_BITS TOK_LPAREN
+		    {
+			pmsprintf(mess, sizeof(mess), "Expecting list of bit numbers after \"bits(\" in features clause");
+			yyerror(mess);
+		    }
+		| TOK_BITS
+		    {
+			pmsprintf(mess, sizeof(mess), "Expecting ( after \"bits\" in features clause");
+			yyerror(mess);
+		    }
+		;
+
+bits_list	: TOK_NUMBER
+		    {
+			int	b;
+			b = atoi($1);
+			if (b < 0 || b > 31) {
+			    pmsprintf(mess, sizeof(mess), "Bit \"%s\" not in the range 0..31", $1);
+			    yyerror(mess);
+			}
+			$$ = (unsigned int)1 << b;
+			free($1);
+		    }
+		| bits_list TOK_COMMA TOK_NUMBER
+		    {
+			int	b;
+			b = atoi($3);
+			if (b < 0 || b > 31) {
+			    pmsprintf(mess, sizeof(mess), "Bit \"%s\" not in the range 0..31", $3);
+			    yyerror(mess);
+			}
+			$$ = (unsigned int)$1 | ((unsigned int)1 << b);
+			free($3);
+		    }
+		;
+
 
 	/*
 	 * ambiguity in lexical scanner ... handle here
@@ -1040,7 +1166,7 @@ float		: TOK_FLOAT
 		;
 
 signtime	: TOK_PLUS time
-		| TOK_MINUS time { global.time.tv_sec = -global.time.tv_sec; }
+		| TOK_MINUS time { global.time.sec = -global.time.sec; }
 		| time
 		;
 
@@ -1054,8 +1180,8 @@ time		: number TOK_COLON number TOK_COLON float	/* HH:MM:SS.d.. format */
 			    pmsprintf(mess, sizeof(mess), "Seconds (%.6f) in time clause more than 59", $5);
 			    yywarn(mess);
 			}
-			global.time.tv_sec = $1 * 3600 + $3 * 60 + (int)$5;
-			global.time.tv_usec = (int)(1000000*(($5 - (int)$5))+0.5);
+			global.time.sec = $1 * 3600 + $3 * 60 + (int)$5;
+			global.time.nsec = (int)(1000000000*(($5 - (int)$5))+0.5);
 		    }
 		| number TOK_COLON number TOK_COLON number	/* HH:MM:SS format */
 		    { 
@@ -1067,7 +1193,7 @@ time		: number TOK_COLON number TOK_COLON float	/* HH:MM:SS.d.. format */
 			    pmsprintf(mess, sizeof(mess), "Seconds (%d) in time clause more than 59", $5);
 			    yywarn(mess);
 			}
-			global.time.tv_sec = $1 * 3600 + $3 * 60 + $5;
+			global.time.sec = $1 * 3600 + $3 * 60 + $5;
 		    }
 		| number TOK_COLON float		/* MM:SS.d.. format */
 		    { 
@@ -1079,8 +1205,8 @@ time		: number TOK_COLON number TOK_COLON float	/* HH:MM:SS.d.. format */
 			    pmsprintf(mess, sizeof(mess), "Seconds (%.6f) in time clause more than 59", $3);
 			    yywarn(mess);
 			}
-			global.time.tv_sec = $1 * 60 + (int)$3;
-			global.time.tv_usec = (int)(1000000*(($3 - (int)$3))+0.5);
+			global.time.sec = $1 * 60 + (int)$3;
+			global.time.nsec = (int)(1000000000*(($3 - (int)$3))+0.5);
 		    }
 		| number TOK_COLON number		/* MM:SS format */
 		    { 
@@ -1092,7 +1218,7 @@ time		: number TOK_COLON number TOK_COLON float	/* HH:MM:SS.d.. format */
 			    pmsprintf(mess, sizeof(mess), "Seconds (%d) in time clause more than 59", $3);
 			    yywarn(mess);
 			}
-			global.time.tv_sec = $1 * 60 + $3;
+			global.time.sec = $1 * 60 + $3;
 		    }
 		| float			/* SS.d.. format */
 		    {
@@ -1100,8 +1226,8 @@ time		: number TOK_COLON number TOK_COLON float	/* HH:MM:SS.d.. format */
 			    pmsprintf(mess, sizeof(mess), "Seconds (%.6f) in time clause more than 59", $1);
 			    yywarn(mess);
 			}
-			global.time.tv_sec = (int)$1;
-			global.time.tv_usec = (int)(1000000*(($1 - (int)$1))+0.5);
+			global.time.sec = (int)$1;
+			global.time.nsec = (int)(1000000000*(($1 - (int)$1))+0.5);
 		    }
 		| number		/* SS format */
 		    {
@@ -1109,8 +1235,8 @@ time		: number TOK_COLON number TOK_COLON float	/* HH:MM:SS.d.. format */
 			    pmsprintf(mess, sizeof(mess), "Seconds (%d) in time clause more than 59", $1);
 			    yywarn(mess);
 			}
-			global.time.tv_sec = $1;
-			global.time.tv_usec = 0;
+			global.time.sec = $1;
+			global.time.nsec = 0;
 		    }
 		;
 
@@ -1131,7 +1257,7 @@ indomspec	: TOK_INDOM indom_int
      *	     within libpcp.
      */
 			    PM_UNLOCK(ctxp->c_lock);
-			    hcp = &ctxp->c_archctl->ac_log->l_hashindom;
+			    hcp = &ctxp->c_archctl->ac_log->hashindom;
 			    star_domain = pmInDom_domain($2);
 			    for (node = __pmHashWalk(hcp, PM_HASH_WALK_START);
 				 node != NULL;
@@ -1321,7 +1447,7 @@ metricspec	: TOK_METRIC pmid_or_name
      *	     within libpcp.
      */
 			    PM_UNLOCK(ctxp->c_lock);
-			    hcp = &ctxp->c_archctl->ac_log->l_hashpmid;
+			    hcp = &ctxp->c_archctl->ac_log->hashpmid;
 			    star_domain = pmID_domain($2);
 			    if (current_star_metric == 1)
 				star_cluster = pmID_cluster($2);
@@ -1686,7 +1812,7 @@ metricopt	: TOK_PMID TOK_ASSIGN pmid_int
 		| TOK_DELETE
 		    {
 			metricspec_t	*mp;
-			for (mp = walk_metric(W_START, METRIC_DELETE, "delete", 0); mp != NULL; mp = walk_metric(W_NEXT, METRIC_DELETE, "delete", 0)) {
+			for (mp = walk_metric(W_START, METRIC_DELETE, "delete", 1); mp != NULL; mp = walk_metric(W_NEXT, METRIC_DELETE, "delete", 0)) {
 			    mp->flags |= METRIC_DELETE;
 			}
 		    }
@@ -1829,7 +1955,7 @@ textmetricspec	: TOK_METRIC pmid_or_name opttexttypes opttextvalue
 
 			    /* We're looking for text of the specified type(s) for metric(s). */
 			    target_types = PM_TEXT_PMID | $3;
-			    hcp1 = &ctxp->c_archctl->ac_log->l_hashtext;
+			    hcp1 = &ctxp->c_archctl->ac_log->hashtext;
 			    for (node1 = __pmHashWalk(hcp1, PM_HASH_WALK_START);
 				 node1 != NULL;
 				 node1 = __pmHashWalk(hcp1, PM_HASH_WALK_NEXT)) {
@@ -2056,7 +2182,7 @@ textindomspec	: TOK_INDOM indom_int opttexttypes opttextvalue
 
 			    /* We're looking for text of the specified type(s) for indom(s). */
 			    target_types = PM_TEXT_INDOM | $3;
-			    hcp1 = &ctxp->c_archctl->ac_log->l_hashtext;
+			    hcp1 = &ctxp->c_archctl->ac_log->hashtext;
 			    for (node1 = __pmHashWalk(hcp1, PM_HASH_WALK_START);
 				 node1 != NULL;
 				 node1 = __pmHashWalk(hcp1, PM_HASH_WALK_NEXT)) {
@@ -2223,7 +2349,7 @@ labelcontextspec	: TOK_CONTEXT optlabeldetails
 			
 			/* We're looking for context labels. */
 			current_labelspec = NULL;
-			hcp1 = &ctxp->c_archctl->ac_log->l_hashlabels;
+			hcp1 = &ctxp->c_archctl->ac_log->hashlabels;
 			for (node1 = __pmHashWalk(hcp1, PM_HASH_WALK_START);
 			     node1 != NULL;
 			     node1 = __pmHashWalk(hcp1, PM_HASH_WALK_NEXT)) {
@@ -2423,7 +2549,7 @@ labeldomainspec	: TOK_DOMAIN pmid_domain optlabeldetails
 			current_label_id = $2;
 			    
 			/* We're looking for domain labels. */
-			hcp1 = &ctxp->c_archctl->ac_log->l_hashlabels;
+			hcp1 = &ctxp->c_archctl->ac_log->hashlabels;
 			for (node1 = __pmHashWalk(hcp1, PM_HASH_WALK_START);
 			     node1 != NULL;
 			     node1 = __pmHashWalk(hcp1, PM_HASH_WALK_NEXT)) {
@@ -2607,7 +2733,7 @@ labelclusterspec	: TOK_CLUSTER pmid_cluster optlabeldetails
 			}
 
 			/* We're looking for cluster labels. */
-			hcp1 = &ctxp->c_archctl->ac_log->l_hashlabels;
+			hcp1 = &ctxp->c_archctl->ac_log->hashlabels;
 			for (node1 = __pmHashWalk(hcp1, PM_HASH_WALK_START);
 			     node1 != NULL;
 			     node1 = __pmHashWalk(hcp1, PM_HASH_WALK_NEXT)) {
@@ -2834,7 +2960,7 @@ labelitemspec	: TOK_ITEM pmid_or_name optlabeldetails
 			    }
 
 			    /* We're looking for item labels. */
-			    hcp1 = &ctxp->c_archctl->ac_log->l_hashlabels;
+			    hcp1 = &ctxp->c_archctl->ac_log->hashlabels;
 			    for (node1 = __pmHashWalk(hcp1, PM_HASH_WALK_START);
 				 node1 != NULL;
 				 node1 = __pmHashWalk(hcp1, PM_HASH_WALK_NEXT)) {
@@ -3020,7 +3146,7 @@ labelindomspec	: TOK_INDOM indom_int optlabeldetails
 			    }
 
 			    /* We're looking for label sets for indom(s). */
-			    hcp1 = &ctxp->c_archctl->ac_log->l_hashlabels;
+			    hcp1 = &ctxp->c_archctl->ac_log->hashlabels;
 			    for (node1 = __pmHashWalk(hcp1, PM_HASH_WALK_START);
 				 node1 != NULL;
 				 node1 = __pmHashWalk(hcp1, PM_HASH_WALK_NEXT)) {
@@ -3201,7 +3327,7 @@ labelinstancesspec	: TOK_INSTANCES indom_int optinstancelabeldetails
 			    }
 
 			    /* We're looking for label sets for the instances of the indom(s). */
-			    hcp1 = &ctxp->c_archctl->ac_log->l_hashlabels;
+			    hcp1 = &ctxp->c_archctl->ac_log->hashlabels;
 			    for (node1 = __pmHashWalk(hcp1, PM_HASH_WALK_START);
 				 node1 != NULL;
 				 node1 = __pmHashWalk(hcp1, PM_HASH_WALK_NEXT)) {

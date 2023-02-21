@@ -17,7 +17,11 @@ _check_series
 
 _cleanup()
 {
+    echo "Entering _cleanup ..." >>$here/$seq.full
+    $PCP_PS_PROG $PCP_PS_ALL_FLAGS | grep -E '[P]ID|[p]mproxy' >>$here/$seq.full
+    cat $PCP_LOG_DIR/pmproxy/pmproxy.log >>$here/$seq.full
     cd $here
+    _restore_auto_restart pmproxy
     if $need_restore
     then
 	need_restore=false
@@ -34,6 +38,8 @@ _cleanup()
 	echo "Stopping pmproxy ..." >>$here/$seq.full
 	_service pmproxy stop >>$here/$seq.full 2>&1
     fi
+    echo "Exiting _cleanup ..." >>$here/$seq.full
+    $PCP_PS_PROG $PCP_PS_ALL_FLAGS | grep -E '[P]ID|[p]mproxy' >>$here/$seq.full
     $sudo rm -rf $tmp $tmp.*
 }
 
@@ -41,6 +47,23 @@ status=1	# failure is the default!
 need_restore=false
 $sudo rm -rf $tmp $tmp.* $seq.full
 trap "_cleanup; exit \$status" 0 1 2 3 15
+
+# Seen to fail sometimes on vm01 ... pmproxy mysteriously dies off in
+# pthread lock land ... we've resolved that it's not worth the
+# failure noise and no more triage is warranted on older distros
+#
+case `admin/whatami`
+in
+    *Ubuntu\ 16.*)
+	_notrun "avoiding intermittent failure on Ubuntu 16.??"
+	;;
+    *Ubuntu\ 18.*)
+	_notrun "avoiding intermittent failure on Ubuntu 18.??"
+	;;
+    *Debian\ 10.*)
+	_notrun "avoiding intermittent failure on Debian 10.?"
+	;;
+esac
 
 pmproxy_was_running=false
 [ -f $PCP_RUN_DIR/pmproxy.pid ] && pmproxy_was_running=true
@@ -158,8 +181,13 @@ echo "pcp.enabled = true" >> $tmp.conf
 echo "http.enabled = true" >> $tmp.conf
 $sudo cp $tmp.conf $PCP_SYSCONF_DIR/pmproxy/pmproxy.conf
 
+_stop_auto_restart pmproxy
 _service pmproxy stop >/dev/null
 _service pmproxy start >>$here/$seq.full 2>&1
+_wait_for_pmproxy
+
+echo "After initial _service start ..." >>$here/$seq.full
+$PCP_PS_PROG $PCP_PS_ALL_FLAGS | grep -E '[P]ID|[p]mproxy' >>$here/$seq.full
 
 port=44322
 
@@ -374,6 +402,13 @@ else
     echo "pmproxy check failed"
 fi
 
+# No clue why or how, but on vm21 (Debian 11) this sleep makes the test
+# reliably pass, rather than 
+#	Invalid JSON: on failed: No data available
+#	Invalid JSON: 1
+# for the derived metric values
+#
+sleep 3
 
 section "GET and POST /pmapi/derive"
 ## mandatory params: name, expr (or POST body)

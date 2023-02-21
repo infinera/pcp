@@ -12,7 +12,7 @@ typedef struct value {
     struct value	*next;		/* next for this metric */
     int			inst;		/* instance id */
     pmAtomValue		value;		/* last output value */
-    struct timeval	timestamp;	/* time of last output value */
+    __pmTimestamp	timestamp;	/* time of last output value */
     /*
      * last interval value interpretation ... set in doscan() and used in
      * rewrite()
@@ -53,7 +53,7 @@ typedef struct {
 #define MODE_REWRITE	1
 #define MODE_SKIP	2
 
-extern pmTimeval	current;	/* most recent timestamp overall */
+extern __pmTimestamp	current;	/* most recent timestamp overall */
 extern char		*iname;		/* name of input archive */
 extern pmLogLabel	ilabel;		/* input archive label */
 extern int		numpmid;	/* all metrics from the input archive */
@@ -62,7 +62,6 @@ extern char		**namelist;	/* ditto */
 extern metric_t		*metriclist;	/* ditto */
 extern __pmArchCtl	archctl;	/* output archive control */
 extern __pmLogCtl	logctl;		/* output log control */
-extern double		targ;		/* -t arg - interval b/n output samples */
 extern int		sarg;		/* -s arg - finish after X samples */
 extern char		*Sarg;		/* -S arg - window start */
 extern char		*Targ;		/* -T arg - window end */
@@ -71,16 +70,13 @@ extern int		varg;		/* -v arg - switch log vol every X */
 extern int		zarg;		/* -z arg - use archive timezone */
 extern char		*tz;		/* -Z arg - use timezone from user */
 
-
-extern int	_pmLogGet(__pmLogCtl *, int, __pmPDU **);
-extern int	_pmLogPut(__pmFILE *, __pmPDU *);
 extern void	newlabel(void);
 extern void	writelabel(void);
-extern void	newvolume(char *, pmTimeval *);
+extern void	newvolume(char *, __pmTimestamp *);
 
-extern pmResult *rewrite(pmResult *);
+extern __pmResult *rewrite(__pmResult *);
 extern void	rewrite_free(void);
 
 extern void	dometric(const char *);
-extern void	doindom(pmResult *);
-extern void	doscan(struct timeval *);
+extern int	doindom(__pmResult *);
+extern void	doscan(__pmTimestamp *);

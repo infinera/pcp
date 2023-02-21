@@ -19,7 +19,7 @@
 \f3pmie_daily\f1 \- administration of the Performance Co-Pilot inference engine
 .SH SYNOPSIS
 .B $PCP_BINADM_DIR/pmie_check
-[\f3\-CNsTV?\f1]
+[\f3\-CNPpsTV?\f1]
 [\f3\-c\f1 \f2control\f1]
 [\f3\-l\f1 \f2logfile\f1]
 .br
@@ -148,6 +148,31 @@ Use of this option provides the reverse
 functionality, allowing the set of
 .B pmie
 processes to be cleanly shutdown.
+.TP
+\fB\-p\fR, \fB\-\-skip\-primary\fR
+If this option is specified for
+.B pmie_check
+then any line from the control files for the
+.I primary
+.B pmie
+will be ignored.
+This option is intended for environments where some system daemon,
+like
+.BR systemd (1),
+is responsible for controlling (starting, stopping, restarting, etc.) the
+.I primary
+.BR pmie .
+.TP
+\fB\-P\fR, \fB\-\-only\-primary\fR
+If this option is specified for
+.B pmie_check
+then only the primary pmie entry in the control files will be processed.
+This is the logical opposite of the \fB\-p\fP option described above
+and is intended for use by RC scripts that start only the primary pmie,
+such as the
+.B pmie.service
+unit.
+The \fB\-p\fP and \fB\-P\fP options to \fBpmie_check\fP are mutually exclusive.
 .TP
 \fB\-T\fR, \fB\-\-terse\fR
 This option to
@@ -381,6 +406,42 @@ no
 entries are needed as the timer mechanism provided by
 .B systemd
 is used instead.
+.PP
+The
+.BR pmiectl (1)
+utility may invoke
+.B pmie_check
+using the
+.BR sudo (1)
+command to run it under the $PCP_USER ``pcp'' account.
+If
+.B sudo
+is configured with the non-default
+.I requiretty
+option (see below),
+.B pmie_check
+may fail to run due to not having a tty configured.
+This issue can be resolved by adding a second line
+(expand $PCP_BINADM_DIR according to your platform)
+to the
+.I /etc/sudoers
+configuration file as follows:
+.P
+.ft CW
+.nf
+.in +0.5i
+Defaults requiretty
+Defaults!$PCP_BINADM_DIR/pmie_check !requiretty
+.in
+.fi
+.ft 1
+.P
+Note that the unprivileged PCP account under which these
+commands run uses
+.I /sbin/nologin
+as the shell, so the
+.I requiretty
+option is ineffective here and safe to disable in this way.
 .SH FILES
 .TP 5
 .I $PCP_PMIECONTROL_PATH
@@ -404,13 +465,28 @@ mechanism.
 .TP
 .I $PCP_VAR_DIR/config/pmie/config.default
 default
-.B pmlogger
+.B pmie
 configuration file location for a localhost inference engine, typically
 generated automatically by
 .BR pmieconf (1).
 .TP
+.I $PCP_LOG_DIR/pmie/pmie_check.log
+default location for the
+.B pmie_check
+log file.
+When run as a daemon service, if the
+.B pmie
+process failed to start or exited early, there may be error messages
+in this file, particularly if the daemon
+could not open it's own log file.
+.TP
+.I $PCP_LOG_DIR/pmie/pmie_daily.log
+default location for error messages generated during the daily
+.B pmie
+service maintenance operations.
+.TP
 .I $PCP_LOG_DIR/pmie/<hostname>
-default location for the pmie log file for the host
+default directory location for the pmie log file for the host
 .I hostname
 .TP
 .I $PCP_LOG_DIR/pmie/<hostname>/lock

@@ -10,8 +10,6 @@ Logs
 .census
 .DS_Store
 .gitcensus
-.bintrayrc
-.bintrayrc.*
 .vscode
 .qmake.stash
 autom4te.cache
@@ -36,6 +34,8 @@ moc_*.cpp
 qrc_*.cpp
 debug
 release
+*.Debug
+*.Release
 Makefile
 VERSION.pcp.daily
 .vagrant

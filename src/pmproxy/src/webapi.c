@@ -483,7 +483,7 @@ on_pmwebapi_scrape(sds context, pmWebScrape *scrape, void *arg)
     long long		milliseconds;
     char		pmidstr[20], indomstr[20];
     sds			name = NULL, semantics = NULL, labels = NULL;
-    sds			s, result, quoted = NULL;
+    sds			s, result;
 
     pmwebapi_set_context(baton, context);
     if (open_metrics_type_check(metric->type) < 0)
@@ -525,26 +525,16 @@ value:
 	labels = instance->labels;
     if (labels == NULL)
 	labels = metric->labels;
+    if (labels)
+	result = sdscatfmt(result, "%S{%S}", name, labels);
+    else /* no labels */
+	result = sdscatsds(result, name);
 
-    result = sdscatsds(result, name);
-    if (metric->indom != PM_INDOM_NULL || labels) {
-	if (metric->indom != PM_INDOM_NULL) {
-	    quoted = sdscatrepr(sdsempty(), instance->name, sdslen(instance->name));
-	    result = sdscatfmt(result, "{instname=%S,instid=\"%u\"",
-					quoted, instance->inst);
-	    sdsfree(quoted);
-	    if (labels)
-		result = sdscatfmt(result, ",%S} %S", labels, value->value);
-	    else
-		result = sdscatfmt(result, "} %S", value->value);
-	} else {
-	    result = sdscatfmt(result, "{%S} %S", labels, value->value);
-	}
-    } else {
-	result = sdscatfmt(result, " %S", value->value);
-    }
+    /* append the value */
+    result = sdscatfmt(result, " %S", value->value);
 
     if (baton->times) {
+	/* append the timestamp string */
 	milliseconds = (scrape->seconds * 1000) + (scrape->nanoseconds / 1000);
 	result = sdscatfmt(result, " %I\n", milliseconds);
     } else {
@@ -591,9 +581,9 @@ on_pmwebapi_check(sds context, pmWebAccess *access,
     struct client	*client = (struct client *)baton->client;
 
     if (pmDebugOptions.auth || pmDebugOptions.series)
-	fprintf(stderr, "%s: client=%p (ctx=%s) user=%s pass=%s realm=%s\n",
+	fprintf(stderr, "%s: client=%p (ctx=%s) user=%s pass=*** realm=%s\n",
 		"on_pmwebapi_check", client, context,
-		access->username, access->password, access->realm);
+		access->username, access->realm);
 
     /* Does this context require username/password authentication? */
     if (access->username != NULL ||
@@ -620,9 +610,9 @@ on_pmwebapi_done(sds context, int status, sds message, void *arg)
 {
     pmWebGroupBaton	*baton = (pmWebGroupBaton *)arg;
     struct client	*client = (struct client *)baton->client;
-    http_options	options = baton->options;
-    http_flags		flags = client->u.http.flags;
-    http_code		code;
+    http_options_t	options = baton->options;
+    http_flags_t	flags = client->u.http.flags;
+    http_code_t		code;
     sds			quoted, msg;
 
     if (pmDebugOptions.series)

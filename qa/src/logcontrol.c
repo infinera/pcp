@@ -32,10 +32,10 @@ main(int argc, char **argv)
     char	*state_arg;
     int		state;
     const char	**name;
-    pmResult	*request;
+    __pmResult	*request;
     pmDesc	desc;
     int		inst;
-    pmResult	*status;
+    __pmResult	*status;
     int		delta = 5000;
 
     pmSetProgname(argv[0]);
@@ -151,9 +151,18 @@ USAGE:
 	exit(1);
     }
 
-    if ((sts = __pmConnectLogger(host, &pid, &port)) < 0) {
-	printf("%s: Cannot connect to pmlogger (%d) on host \"%s\": %s\n",
-	    pmGetProgname(), pid, host, pmErrStr(sts));
+    /*
+     * be prepared to try 10 times here ... pmlogger's  pmlc port maybe busy
+     */
+    for (i = 0; i < 10; i++) {
+	struct timespec delay = { 0, 100000000 };	/* 0.1 sec */
+	sts = __pmConnectLogger(host, &pid, &port);
+	if (sts >= 0)
+	    break;
+	(void)nanosleep(&delay, NULL);
+    }
+    if (sts < 0) {
+	printf("%s: Cannot connect to pmlogger (%d) on host \"%s\": %s\n", pmGetProgname(), pid, host, pmErrStr(sts));
 	exit(1);
     }
     ctlport = sts;
@@ -192,7 +201,7 @@ USAGE:
 	}
     }
 
-    if ((sts = pmFetch(numpmid, pmidlist, &request)) < 0) {
+    if ((sts = __pmFetch(NULL, numpmid, pmidlist, &request)) < 0) {
 	printf("pmFetch: %s\n", pmErrStr(sts));
 	exit(1);
     }
@@ -244,8 +253,8 @@ USAGE:
     }
 
     free(pmidlist);
-    pmFreeResult(request);
-    pmFreeResult(status);
+    __pmFreeResult(request);
+    __pmFreeResult(status);
     if ((sts = pmWhichContext()) < 0) {
 	printf("%s: pmWhichContext: %s\n", pmGetProgname(), pmErrStr(sts));
 	goto done;

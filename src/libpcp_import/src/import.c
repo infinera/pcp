@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2013-2020 Red Hat.
+ * Copyright (c) 2013-2022 Red Hat.
  * Copyright (c) 2010 Ken McDonell.  All Rights Reserved.
  * 
  * This library is free software; you can redistribute it and/or modify it
@@ -24,17 +24,6 @@ static pmi_context *context_tab;
 static int ncontext;
 static pmi_context *current;
 
-static void
-printstamp(FILE *f, const struct timeval *tp)
-{
-    struct tm	tmp;
-    time_t	now;
-
-    now = (time_t)tp->tv_sec;
-    pmLocaltime(&now, &tmp);
-    fprintf(f, "%4d-%02d-%02d %02d:%02d:%02d.%06d", 1900+tmp.tm_year, tmp.tm_mon, tmp.tm_mday, tmp.tm_hour, tmp.tm_min, tmp.tm_sec, (int)(tp->tv_usec));
-}
- 
 
 void
 pmiDump(void)
@@ -176,7 +165,7 @@ pmiDump(void)
     if (current->result == NULL)
 	fprintf(f, "  No pmResult.\n");
     else
-	__pmDumpResult(f, current->result);
+	__pmPrintResult(f, current->result);
 }
 
 pmUnits
@@ -284,7 +273,7 @@ pmiErrStr_r(int code, char *buf, int buflen)
 	    msg = "Illegal label type";
 	    break;
 	case PMI_ERR_BADLABELID:
-	    msg = "Illegal label id";
+	    msg = "Illegal label identifier";
 	    break;
 	case PMI_ERR_BADLABELINSTANCE:
 	    msg = "Illegal label instance";
@@ -297,6 +286,9 @@ pmiErrStr_r(int code, char *buf, int buflen)
 	    break;
 	case PMI_ERR_ADDLABELERROR:
 	    msg = "Error adding label";
+	    break;
+	case PMI_ERR_BADVERSION:
+	    msg = "Illegal log version";
 	    break;
 	default:
 	    return pmErrStr_r(code, buf, buflen);
@@ -311,7 +303,13 @@ pmiStart(const char *archive, int inherit)
 {
     pmi_context	*old_current;
     char	*np;
+    int		archive_version;
     int		c = current - context_tab;
+
+    if ((np = pmGetOptionalConfig("PCP_ARCHIVE_VERSION")) != NULL)
+	archive_version = atoi(np);
+    else
+	archive_version = PM_LOG_VERS02; /* safe fallback */
 
     ncontext++;
     context_tab = (pmi_context *)realloc(context_tab, ncontext*sizeof(context_tab[0]));
@@ -322,6 +320,7 @@ pmiStart(const char *archive, int inherit)
     current = &context_tab[ncontext-1];
 
     current->state = CONTEXT_START;
+    current->version = archive_version;
     current->archive = strdup(archive);
     if (current->archive == NULL) {
 	pmNoMem("pmiStart", strlen(archive)+1, PM_FATAL_ERR);
@@ -462,7 +461,8 @@ pmiStart(const char *archive, int inherit)
 	current->text = NULL;
 	current->nlabel = 0;
 	current->label = NULL;
-	current->last_stamp.tv_sec = current->last_stamp.tv_usec = 0;
+	current->last_stamp.sec = 0;
+	current->last_stamp.nsec = 0;
     }
     return ncontext;
 }
@@ -494,9 +494,12 @@ pmiSetHostname(const char *value)
 	return PM_ERR_NOCONTEXT;
     current->hostname = strdup(value);
     if (current->hostname == NULL) {
-	pmNoMem("pmiSetHostname", strlen(value)+1, PM_FATAL_ERR);
+	pmNoMem("pmiSetHostname", strlen(value)+1, PM_RECOV_ERR);
+	current->last_sts = -ENOMEM;
+    } else {
+	current->last_sts = 0;
     }
-    return current->last_sts = 0;
+    return current->last_sts;
 }
 
 int
@@ -506,9 +509,26 @@ pmiSetTimezone(const char *value)
 	return PM_ERR_NOCONTEXT;
     current->timezone = strdup(value);
     if (current->timezone == NULL) {
-	pmNoMem("pmiSetTimezone", strlen(value)+1, PM_FATAL_ERR);
+	pmNoMem("pmiSetTimezone", strlen(value)+1, PM_RECOV_ERR);
+	current->last_sts = -ENOMEM;
+    } else {
+	current->last_sts = 0;
     }
-    return current->last_sts = 0;
+    return current->last_sts;
+}
+
+int
+pmiSetVersion(int version)
+{
+    if (current == NULL)
+	return PM_ERR_NOCONTEXT;
+    if (version != PM_LOG_VERS02 && version != PM_LOG_VERS03) {
+	current->last_sts = PMI_ERR_BADVERSION;
+    } else {
+	current->version = version;
+	current->last_sts = 0;
+    }
+    return current->last_sts;
 }
 
 static int
@@ -593,29 +613,33 @@ pmiAddMetric(const char *name, pmID pmid, int type, pmInDom indom, int sem, pmUn
 	    return current->last_sts = PMI_ERR_BADSEM;
     }
 
-    current->nmetric++;
-    size = current->nmetric * sizeof(pmi_metric);
-    current->metric = (pmi_metric *)realloc(current->metric, size);
-    if (current->metric == NULL) {
-	pmNoMem("pmiAddMetric: pmi_metric", size, PM_FATAL_ERR);
+    /* do not attempt a too-large allocation from bad input */
+    if (current->nmetric >= LONG_MAX / sizeof(pmi_metric) - 1)
+	return -ENOMEM;
+
+    size = (current->nmetric + 1) * sizeof(pmi_metric);
+    mp = (pmi_metric *)realloc(current->metric, size);
+    if (mp == NULL) {
+	pmNoMem("pmiAddMetric: pmi_metric", size, PM_RECOV_ERR);
+	return current->last_sts = -ENOMEM;
     }
-    mp = &current->metric[current->nmetric-1];
+    current->metric = mp;
+    mp = &current->metric[current->nmetric];
     if (pmid != PM_ID_NULL) {
 	mp->pmid = pmid;
     } else {
 	/* choose a PMID on behalf of the caller - check boundaries first */
-	item = cluster = current->nmetric;
-	if (item >= (1<<22)) {	/* enough room for unique item:cluster? */
-	    current->nmetric--;
+	item = cluster = current->nmetric + 1;
+	if (item >= (1<<22))	/* enough room for unique item:cluster? */
 	    return current->last_sts = PMI_ERR_DUPMETRICID;	/* wrap */
-	}
 	item %= (1<<10);
 	cluster >>= 10;
 	mp->pmid = pmID_build(PMI_DOMAIN, cluster, item);
     }
     mp->name = strdup(name);
     if (mp->name == NULL) {
-	pmNoMem("pmiAddMetric: name", strlen(name)+1, PM_FATAL_ERR);
+	pmNoMem("pmiAddMetric: name", strlen(name)+1, PM_RECOV_ERR);
+	return current->last_sts = -ENOMEM;
     }
     mp->desc.pmid = mp->pmid;
     mp->desc.type = type;
@@ -623,6 +647,7 @@ pmiAddMetric(const char *name, pmID pmid, int type, pmInDom indom, int sem, pmUn
     mp->desc.sem = sem;
     mp->desc.units = units;
     mp->meta_done = 0;
+    current->nmetric++;
 
     return current->last_sts = 0;
 }
@@ -1027,15 +1052,15 @@ text_pending(void)
 }
 
 static int
-check_timestamp(const struct timeval *timestamp)
+check_timestamp(const __pmTimestamp *timestamp)
 {
-    if (timestamp->tv_sec < current->last_stamp.tv_sec ||
-        (timestamp->tv_sec == current->last_stamp.tv_sec &&
-	 timestamp->tv_usec < current->last_stamp.tv_usec)) {
+    if (timestamp->sec < current->last_stamp.sec ||
+        (timestamp->sec == current->last_stamp.sec &&
+	 timestamp->nsec < current->last_stamp.nsec)) {
 	fprintf(stderr, "Fatal Error: timestamp ");
-	printstamp(stderr, timestamp);
+	__pmPrintTimestamp(stderr, timestamp);
 	fprintf(stderr, " not greater than previous valid timestamp ");
-	printstamp(stderr, &current->last_stamp);
+	__pmPrintTimestamp(stderr, &current->last_stamp);
 	fputc('\n', stderr);
 	return PMI_ERR_BADTIMESTAMP;
     }
@@ -1043,9 +1068,8 @@ check_timestamp(const struct timeval *timestamp)
 }
 
 int
-pmiWrite(int sec, int usec)
+_pmi_write(__pmTimestamp *timestamp)
 {
-    struct timeval	timestamp;
     int			sts;
 
     if (current == NULL)
@@ -1053,23 +1077,22 @@ pmiWrite(int sec, int usec)
     if (current->result == NULL && !text_pending() && current->label == NULL)
 	return current->last_sts = PMI_ERR_NODATA;
 
-    if (sec < 0) {
-	pmtimevalNow(&timestamp);
-    }
-    else {
-	timestamp.tv_sec = sec;
-	timestamp.tv_usec = usec;
-    }
-
-    if ((sts = check_timestamp(&timestamp)) == 0) {
+    if ((sts = check_timestamp(timestamp)) == 0) {
 	/* We are guaranteed to be writing some data. */
-	current->last_stamp = timestamp;
+	current->last_stamp = *timestamp;
 
 	/* Pending results? */
 	if (current->result != NULL) {
-	    current->result->timestamp = timestamp;
+	    current->result->timestamp = *timestamp;
 	    sts = _pmi_put_result(current, current->result);
-	    pmFreeResult(current->result);
+	    /*
+	     * careful here - do not use __pmFreeResult because
+	     * we've realloc'd current->result, and we can't
+	     * call pmFreeResult(__pmOffsetResult(current->result))
+	     * because the arg is not alloc'd
+	     */
+	    __pmFreeResultValues(__pmOffsetResult(current->result));
+	    free(current->result);
 	    current->result = NULL;
 	}
 
@@ -1087,20 +1110,97 @@ pmiWrite(int sec, int usec)
     return current->last_sts = sts;
 }
 
+/* deprecated interface - not Y2038 safe - use pmiWrite2 or pmHighResWrite */
+int
+pmiWrite(int sec, int usec)
+{
+    __pmTimestamp	timestamp = { .sec = (int64_t)sec, .nsec = usec*1000 };
+
+    if (sec < 0)
+	__pmGetTimestamp(&timestamp);
+    return _pmi_write(&timestamp);
+}
+
+int
+pmiWrite2(int64_t sec, int usec)
+{
+    __pmTimestamp	timestamp = { .sec = sec, .nsec = usec * 1000 };
+
+    if (sec < 0)
+	__pmGetTimestamp(&timestamp);
+    return _pmi_write(&timestamp);
+}
+
+int
+pmiHighResWrite(int64_t sec, int nsec)
+{
+    __pmTimestamp	timestamp = { .sec = sec, .nsec = nsec};
+
+    if (sec < 0)
+	__pmGetTimestamp(&timestamp);
+    return _pmi_write(&timestamp);
+}
+
 int
 pmiPutResult(const pmResult *result)
 {
-    int		sts;
+    __pmResult	*rp;
+    int		sts, i;
 
     if (current == NULL)
 	return PM_ERR_NOCONTEXT;
 
-    current->result = (pmResult *)result;
+    /* translate to internal timestamp-independent result */
+    if ((rp = __pmAllocResult(result->numpmid)) == NULL)
+	return -ENOMEM;
+    rp->numpmid = result->numpmid;
+    rp->timestamp.sec = result->timestamp.tv_sec;
+    rp->timestamp.nsec = result->timestamp.tv_usec * 1000;
+    for (i = 0; i < rp->numpmid; i++)
+	rp->vset[i] = result->vset[i];
+
+    current->result = rp;
     if ((sts = check_timestamp(&current->result->timestamp)) == 0) {
 	sts = _pmi_put_result(current, current->result);
 	current->last_stamp = current->result->timestamp;
     }
     current->result = NULL;
+
+    /* do not free parts of the callers result structure */
+    rp->numpmid = 0;
+    __pmFreeResult(rp);
+
+    return current->last_sts = sts;
+}
+
+int
+pmiPutHighResResult(const pmHighResResult *result)
+{
+    __pmResult	*rp;
+    int		sts, i;
+
+    if (current == NULL)
+	return PM_ERR_NOCONTEXT;
+
+    /* translate to internal timestamp-independent result */
+    if ((rp = __pmAllocResult(result->numpmid)) == NULL)
+	return -ENOMEM;
+    rp->numpmid = result->numpmid;
+    rp->timestamp.sec = result->timestamp.tv_sec;
+    rp->timestamp.nsec = result->timestamp.tv_nsec;
+    for (i = 0; i < rp->numpmid; i++)
+	rp->vset[i] = result->vset[i];
+
+    current->result = rp;
+    if ((sts = check_timestamp(&current->result->timestamp)) == 0) {
+	sts = _pmi_put_result(current, current->result);
+	current->last_stamp = current->result->timestamp;
+    }
+    current->result = NULL;
+
+    /* do not free parts of the callers result structure */
+    rp->numpmid = 0;
+    __pmFreeResult(rp);
 
     return current->last_sts = sts;
 }
@@ -1108,36 +1208,18 @@ pmiPutResult(const pmResult *result)
 int
 pmiPutMark(void)
 {
-    __pmArchCtl *acp;
-    struct {
-	__pmPDU		hdr;
-	pmTimeval	timestamp;	/* when returned */
-	int		numpmid;	/* zero PMIDs to follow */
-	__pmPDU		tail;
-    } mark;
+    __pmTimestamp	*last_stamp;
+    __pmArchCtl		*acp;
+    __pmTimestamp	msec = { 0, 1000000 };		/* 1msec */
 
     if (current == NULL)
 	return PM_ERR_NOCONTEXT;
 
-    if (current->last_stamp.tv_sec == 0 && current->last_stamp.tv_usec == 0)
-	/* no earlier pmResult, no point adding a mark record */
-	return 0;
     acp = &current->archctl;
+    last_stamp = &current->last_stamp;
 
-    mark.hdr = htonl((int)sizeof(mark));
-    mark.tail = mark.hdr;
-    mark.timestamp.tv_sec = current->last_stamp.tv_sec;
-    mark.timestamp.tv_usec = current->last_stamp.tv_usec + 1000;	/* + 1msec */
-    if (mark.timestamp.tv_usec > 1000000) {
-	mark.timestamp.tv_usec -= 1000000;
-	mark.timestamp.tv_sec++;
-    }
-    mark.timestamp.tv_sec = htonl(mark.timestamp.tv_sec);
-    mark.timestamp.tv_usec = htonl(mark.timestamp.tv_usec);
-    mark.numpmid = htonl(0);
-
-    if (__pmFwrite(&mark, 1, sizeof(mark), acp->ac_mfp) != sizeof(mark))
-	return -oserror();
-
-    return 0;
+    if (last_stamp->sec == 0 && last_stamp->nsec == 0)
+	/* no earlier result, no point adding a mark record */
+	return 0;
+    return __pmLogWriteMark(acp, last_stamp, &msec);
 }

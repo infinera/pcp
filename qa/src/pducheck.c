@@ -6,6 +6,11 @@
  * Mongo PDU conversion exerciser --
  * 	+ if run standalone uses Send and Recv down its own pipe.
  *	+ if run remotely uses pdu-server at other end to echo PDUs
+ *
+ * -Dappl0
+ * 	extra info for credential PDUs
+ * -Dappl1
+ *	call __pmDumpPDUTTrace at end
  */
 
 #include <pcp/pmapi.h>
@@ -63,6 +68,13 @@ static pmDesc		desc = {
 	{ 1, -1 , 0, PM_SPACE_MBYTE, PM_TIME_HOUR, 0 }
 };
 
+static pmDesc		desclist[] = { {
+    0xdeadbeef, PM_TYPE_64, 0xface, PM_SEM_COUNTER,
+	{ 1, -1 , 0, PM_SPACE_MBYTE, PM_TIME_HOUR, 0 } }, {
+    0xfeedbabe, PM_TYPE_32, 0xcafe, PM_SEM_INSTANT,
+	{ 1, -1 , 0, PM_SPACE_KBYTE, PM_TIME_MSEC, 0 } }
+};
+
 __pmLoggerStatus	logstat;
 
 static int		timeout = TIMEOUT_DEFAULT;
@@ -92,6 +104,175 @@ foorand(void)
     return (rn[cur]);
 }
 
+int
+do_log_status(int version)
+{
+    __pmLoggerStatus	*lsp;
+    __pmPDU		*pb;
+
+    /* set ipc version */
+    if (__pmSetVersionIPC(fd[0], version) < 0 ||
+	__pmSetVersionIPC(fd[1], version) < 0) {
+	fprintf(stderr, "Error: %s: __pmSetVersionIPC(%d): %s\n", __func__, version, pmErrStr(-errno));
+	exit(1);
+    }
+    __pmFreeLogStatus(&logstat, 0);
+    logstat.start.sec = 13 * 60 * 60;	/* 13 hrs after the epoch */
+    logstat.start.nsec = 12345000;		/* and a bit */
+    logstat.last.sec = 13 * 60 * 60 + 10;
+    logstat.last.nsec = 23456000;
+    logstat.now.sec = 13 * 60 * 60 + 20;
+    logstat.now.nsec = 34567000;
+    logstat.state = PM_LOG_MAYBE;
+    logstat.vol = 1;
+    logstat.size = 2048;
+    logstat.pmcd.hostname = strdup("foo");
+    logstat.pmcd.fqdn = strdup("foo.bar.com");
+    logstat.pmcd.timezone = strdup("TZ-THERE");
+    logstat.pmcd.zoneinfo = strdup(":Australia/Melbourne");
+    logstat.pmlogger.timezone = strdup("TZ-HERE");
+    logstat.pmlogger.zoneinfo = strdup(":Australia/Perth");
+    if ((e = __pmSendLogStatus(fd[1], &logstat)) < 0) {
+	fprintf(stderr, "Error: SendLogStatus(V%d): %s\n", version, pmErrStr(e));
+	return 1;
+    }
+    else {
+	if ((e = __pmGetPDU(fd[0], ANY_SIZE, timeout, &pb)) < 0) {
+	    fprintf(stderr, "Error: RecvLogStatus(V%d): %s\n", version, pmErrStr(e));
+	    return 1;
+	}
+	else if (e == 0) {
+	    fprintf(stderr, "Error: RecvLogStatus(V%d): end-of-file!\n", version);
+	    return 1;
+	}
+	else if (e != PDU_LOG_STATUS && e != PDU_LOG_STATUS_V2) {
+	    fprintf(stderr, "Error: RecvLogStatus(V%d): %s wrong type PDU!\n", version, __pmPDUTypeStr(e));
+	    return 1;
+	}
+	else {
+	    if ((e = __pmDecodeLogStatus(pb, &lsp)) < 0) {
+		fprintf(stderr, "Error: DecodeLogStatus(V%d): %s\n", version, pmErrStr(e));
+		return 1;
+	    }
+	    else {
+		if (lsp->start.sec != logstat.start.sec)
+		    fprintf(stderr, "Botch: LogStatus(V%d): start.sec: got: %" FMT_INT64 " expect: %" FMT_INT64 "\n",
+			version, lsp->start.sec, logstat.start.sec);
+		if (lsp->start.nsec != logstat.start.nsec)
+		    fprintf(stderr, "Botch: LogStatus(V%d): start.nsec: got: %d expect: %d\n",
+			version, lsp->start.nsec, logstat.start.nsec);
+		if (lsp->last.sec != logstat.last.sec)
+		    fprintf(stderr, "Botch: LogStatus(V%d): last.sec: got: %" FMT_INT64 " expect: %" FMT_INT64 "\n",
+			version, lsp->last.sec, logstat.last.sec);
+		if (lsp->last.nsec != logstat.last.nsec)
+		    fprintf(stderr, "Botch: LogStatus(V%d): last.nsec: got: %d expect: %d\n",
+			version, lsp->last.nsec, logstat.last.nsec);
+		if (lsp->now.sec != logstat.now.sec)
+		    fprintf(stderr, "Botch: LogStatus(V%d): now.sec: got: %" FMT_INT64 " expect: %" FMT_INT64 "\n",
+			version, lsp->now.sec, logstat.now.sec);
+		if (lsp->now.nsec != logstat.now.nsec)
+		    fprintf(stderr, "Botch: LogStatus(V%d): now.nsec: got: %d expect: %d\n",
+			version, lsp->now.nsec, logstat.now.nsec);
+		if (lsp->state != logstat.state)
+		    fprintf(stderr, "Botch: LogStatus(V%d): state: got: 0x%x expect: 0x%x\n",
+			version, lsp->state, logstat.state);
+		if (lsp->vol != logstat.vol)
+		    fprintf(stderr, "Botch: LogStatus(V%d): vol: got: 0x%x expect: 0x%x\n",
+			version, lsp->vol, logstat.vol);
+		if (lsp->size != logstat.size)
+		    fprintf(stderr, "Botch: LogStatus(V%d): size: got: 0x%x expect: 0x%x\n",
+			version, (int)lsp->size, (int)logstat.size);
+		if (lsp->pmcd.hostname == NULL)
+		    fprintf(stderr, "Botch: LogStatus(V%d): pmcd.hostname: NULL\n", version);
+		else if (strcmp(lsp->pmcd.hostname, logstat.pmcd.hostname) != 0)
+		    fprintf(stderr, "Botch: LogStatus(V%d): pmcd.hostname: got: \"%s\" expect: \"%s\"\n",
+			version, lsp->pmcd.hostname, logstat.pmcd.hostname);
+		if (lsp->pmcd.fqdn == NULL)
+		    fprintf(stderr, "Botch: LogStatus(V%d): pmcd.fqdn: NULL\n", version);
+		else if (strcmp(lsp->pmcd.fqdn, logstat.pmcd.fqdn) != 0)
+		    fprintf(stderr, "Botch: LogStatus(V%d): pmcd.fqdn: got: \"%s\" expect: \"%s\"\n",
+			version, lsp->pmcd.fqdn, logstat.pmcd.fqdn);
+		if (lsp->pmcd.timezone == NULL)
+		    fprintf(stderr, "Botch: LogStatus(V%d): pmcd.timezone: NULL\n", version);
+		else if (strcmp(lsp->pmcd.timezone, logstat.pmcd.timezone) != 0)
+		    fprintf(stderr, "Botch: LogStatus(V%d): pmcd.timezone: got: \"%s\" expect: \"%s\"\n",
+			version, lsp->pmcd.timezone, logstat.pmcd.timezone);
+		if (version > LOG_PDU_VERSION2) {
+		    if (lsp->pmcd.zoneinfo == NULL)
+			fprintf(stderr, "Botch: LogStatus(V%d): pmcd.zoneinfo: NULL\n", version);
+		    else if (strcmp(lsp->pmcd.zoneinfo, logstat.pmcd.zoneinfo) != 0)
+			fprintf(stderr, "Botch: LogStatus(V%d): pmcd.zoneinfo: got: \"%s\" expect: \"%s\"\n",
+			    version, lsp->pmcd.zoneinfo, logstat.pmcd.zoneinfo);
+		}
+		if (lsp->pmlogger.timezone == NULL)
+		    fprintf(stderr, "Botch: LogStatus(V%d): pmlogger.timezone: NULL\n", version);
+		else if (strcmp(lsp->pmlogger.timezone, logstat.pmlogger.timezone) != 0)
+		    fprintf(stderr, "Botch: LogStatus(V%d): tzlogger: got: \"%s\" expect: \"%s\"\n",
+			version, lsp->pmlogger.timezone, logstat.pmlogger.timezone);
+		if (version > LOG_PDU_VERSION2) {
+		    if (lsp->pmlogger.zoneinfo == NULL)
+			fprintf(stderr, "Botch: LogStatus(V%d): pmlogger.zoneinfo: NULL\n", version);
+		    else if (strcmp(lsp->pmlogger.zoneinfo, logstat.pmlogger.zoneinfo) != 0)
+			fprintf(stderr, "Botch: LogStatus(V%d): pmlogger.zoneinfo: got: \"%s\" expect: \"%s\"\n",
+			    version, lsp->pmlogger.zoneinfo, logstat.pmlogger.zoneinfo);
+		}
+		__pmFreeLogStatus(lsp, 1);
+	    }
+	}
+    }
+
+    /* reset ipc version */
+    if (__pmSetVersionIPC(fd[0], PDU_VERSION) < 0 ||
+	__pmSetVersionIPC(fd[1], PDU_VERSION) < 0) {
+	fprintf(stderr, "Error: %s: reset __pmSetVersionIPC(%d): %s\n", __func__, PDU_VERSION, pmErrStr(-errno));
+	exit(1);
+    }
+
+    return 0;
+}
+
+static void
+compare_descs(const char *pdu, pmDesc *desc1, pmDesc *desc2, int offset)
+{
+    char	caller[32];
+
+    if (offset < 0)
+	pmsprintf(caller, sizeof(caller), "%s", pdu);
+    else
+	pmsprintf(caller, sizeof(caller), "%s[%d]", pdu, offset);
+
+    if (desc1->pmid != desc2->pmid)
+	fprintf(stderr, "Botch: %s: pmid: got: 0x%x expect: 0x%x\n",
+			caller, desc1->pmid, desc2->pmid);
+    if (desc1->type != desc2->type)
+	fprintf(stderr, "Botch: %s: type: got: %d expect: %d\n",
+			caller, desc1->type, desc2->type);
+    if (desc1->indom != desc2->indom)
+	fprintf(stderr, "Botch: %s: indom: got: 0x%x expect: 0x%x\n",
+			caller, desc1->indom, desc2->indom);
+    if (desc1->sem != desc2->sem)
+	fprintf(stderr, "Botch: %s: sem: got: %d expect: %d\n",
+			caller, desc1->sem, desc2->sem);
+    if (desc1->units.dimSpace != desc2->units.dimSpace)
+	fprintf(stderr, "Botch: %s: dimSpace: got: %d expect: %d\n",
+			caller, desc1->units.dimSpace, desc2->units.dimSpace);
+    if (desc1->units.dimTime != desc2->units.dimTime)
+	fprintf(stderr, "Botch: Desc: dimTime: got: %d expect: %d\n",
+			desc1->units.dimTime, desc2->units.dimTime);
+    if (desc1->units.dimCount != desc2->units.dimCount)
+	fprintf(stderr, "Botch: Desc: dimCount: got: %d expect: %d\n",
+			desc1->units.dimCount, desc2->units.dimCount);
+    if (desc1->units.scaleSpace != desc2->units.scaleSpace)
+	fprintf(stderr, "Botch: Desc: scaleSpace: got: %d expect: %d\n",
+			desc1->units.scaleSpace, desc2->units.scaleSpace);
+    if (desc1->units.scaleTime != desc2->units.scaleTime)
+	fprintf(stderr, "Botch: Desc: scaleTime: got: %d expect: %d\n",
+			desc1->units.scaleTime, desc2->units.scaleTime);
+    if (desc1->units.scaleCount != desc2->units.scaleCount)
+	fprintf(stderr, "Botch: Desc: scaleCount: got: %d expect: %d\n",
+			desc1->units.scaleCount, desc2->units.scaleCount);
+}
+
 static void
 _z(void)
 {
@@ -103,7 +284,8 @@ _z(void)
     int			k;
     int			n;
     pmID		pmid;
-    pmResult		*rp = NULL;
+    __pmResult		*rp = NULL;
+    __pmResult		*resp = NULL;
     pmValueBlock	myvb;
     pmValueBlock	*gvbp;
     pmValueBlock	*xvbp;
@@ -125,13 +307,12 @@ _z(void)
     pmInDom		indom;
     int			inst;
     pmDesc		result_desc;
-    pmDesc		*descp = &result_desc;
+    pmDesc		*descp;
     int			ctxnum;
-    pmTimeval		now;
+    pmTimeval		nowtv;
     pmProfile		curprof;
     pmInDomProfile	idp[2];
     pmProfile		*profp;
-    pmResult		*resp;
     int			code;
     int			nv;
     int			sav_nv;
@@ -144,7 +325,6 @@ _z(void)
     char		*resname;
     char		**resnamelist;
     int			*resstatlist;
-    __pmLoggerStatus	*lsp;
     double		pi = M_PI;
     char		mytag[10];
     /*
@@ -194,12 +374,12 @@ _z(void)
     }
 
 /* PDU_RESULT */
-    resp = NULL;
-    num = 7;		/* the _maximum_ number of merics we have */
-    rp = (pmResult *)malloc(sizeof(*rp) + (num -1)*sizeof(pmValueSet *));
+    {
+    num = 7;		/* the _maximum_ number of metrics we have */
+    rp = __pmAllocResult(num);
     rp->numpmid = 0;
-    rp->timestamp.tv_sec = 30 * 60 * 60;	/* 30 hrs after the epoch */
-    rp->timestamp.tv_usec = 123456;		/* plus a gnat */
+    rp->timestamp.sec = 30 * 60 * 60;	/* 30 hrs after the epoch */
+    rp->timestamp.nsec = 123456000;	/* plus a gnat */
     /* singular instance, insitu value */
     rp->vset[0] = (pmValueSet *)malloc(sizeof(*rp->vset[0]));
     rp->numpmid = 1;
@@ -233,7 +413,7 @@ _z(void)
     av.cp = "0";
     rp->vset[2]->vlist[0].value.pval = NULL;
     if ((e = __pmStuffValue(&av, &rp->vset[2]->vlist[0], PM_TYPE_STRING)) < 0) {
-	fprintf(stderr, "Error: __pmStuffValue vset[%d] PM_TYPE_STRING: %s\n", i, pmErrStr(e));
+	fprintf(stderr, "Error: __pmStuffValue vset[2] PM_TYPE_STRING: %s\n", pmErrStr(e));
 	fatal = 1;
 	goto cleanup;
     }
@@ -246,7 +426,7 @@ _z(void)
     rp->vset[3]->vlist[0].inst = PM_IN_NULL;
     av.ull = 0x8765432112345678LL;
     if ((e = __pmStuffValue(&av, &rp->vset[3]->vlist[0], PM_TYPE_U64)) < 0) {
-	fprintf(stderr, "Error: __pmStuffValue vset[%d] PM_TYPE_U64: %s\n", i, pmErrStr(e));
+	fprintf(stderr, "Error: __pmStuffValue vset[3] PM_TYPE_U64: %s\n", pmErrStr(e));
 	fatal = 1;
 	goto cleanup;
     }
@@ -259,7 +439,7 @@ _z(void)
     rp->vset[4]->vlist[0].inst = PM_IN_NULL;
     av.f = 4.3E+21;
     if ((e = __pmStuffValue(&av, &rp->vset[4]->vlist[0], PM_TYPE_FLOAT)) < 0) {
-	fprintf(stderr, "Error: __pmStuffValue vset[%d] PM_TYPE_FLOAT: %s\n", i, pmErrStr(e));
+	fprintf(stderr, "Error: __pmStuffValue vset[4] PM_TYPE_FLOAT: %s\n", pmErrStr(e));
 	fatal = 1;
 	goto cleanup;
     }
@@ -272,7 +452,7 @@ _z(void)
     rp->vset[5]->vlist[0].inst = PM_IN_NULL;
     av.d = 4.56E+123;
     if ((e = __pmStuffValue(&av, &rp->vset[5]->vlist[0], PM_TYPE_DOUBLE)) < 0) {
-	fprintf(stderr, "Error: __pmStuffValue vset[%d] PM_TYPE_DOUBLE: %s\n", i, pmErrStr(e));
+	fprintf(stderr, "Error: __pmStuffValue vset[5] PM_TYPE_DOUBLE: %s\n", pmErrStr(e));
 	fatal = 1;
 	goto cleanup;
     }
@@ -313,12 +493,12 @@ _z(void)
 	    }
 	}
     }
-    if (resp->timestamp.tv_sec != rp->timestamp.tv_sec)
-	fprintf(stderr, "Botch: Result: tv_sec: got: %d expect: %d\n",
-	    (int)resp->timestamp.tv_sec, (int)rp->timestamp.tv_sec);
-    if (resp->timestamp.tv_usec != rp->timestamp.tv_usec)
-	fprintf(stderr, "Botch: Result: tv_usec: got: %d expect: %d\n",
-	    (int)resp->timestamp.tv_usec, (int)rp->timestamp.tv_usec);
+    if (resp->timestamp.sec != rp->timestamp.sec)
+	fprintf(stderr, "Botch: Result: sec: got: %ld expect: %ld\n",
+	    (long)resp->timestamp.sec, (long)rp->timestamp.sec);
+    if (resp->timestamp.nsec != rp->timestamp.nsec)
+	fprintf(stderr, "Botch: Result: nsec: got: %d expect: %d\n",
+	    (int)resp->timestamp.nsec, (int)rp->timestamp.nsec);
     if (resp->numpmid != rp->numpmid)
 	fprintf(stderr, "Botch: Result: numpmid: got: %d expect: %d\n",
 	    resp->numpmid, rp->numpmid);
@@ -382,21 +562,228 @@ _z(void)
 		    memcpy(&gav.f, gvbp->vbuf, sizeof(float));
 		    memcpy(&xav.f, xvbp->vbuf, sizeof(float));
 		    if (gav.f != xav.f)
-			fprintf(stderr, "Botch: Result: vset[%d][%d].value.pval->ull: got %e expect %e\n",
+			fprintf(stderr, "Botch: Result: vset[%d][%d].value.pval->f: got %e expect %e\n",
 			    i, j, (double)gav.f, (double)xav.f);
 		    break;
 		case PM_TYPE_DOUBLE:
 		    memcpy(&gav.d, gvbp->vbuf, sizeof(double));
 		    memcpy(&xav.d, xvbp->vbuf, sizeof(double));
 		    if (gav.d != xav.d)
-			fprintf(stderr, "Botch: Result: vset[%d][%d].value.pval->ull: got %e expect %e\n",
+			fprintf(stderr, "Botch: Result: vset[%d][%d].value.pval->d: got %e expect %e\n",
 			    i, j, gav.d, xav.d);
 		    break;
 	    }
 	}
     }
     if (resp != NULL)
-	pmFreeResult(resp);
+	__pmFreeResult(resp);
+    }
+
+/* PDU_HIGRES_RESULT */
+    {
+    num = 7;		/* the _maximum_ number of merics we have */
+    rp = __pmAllocResult(num);
+    rp->numpmid = 0;
+    rp->timestamp.sec = 30 * 60 * 60;	/* 30 hrs after the epoch */
+    rp->timestamp.nsec = 123456789;	/* plus a gnat */
+    /* singular instance, insitu value */
+    rp->vset[0] = (pmValueSet *)malloc(sizeof(*rp->vset[0]));
+    rp->numpmid = 1;
+    rp->vset[0]->pmid = 0xdead;
+    rp->vset[0]->numval = 1;
+    rp->vset[0]->valfmt = PM_VAL_INSITU;
+    rp->vset[0]->vlist[0].inst = PM_IN_NULL;
+    rp->vset[0]->vlist[0].value.lval = 1234;
+    /* 3 instances, all values insitu */
+    rp->vset[1] = (pmValueSet *)malloc(sizeof(*rp->vset[1])+2*sizeof(pmValue));
+    rp->numpmid = 2;
+    rp->vset[1]->pmid = 0xbeef;
+    rp->vset[1]->numval = 3;
+    rp->vset[1]->valfmt = PM_VAL_INSITU;
+    rp->vset[1]->vlist[0].inst = 2;
+    rp->vset[1]->vlist[0].value.lval = 2345;
+    rp->vset[1]->vlist[1].inst = 4;
+    rp->vset[1]->vlist[1].value.lval = 3456;
+    rp->vset[1]->vlist[2].inst = 8;
+    rp->vset[1]->vlist[2].value.lval = 4567;
+    /* singular instance, STRING value in pmValueBlock */
+    rp->vset[2] = (pmValueSet *)malloc(sizeof(*rp->vset[0]));
+    rp->numpmid = 3;
+    rp->vset[2]->pmid = pmidlist[0];
+    rp->vset[2]->numval = 1;
+    rp->vset[2]->valfmt = PM_VAL_DPTR;
+    rp->vset[2]->vlist[0].inst = PM_IN_NULL;
+    rp->vset[2]->vlist[0].value.pval = &myvb;
+    rp->vset[2]->vlist[0].value.pval->vtype = PM_TYPE_STRING;
+    rp->vset[2]->vlist[0].value.pval->vlen = PM_VAL_HDR_SIZE + 2;
+    av.cp = "0";
+    rp->vset[2]->vlist[0].value.pval = NULL;
+    if ((e = __pmStuffValue(&av, &rp->vset[2]->vlist[0], PM_TYPE_STRING)) < 0) {
+	fprintf(stderr, "Error: __pmStuffValue highres vset[2] PM_TYPE_STRING: %s\n", pmErrStr(e));
+	fatal = 1;
+	goto cleanup;
+    }
+    rp->vset[2]->vlist[0].value.pval->vbuf[0] = '0' + pass;
+    /* singular instance, U64 value in pmValueBlock */
+    rp->vset[3] = (pmValueSet *)malloc(sizeof(*rp->vset[0]));
+    rp->numpmid = 4;
+    rp->vset[3]->pmid = pmidlist[1];
+    rp->vset[3]->numval = 1;
+    rp->vset[3]->vlist[0].inst = PM_IN_NULL;
+    av.ull = 0x8765432112345678LL;
+    if ((e = __pmStuffValue(&av, &rp->vset[3]->vlist[0], PM_TYPE_U64)) < 0) {
+	fprintf(stderr, "Error: __pmStuffValue highres vset[3] PM_TYPE_U64: %s\n", pmErrStr(e));
+	fatal = 1;
+	goto cleanup;
+    }
+    rp->vset[3]->valfmt = e;
+    /* singular instance, FLOAT value in pmValueBlock */
+    rp->vset[4] = (pmValueSet *)malloc(sizeof(*rp->vset[0]));
+    rp->numpmid = 5;
+    rp->vset[4]->pmid = pmidlist[2];
+    rp->vset[4]->numval = 1;
+    rp->vset[4]->vlist[0].inst = PM_IN_NULL;
+    av.f = 4.3E+21;
+    if ((e = __pmStuffValue(&av, &rp->vset[4]->vlist[0], PM_TYPE_FLOAT)) < 0) {
+	fprintf(stderr, "Error: __pmStuffValue highres vset[4] PM_TYPE_FLOAT: %s\n", pmErrStr(e));
+	fatal = 1;
+	goto cleanup;
+    }
+    rp->vset[4]->valfmt = e;
+    /* singular instance, DOUBLE value in pmValueBlock */
+    rp->vset[5] = (pmValueSet *)malloc(sizeof(*rp->vset[0]));
+    rp->numpmid = 6;
+    rp->vset[5]->pmid = pmidlist[3];
+    rp->vset[5]->numval = 1;
+    rp->vset[5]->vlist[0].inst = PM_IN_NULL;
+    av.d = 4.56E+123;
+    if ((e = __pmStuffValue(&av, &rp->vset[5]->vlist[0], PM_TYPE_DOUBLE)) < 0) {
+	fprintf(stderr, "Error: __pmStuffValue highres vset[5] PM_TYPE_DOUBLE: %s\n", pmErrStr(e));
+	fatal = 1;
+	goto cleanup;
+    }
+    rp->vset[5]->valfmt = e;
+    /* no values */
+    rp->vset[6] = (pmValueSet *)malloc(sizeof(*rp->vset[0]));
+    rp->numpmid = 7;
+    rp->vset[6]->pmid = 0xdeadcafe;
+    rp->vset[6]->numval = PM_ERR_GENERIC;
+
+    /* done with setup, do it! */
+    if ((e = __pmSendHighResResult(fd[1], mypid, rp)) < 0) {
+	fprintf(stderr, "Error: SendHighResResult: %s\n", pmErrStr(e));
+	fatal = 1;
+	goto cleanup;
+    }
+    else {
+	if ((e = __pmGetPDU(fd[0], ANY_SIZE, timeout, &pb)) < 0) {
+	    fprintf(stderr, "Error: RecvHighResResult: %s\n", pmErrStr(e));
+	    fatal = 1;
+	    goto cleanup;
+	}
+	else if (e == 0) {
+	    fprintf(stderr, "Error: RecvHighResResult: end-of-file!\n");
+	    fatal = 1;
+	    goto cleanup;
+	}
+	else if (e != PDU_HIGHRES_RESULT) {
+	    fprintf(stderr, "Error: RecvHighResResult: %s wrong type PDU!\n", __pmPDUTypeStr(e));
+	    fatal = 1;
+	    goto cleanup;
+	}
+	else {
+	    if ((e = __pmDecodeHighResResult(pb, &resp)) < 0) {
+		fprintf(stderr, "Error: DecodeHighResResult: %s\n", pmErrStr(e));
+		fatal = 1;
+		goto cleanup;
+	    }
+	}
+    }
+    if (resp->timestamp.sec != rp->timestamp.sec)
+	fprintf(stderr, "Botch: HighResResult: sec: got: %ld expect: %ld\n",
+	    (long)resp->timestamp.sec, (long)rp->timestamp.sec);
+    if (resp->timestamp.nsec != rp->timestamp.nsec)
+	fprintf(stderr, "Botch: HighResResult: nsec: got: %d expect: %d\n",
+	    (int)resp->timestamp.nsec, (int)rp->timestamp.nsec);
+    if (resp->numpmid != rp->numpmid)
+	fprintf(stderr, "Botch: HighResResult: numpmid: got: %d expect: %d\n",
+	    resp->numpmid, rp->numpmid);
+    for (i = 0; i < rp->numpmid; i++) {
+	if (resp->vset[i]->pmid != rp->vset[i]->pmid)
+	    fprintf(stderr, "Botch: HighResResult: vset[%d].pmid: got: 0x%x expect: 0x%x\n",
+		i, resp->vset[i]->pmid, rp->vset[i]->pmid);
+	if (resp->vset[i]->numval != rp->vset[i]->numval) {
+	    fprintf(stderr, "Botch: HighResResult: vset[%d].numval: got: %d expect: %d\n",
+		i, resp->vset[i]->numval, rp->vset[i]->numval);
+	    continue;
+	}
+	if (resp->vset[i]->numval < 0)
+	    continue;
+	if (resp->vset[i]->valfmt != rp->vset[i]->valfmt)
+	    fprintf(stderr, "Botch: HighResResult: vset[%d].valfmt: got: %d expect: %d\n",
+		i, resp->vset[i]->valfmt, rp->vset[i]->valfmt);
+	for (j = 0; j < rp->vset[i]->numval; j++) {
+	    if (resp->vset[i]->vlist[j].inst != rp->vset[i]->vlist[j].inst)
+		fprintf(stderr, "Botch: HighResResult: vset[%d][%d].inst: got: %d expect: %d\n",
+		    i, j, resp->vset[i]->vlist[j].inst,
+		    rp->vset[i]->vlist[j].inst);
+	    if (resp->vset[i]->valfmt != rp->vset[i]->valfmt)
+		continue;
+	    if (resp->vset[i]->valfmt == PM_VAL_INSITU) {
+		if (resp->vset[i]->vlist[j].value.lval != rp->vset[i]->vlist[j].value.lval)
+		    fprintf(stderr, "Botch: HighResResult: insitu vset[%d][%d].value.lval: got: %d expect: %d\n",
+			i, j, resp->vset[i]->vlist[j].value.lval,
+			rp->vset[i]->vlist[j].value.lval);
+		continue;
+	    }
+	    /* NOT insitu */
+	    gvbp = resp->vset[i]->vlist[j].value.pval;
+	    xvbp = rp->vset[i]->vlist[j].value.pval;
+	    if (gvbp->vlen != xvbp->vlen)
+		fprintf(stderr, "Botch: HighResResult: vset[%d][%d].value.pval->vlen: got %d expect %d\n",
+		    i, j, gvbp->vlen, xvbp->vlen);
+	    if (gvbp->vtype != xvbp->vtype) {
+		fprintf(stderr, "Botch: HighResResult: vset[%d][%d].value.pval->vtype: got %d expect %d\n",
+		    i, j, gvbp->vtype, xvbp->vtype);
+		continue;
+	    }
+	    switch (gvbp->vtype) {
+		pmAtomValue	gav;
+		pmAtomValue	xav;
+		case PM_TYPE_STRING:
+		    if (strncmp(gvbp->vbuf, xvbp->vbuf, gvbp->vlen - sizeof(int)) != 0)
+			fprintf(stderr, "Botch: HighResResult: vset[%d][%d].value.pval->vbuf: got \"%*.*s\" expect \"%*.*s\"\n",
+			    i, j, gvbp->vlen, gvbp->vlen, gvbp->vbuf,
+			    gvbp->vlen, gvbp->vlen, xvbp->vbuf);
+		    break;
+		case PM_TYPE_64:
+		case PM_TYPE_U64:
+		    memcpy(&gav.ull, gvbp->vbuf, sizeof(__uint64_t));
+		    memcpy(&xav.ull, xvbp->vbuf, sizeof(__uint64_t));
+		    if (gav.ull != xav.ull)
+			fprintf(stderr, "Botch: HighResResult: vset[%d][%d].value.pval->ull: got %" FMT_UINT64 " expect %" FMT_UINT64 "\n",
+			    i, j, gav.ull, xav.ull);
+		    break;
+		case PM_TYPE_FLOAT:
+		    memcpy(&gav.f, gvbp->vbuf, sizeof(float));
+		    memcpy(&xav.f, xvbp->vbuf, sizeof(float));
+		    if (gav.f != xav.f)
+			fprintf(stderr, "Botch: HighResResult: vset[%d][%d].value.pval->f: got %e expect %e\n",
+			    i, j, (double)gav.f, (double)xav.f);
+		    break;
+		case PM_TYPE_DOUBLE:
+		    memcpy(&gav.d, gvbp->vbuf, sizeof(double));
+		    memcpy(&xav.d, xvbp->vbuf, sizeof(double));
+		    if (gav.d != xav.d)
+			fprintf(stderr, "Botch: HighResResult: vset[%d][%d].value.pval->d: got %e expect %e\n",
+			    i, j, gav.d, xav.d);
+		    break;
+	    }
+	}
+    }
+    if (resp != NULL)
+	__pmFreeResult(resp);
+    }
 
 /* PDU_PROFILE */
     n = sizeof(instlist) / sizeof(instlist[0]);
@@ -489,7 +876,7 @@ _z(void)
     n = sizeof(pmidlist) / sizeof(pmidlist[0]);
     if (pass != 0)
 	n = 1 + (foorand() % n);
-    if ((e = __pmSendFetch(fd[1], mypid, 43, (pmTimeval *)0, n, pmidlist)) < 0) {
+    if ((e = __pmSendFetch(fd[1], mypid, 43, n, pmidlist)) < 0) {
 	fprintf(stderr, "Error: SendFetch: %s\n", pmErrStr(e));
 	fatal = 1;
 	goto cleanup;
@@ -511,8 +898,58 @@ _z(void)
 	    goto cleanup;
 	}
 	else {
-	    if ((e = __pmDecodeFetch(pb, &ctxnum, &now, &num, &pmidp)) < 0) {
+	    if ((e = __pmDecodeFetch(pb, &ctxnum, &nowtv, &num, &pmidp)) < 0) {
 		fprintf(stderr, "Error: DecodeFetch: %s\n", pmErrStr(e));
+		fatal = 1;
+		goto cleanup;
+	    }
+	    else {
+		if (ctxnum != 43)
+		    fprintf(stderr, "Botch: Fetch: ctxnum: got: %d expect: %d\n",
+			ctxnum, 43);
+		if (num != n)
+		    fprintf(stderr, "Botch: Fetch: num: got: %d expect: %d\n",
+			num, n);
+		else {
+		    for (i = 0; i < num; i++) {
+			if (pmidlist[i] != pmidp[i])
+			    fprintf(stderr, "Botch: Fetch: pmidlist[%d]: got: 0x%x expect: 0x%x\n",
+				i, pmidp[i], pmidlist[i]);
+		    }
+		}
+		__pmUnpinPDUBuf(pmidp);
+	    }
+	}
+    }
+
+/* PDU_HIGHRES_FETCH */
+    n = sizeof(pmidlist) / sizeof(pmidlist[0]);
+    if (pass != 0)
+	n = 1 + (foorand() % n);
+    if ((e = __pmSendHighResFetch(fd[1], mypid, 43, n, pmidlist)) < 0) {
+	fprintf(stderr, "Error: SendHighResFetch: %s\n", pmErrStr(e));
+	fatal = 1;
+	goto cleanup;
+    }
+    else {
+	if ((e = __pmGetPDU(fd[0], ANY_SIZE, timeout, &pb)) < 0) {
+	    fprintf(stderr, "Error: RecvHighResFetch: %s\n", pmErrStr(e));
+	    fatal = 1;
+	    goto cleanup;
+	}
+	else if (e == 0) {
+	    fprintf(stderr, "Error: RecvHighResFetch: end-of-file!\n");
+	    fatal = 1;
+	    goto cleanup;
+	}
+	else if (e != PDU_HIGHRES_FETCH) {
+	    fprintf(stderr, "Error: RecvHighResFetch: %s wrong type PDU!\n", __pmPDUTypeStr(e));
+	    fatal = 1;
+	    goto cleanup;
+	}
+	else {
+	    if ((e = __pmDecodeHighResFetch(pb, &ctxnum, &num, &pmidp)) < 0) {
+		fprintf(stderr, "Error: DecodeHighResFetch: %s\n", pmErrStr(e));
 		fatal = 1;
 		goto cleanup;
 	    }
@@ -594,42 +1031,107 @@ _z(void)
 	    goto cleanup;
 	}
 	else {
+	    descp = &result_desc;
 	    if ((e = __pmDecodeDesc(pb, descp)) < 0) {
 		fprintf(stderr, "Error: DecodeDesc: %s\n", pmErrStr(e));
 		fatal = 1;
 		goto cleanup;
 	    }
+	    compare_descs("Desc", descp, &desc, -1);
+	}
+    }
+
+/* PDU_DESC_IDS */
+    n = sizeof(pmidlist) / sizeof(pmidlist[0]);
+    if (pass != 0)
+	n = 1 + (foorand() % n);
+    if ((e = __pmSendIDList(fd[1], mypid, n, pmidlist, -1)) < 0) {
+	fprintf(stderr, "Error: SendIDList: %s\n", pmErrStr(e));
+	fatal = 1;
+	goto cleanup;
+    }
+    else {
+	if ((e = __pmGetPDU(fd[0], ANY_SIZE, timeout, &pb)) < 0) {
+	    fprintf(stderr, "Error: RecvIDList: %s\n", pmErrStr(e));
+	    fatal = 1;
+	    goto cleanup;
+	}
+	else if (e == 0) {
+	    fprintf(stderr, "Error: RecvIDList: end-of-file!\n");
+	    fatal = 1;
+	    goto cleanup;
+	}
+	else if (e != PDU_DESC_IDS) {
+	    fprintf(stderr, "Error: RecvIDList: %s wrong type PDU!\n", __pmPDUTypeStr(e));
+	    fatal = 1;
+	    goto cleanup;
+	}
+	else {
+	    pmID	mylist[6];
+	    if ((e = __pmDecodeIDList(pb, n, mylist, &k)) < 0) {
+		fprintf(stderr, "Error: DecodeIDList: %s\n", pmErrStr(e));
+		fatal = 1;
+		goto cleanup;
+	    }
 	    else {
-		if (descp->pmid != desc.pmid)
-		    fprintf(stderr, "Botch: Desc: pmid: got: 0x%x expect: 0x%x\n",
-			descp->pmid, desc.pmid);
-		if (descp->type != desc.type)
-		    fprintf(stderr, "Botch: Desc: type: got: %d expect: %d\n",
-			descp->type, desc.type);
-		if (descp->indom != desc.indom)
-		    fprintf(stderr, "Botch: Desc: indom: got: 0x%x expect: 0x%x\n",
-			descp->indom, desc.indom);
-		if (descp->sem != desc.sem)
-		    fprintf(stderr, "Botch: Desc: sem: got: %d expect: %d\n",
-			descp->sem, desc.sem);
-		if (descp->units.dimSpace != desc.units.dimSpace)
-		    fprintf(stderr, "Botch: Desc: dimSpace: got: %d expect: %d\n",
-			descp->units.dimSpace, desc.units.dimSpace);
-		if (descp->units.dimTime != desc.units.dimTime)
-		    fprintf(stderr, "Botch: Desc: dimTime: got: %d expect: %d\n",
-			descp->units.dimTime, desc.units.dimTime);
-		if (descp->units.dimCount != desc.units.dimCount)
-		    fprintf(stderr, "Botch: Desc: dimCount: got: %d expect: %d\n",
-			descp->units.dimCount, desc.units.dimCount);
-		if (descp->units.scaleSpace != desc.units.scaleSpace)
-		    fprintf(stderr, "Botch: Desc: scaleSpace: got: %d expect: %d\n",
-			descp->units.scaleSpace, desc.units.scaleSpace);
-		if (descp->units.scaleTime != desc.units.scaleTime)
-		    fprintf(stderr, "Botch: Desc: scaleTime: got: %d expect: %d\n",
-			descp->units.scaleTime, desc.units.scaleTime);
-		if (descp->units.scaleCount != desc.units.scaleCount)
-		    fprintf(stderr, "Botch: Desc: scaleCount: got: %d expect: %d\n",
-			descp->units.scaleCount, desc.units.scaleCount);
+		for (i = 0; i < n; i++) {
+		    if (pmidlist[i] != mylist[i])
+			fprintf(stderr, "Botch: IDList: pmidlist[%d]: got: 0x%x expect: 0x%x\n",
+			    i, mylist[i], pmidlist[i]);
+		}
+		if (k != -1)
+		    fprintf(stderr, "Botch: IDList: sts: got: %d expect: %d\n",
+			k, -1);
+	    }
+	}
+    }
+
+/* PDU_DESCS */
+    n = sizeof(desclist) / sizeof(desclist[0]);
+    if (pass != 0)
+	n = 1 + (foorand() % n);
+    if ((e = __pmSendDescs(fd[1], mypid, n, desclist)) < 0) {
+	fprintf(stderr, "Error: SendDescs: %s\n", pmErrStr(e));
+	fatal = 1;
+	goto cleanup;
+    }
+    else {
+	if ((e = __pmGetPDU(fd[0], ANY_SIZE, timeout, &pb)) < 0) {
+	    fprintf(stderr, "Error: RecvDescs: %s\n", pmErrStr(e));
+	    fatal = 1;
+	    goto cleanup;
+	}
+	else if (e == 0) {
+	    fprintf(stderr, "Error: RecvDescs: end-of-file!\n");
+	    fatal = 1;
+	    goto cleanup;
+	}
+	else if (e != PDU_DESCS) {
+	    fprintf(stderr, "Error: RecvDescs: %s wrong type PDU!\n", __pmPDUTypeStr(e));
+	    fatal = 1;
+	    goto cleanup;
+	}
+	else {
+	    num = 0;
+	    descp = NULL;
+	    if ((e = __pmDecodeDescs2(pb, &num, &descp)) < 0) {
+		fprintf(stderr, "Error: DecodeDescs2: %s\n", pmErrStr(e));
+		fatal = 1;
+		goto cleanup;
+	    }
+	    else {
+		if (ctxnum != 43)
+		    fprintf(stderr, "Botch: Descs: ctxnum: got: %d expect: %d\n",
+			ctxnum, 43);
+		if (num != n)
+		    fprintf(stderr, "Botch: Descs: num: got: %d expect: %d\n",
+			num, n);
+		else {
+		    for (i = 0; i < num; i++)
+			compare_descs("Descs", &descp[i], &desclist[i], i);
+		}
+		if (descp)
+		    free(descp);
 	    }
 	}
     }
@@ -638,11 +1140,8 @@ _z(void)
     n = sizeof(indomlist) / sizeof(indomlist[0]);
     if (pass != 0)
 	n = 1 + (foorand() % n);
-    now.tv_sec = 60 * 60 * 60;		/* 60 hrs after the epoch */
-    now.tv_usec = 654321;		/* plus a gnat */
     for (i = 0; i < n; i++) {
-	pmTimeval	tmp;
-	if ((e = __pmSendInstanceReq(fd[1], mypid, &now, 0xface, indomlist[i].inst, indomlist[i].name)) < 0) {
+	if ((e = __pmSendInstanceReq(fd[1], mypid, 0xface, indomlist[i].inst, indomlist[i].name)) < 0) {
 	    fprintf(stderr, "Error: SendInstanceReq: %s\n", pmErrStr(e));
 	    fatal = 1;
 	    goto cleanup;
@@ -664,15 +1163,12 @@ _z(void)
 		goto cleanup;
 	    }
 	    else {
-		if ((e = __pmDecodeInstanceReq(pb, &tmp, &indom, &inst, &resname)) < 0) {
+		if ((e = __pmDecodeInstanceReq(pb, &indom, &inst, &resname)) < 0) {
 		    fprintf(stderr, "Error: DecodeInstanceReq: %s\n", pmErrStr(e));
 		    fatal = 1;
 		    goto cleanup;
 		}
 		else {
-		    if (tmp.tv_sec != now.tv_sec || tmp.tv_usec != now.tv_usec)
-			fprintf(stderr, "Botch: InstanceReq: when: got: %d,%d expect: %d,%d\n",
-			    tmp.tv_sec, tmp.tv_usec, now.tv_sec, now.tv_usec);
 		    if (indom != 0xface)
 			fprintf(stderr, "Botch: InstanceReq: indom: got: 0x%x expect: 0x%x\n",
 			    indom, 0xface);
@@ -1346,7 +1842,9 @@ _z(void)
 		goto cleanup;
 	    }
 	    else {
-		if ((e = __pmDecodeLogControl(pb, &resp, &control, &state, &rate)) < 0) {
+		__pmResult	*logresp;
+
+		if ((e = __pmDecodeLogControl(pb, &logresp, &control, &state, &rate)) < 0) {
 		    fprintf(stderr, "Error: DecodeLogControl: numval=%d %s\n", nv, pmErrStr(e));
 		    fatal = 1;
 		    goto cleanup;
@@ -1361,33 +1859,33 @@ _z(void)
 		    if (rate != 1000)
 			fprintf(stderr, "Botch: LogControl: numval=%d rate: got: %d expect: %d\n",
 			    nv, rate, 1000);
-		    if (resp->numpmid != rp->numpmid)
+		    if (logresp->numpmid != rp->numpmid)
 			fprintf(stderr, "Botch: LogControl: numval=%d numpmid: got: %d expect: %d\n",
-			    nv, resp->numpmid, rp->numpmid);
+			    nv, logresp->numpmid, rp->numpmid);
 		    else {
 			for (i = 0; i < rp->numpmid; i++) {
-			    if (resp->vset[i]->pmid != rp->vset[i]->pmid)
+			    if (logresp->vset[i]->pmid != rp->vset[i]->pmid)
 				fprintf(stderr, "Botch: LogControl: numval=%d vset[%d].pmid: got: 0x%x expect: 0x%x\n",
-				    nv, i, resp->vset[i]->pmid, rp->vset[i]->pmid);
-			    if (resp->vset[i]->valfmt != rp->vset[i]->valfmt)
+				    nv, i, logresp->vset[i]->pmid, rp->vset[i]->pmid);
+			    if (logresp->vset[i]->valfmt != rp->vset[i]->valfmt)
 				fprintf(stderr, "Botch: LogControl: numval=%d vset[%d].valfmt: got: %d expect: %d\n",
-				    nv, i, resp->vset[i]->valfmt, rp->vset[i]->valfmt);
-			    if (resp->vset[i]->numval != rp->vset[i]->numval)
+				    nv, i, logresp->vset[i]->valfmt, rp->vset[i]->valfmt);
+			    if (logresp->vset[i]->numval != rp->vset[i]->numval)
 				fprintf(stderr, "Botch: LogControl: numval=%d vset[%d].numval: got: %d expect: %d\n",
-				    nv, i, resp->vset[i]->numval, rp->vset[i]->numval);
+				    nv, i, logresp->vset[i]->numval, rp->vset[i]->numval);
 			    else {
 				for (j = 0; j < rp->vset[i]->numval; j++) {
-				    if (resp->vset[i]->vlist[j].inst != rp->vset[i]->vlist[j].inst)
+				    if (logresp->vset[i]->vlist[j].inst != rp->vset[i]->vlist[j].inst)
 					fprintf(stderr, "Botch: LogControl: numval=%d vset[%d][%d].inst: got: %d expect: %d\n",
-					    nv, i, j, resp->vset[i]->vlist[j].inst, rp->vset[i]->vlist[j].inst);
-				    if (resp->vset[i]->vlist[j].value.lval != rp->vset[i]->vlist[j].value.lval)
+					    nv, i, j, logresp->vset[i]->vlist[j].inst, rp->vset[i]->vlist[j].inst);
+				    if (logresp->vset[i]->vlist[j].value.lval != rp->vset[i]->vlist[j].value.lval)
 					fprintf(stderr, "Botch: LogControl: numval=%d vset[%d][%d].value.lval: got: %d expect: %d\n",
-					    nv, i, j, resp->vset[i]->vlist[j].value.lval, rp->vset[i]->vlist[j].value.lval);
+					    nv, i, j, logresp->vset[i]->vlist[j].value.lval, rp->vset[i]->vlist[j].value.lval);
 				}
 			    }
 			}
 		    }
-		    pmFreeResult(resp);
+		    __pmFreeResult(logresp);
 		}
 	    }
 	}
@@ -1396,89 +1894,15 @@ _z(void)
     rp->numpmid = sav_np;
 
 /* PDU_LOG_STATUS */
-    logstat.ls_start.tv_sec = 13 * 60 * 60;	/* 13 hrs after the epoch */
-    logstat.ls_start.tv_usec = 12345;		/* and a bit */
-    logstat.ls_last.tv_sec = 13 * 60 * 60 + 10;
-    logstat.ls_last.tv_usec = 23456;
-    logstat.ls_timenow.tv_sec = 13 * 60 * 60 + 20;
-    logstat.ls_timenow.tv_usec = 34567;
-    logstat.ls_state = PM_LOG_MAYBE;
-    logstat.ls_vol = 1;
-    logstat.ls_size = 2048;
-    strcpy(logstat.ls_hostname, "foo");
-    strcpy(logstat.ls_fqdn, "foo.bar.com");
-    strcpy(logstat.ls_tz, "TZ-THERE");
-    strcpy(logstat.ls_tzlogger, "TZ-HERE");
-    if ((e = __pmSendLogStatus(fd[1], &logstat)) < 0) {
-	fprintf(stderr, "Error: SendLogStatus: %s\n", pmErrStr(e));
+    if (do_log_status(LOG_PDU_VERSION3) != 0) {
 	fatal = 1;
 	goto cleanup;
     }
-    else {
-	if ((e = __pmGetPDU(fd[0], ANY_SIZE, timeout, &pb)) < 0) {
-	    fprintf(stderr, "Error: RecvLogStatus: %s\n", pmErrStr(e));
-	    fatal = 1;
-	    goto cleanup;
-	}
-	else if (e == 0) {
-	    fprintf(stderr, "Error: RecvLogStatus: end-of-file!\n");
-	    fatal = 1;
-	    goto cleanup;
-	}
-	else if (e != PDU_LOG_STATUS) {
-	    fprintf(stderr, "Error: RecvLogStatus: %s wrong type PDU!\n", __pmPDUTypeStr(e));
-	    fatal = 1;
-	    goto cleanup;
-	}
-	else {
-	    if ((e = __pmDecodeLogStatus(pb, &lsp)) < 0) {
-		fprintf(stderr, "Error: DecodeLogStatus: %s\n", pmErrStr(e));
-		fatal = 1;
-		goto cleanup;
-	    }
-	    else {
-		if (lsp->ls_start.tv_sec != logstat.ls_start.tv_sec)
-		    fprintf(stderr, "Botch: LogStatus: ls_staty.tv_sec: got: %d expect: %d\n",
-			lsp->ls_start.tv_sec, logstat.ls_start.tv_sec);
-		if (lsp->ls_start.tv_usec != logstat.ls_start.tv_usec)
-		    fprintf(stderr, "Botch: LogStatus: ls_staty.tv_usec: got: %d expect: %d\n",
-			lsp->ls_start.tv_usec, logstat.ls_start.tv_usec);
-		if (lsp->ls_last.tv_sec != logstat.ls_last.tv_sec)
-		    fprintf(stderr, "Botch: LogStatus: ls_staty.tv_sec: got: %d expect: %d\n",
-			lsp->ls_last.tv_sec, logstat.ls_last.tv_sec);
-		if (lsp->ls_last.tv_usec != logstat.ls_last.tv_usec)
-		    fprintf(stderr, "Botch: LogStatus: ls_staty.tv_usec: got: %d expect: %d\n",
-			lsp->ls_last.tv_usec, logstat.ls_last.tv_usec);
-		if (lsp->ls_timenow.tv_sec != logstat.ls_timenow.tv_sec)
-		    fprintf(stderr, "Botch: LogStatus: ls_staty.tv_sec: got: %d expect: %d\n",
-			lsp->ls_timenow.tv_sec, logstat.ls_timenow.tv_sec);
-		if (lsp->ls_timenow.tv_usec != logstat.ls_timenow.tv_usec)
-		    fprintf(stderr, "Botch: LogStatus: ls_staty.tv_usec: got: %d expect: %d\n",
-			lsp->ls_timenow.tv_usec, logstat.ls_timenow.tv_usec);
-		if (lsp->ls_state != logstat.ls_state)
-		    fprintf(stderr, "Botch: LogStatus: ls_state: got: 0x%x expect: 0x%x\n",
-			lsp->ls_state, logstat.ls_state);
-		if (lsp->ls_vol != logstat.ls_vol)
-		    fprintf(stderr, "Botch: LogStatus: ls_vol: got: 0x%x expect: 0x%x\n",
-			lsp->ls_vol, logstat.ls_vol);
-		if (lsp->ls_size != logstat.ls_size)
-		    fprintf(stderr, "Botch: LogStatus: ls_size: got: 0x%x expect: 0x%x\n",
-			(int)lsp->ls_size, (int)logstat.ls_size);
-		if (strcmp(lsp->ls_hostname, logstat.ls_hostname) != 0)
-		    fprintf(stderr, "Botch: LogStatus: ls_hostname: got: \"%s\" expect: \"%s\"\n",
-			lsp->ls_hostname, logstat.ls_hostname);
-		if (strcmp(lsp->ls_fqdn, logstat.ls_fqdn) != 0)
-		    fprintf(stderr, "Botch: LogStatus: ls_fqdn: got: \"%s\" expect: \"%s\"\n",
-			lsp->ls_fqdn, logstat.ls_fqdn);
-		if (strcmp(lsp->ls_tz, logstat.ls_tz) != 0)
-		    fprintf(stderr, "Botch: LogStatus: ls_tz: got: \"%s\" expect: \"%s\"\n",
-			lsp->ls_tz, logstat.ls_tz);
-		if (strcmp(lsp->ls_tzlogger, logstat.ls_tzlogger) != 0)
-		    fprintf(stderr, "Botch: LogStatus: ls_tzlogger: got: \"%s\" expect: \"%s\"\n",
-			lsp->ls_tzlogger, logstat.ls_tzlogger);
-		__pmUnpinPDUBuf(pb);
-	    }
-	}
+
+/* PDU_LOG_STATUS_V2 */
+    if (do_log_status(LOG_PDU_VERSION2) != 0) {
+	fatal = 1;
+	goto cleanup;
     }
 
 /* PDU_LOG_REQUEST */
@@ -1623,7 +2047,6 @@ cleanup:
 
     if (fatal)
 	exit(1);
-
 }
 
 int
@@ -1778,6 +2201,9 @@ main(int argc, char **argv)
 
 
     pmUnloadNameSpace();
+
+    if (pmDebugOptions.appl1)
+	__pmDumpPDUTrace(stderr);
 
     exit(0);
 }

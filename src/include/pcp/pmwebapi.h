@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2017-2020 Red Hat.
+ * Copyright (c) 2017-2022 Red Hat.
  *
  * This program is free software; you can redistribute it and/or modify it
  * under the terms of the GNU General Public License as published by the
@@ -166,8 +166,20 @@ extern int pmSeriesInstances(pmSeriesSettings *, int, sds *, void *);
 extern int pmSeriesMetrics(pmSeriesSettings *, int, sds *, void *);
 extern int pmSeriesSources(pmSeriesSettings *, int, sds *, void *);
 extern int pmSeriesValues(pmSeriesSettings *, pmSeriesTimeWindow *, int, sds *, void *);
+extern int pmSeriesWindow(pmSeriesSettings *, sds, pmSeriesTimeWindow *, void *);
 extern int pmSeriesQuery(pmSeriesSettings *, sds, pmSeriesFlags, void *);
 extern int pmSeriesLoad(pmSeriesSettings *, sds, pmSeriesFlags, void *);
+
+/*
+ * Timer list interface - global, thread-safe
+ */
+typedef void (*pmWebTimerCallBack)(void *);
+extern int pmWebTimerRegister(pmWebTimerCallBack, void *);
+extern int pmWebTimerRelease(int); /* deregister one timer */
+extern int pmWebTimerSetup(void);
+extern int pmWebTimerSetEventLoop(void *);
+extern int pmWebTimerSetMetricRegistry(struct mmv_registry *);
+extern void pmWebTimerClose(void);
 
 /*
  * Asynchronous archive location and contents discovery services
@@ -201,7 +213,7 @@ typedef void (*pmDiscoverLabelsCallBack)(pmDiscoverEvent *,
 typedef void (*pmDiscoverMetricCallBack)(pmDiscoverEvent *,
 		pmDesc *, int, char **, void *);
 typedef void (*pmDiscoverValuesCallBack)(pmDiscoverEvent *,
-		pmResult *, void *);
+		pmHighResResult *, void *);
 typedef void (*pmDiscoverInDomCallBack)(pmDiscoverEvent *,
 		pmInResult *, void *);
 typedef void (*pmDiscoverTextCallBack)(pmDiscoverEvent *,
@@ -313,6 +325,8 @@ typedef struct pmWebLabelSet {
     pmLabelSet		*sets[6];
     int			nsets;
     sds			buffer;
+    unsigned int	instid;
+    sds			instname;
 } pmWebLabelSet;
 
 typedef void (*pmWebContextCallBack)(sds, pmWebSource *, void *);

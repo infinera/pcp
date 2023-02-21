@@ -1,6 +1,6 @@
 #!/bin/sh
 # PCP QA Test No. 1337
-# Copyright (c) 2019 Red Hat.
+# Copyright (c) 2019,2021 Red Hat.
 #
 # Exercise MSSQL agent Install and Remove scripts,
 # plus metric value validation on select metrics.
@@ -20,18 +20,14 @@ test -x /opt/mssql/bin/sqlservr || _notrun "Microsoft SQL Server not installed"
 test -d "$PCP_PMDAS_DIR/mssql" || _notrun "Microsoft SQL Server PMDA not installed"
 
 # extract username and password, check connection to SQL Server
-eval `$sudo egrep 'server=|username=|password=' "$PCP_PMDAS_DIR/mssql/mssql.conf"`
-test -n "$server" || _notrun "Cannot find SQL Server connection setting"
+eval `$sudo grep -E 'server=|username=|password=' "$PCP_PMDAS_DIR/mssql/mssql.conf"`
+if $sudo test -f /var/opt/mssql/secrets/assessment; then
+    username=`$sudo head -1 /var/opt/mssql/secrets/assessment`
+    password=`$sudo tail -1 /var/opt/mssql/secrets/assessment`
+fi
 test -n "$username" || _notrun "Cannot find SQL Server username setting"
 test -n "$password" || _notrun "Cannot find SQL Server password setting"
-
-_query()
-{
-    $SQLCMD -S "$server" -U "$username" -P "$password" -Q "$@"
-}
-_query "select 1" > $tmp.query
-grep -q '(1 rows affected)' $tmp.query || \
-	_notrun "Cannot perform a basic select query on $server - got:" `cat $tmp.out`
+test -n "$server" || server="tcp:localhost"
 
 _cleanup()
 {
@@ -42,6 +38,14 @@ _cleanup()
 status=1	# failure is the default!
 $sudo rm -rf $tmp $tmp.* $seq.full
 trap "_cleanup; exit \$status" 0 1 2 3 15
+
+_query()
+{
+    $SQLCMD -S "$server" -U "$username" -P "$password" -Q "$@"
+}
+_query "select 1" > $tmp.query 2>&1
+grep -q '(1 rows affected)' $tmp.query || \
+	_notrun "Cannot perform select on $server - got:" `cat $tmp.query`
 
 _compare_values()
 {

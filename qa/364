@@ -29,6 +29,8 @@ _filter_solaris()
 	cat
     else
 	sed \
+	    -e '/^disk\.all\.blkdiscard .* Unknown metric name/d' \
+	    -e '/^disk\.all\.discard .* Unknown metric name/d' \
 	    -e '/^disk.dev.avactive .* Unknown metric name/d' \
 	    -e '/^network.icmp.* Unknown metric name/d' \
 	    -e '/^network.igmp.* Unknown metric name/d' \
@@ -50,8 +52,10 @@ _filter_darwin()
 	cat
     else
 	sed \
-	    -e '/^disk\.dev\.avactive .* Unknown metric name/d' \
 	    -e '/^disk\.all\.avactive .* Unknown metric name/d' \
+	    -e '/^disk\.all\.blkdiscard .* Unknown metric name/d' \
+	    -e '/^disk\.all\.discard .* Unknown metric name/d' \
+	    -e '/^disk\.dev\.avactive .* Unknown metric name/d' \
 	    -e '/^disk\.partitions\..* Unknown metric name/d' \
 	    -e '/^hinv\.nnode .* Unknown metric name/d' \
 	    -e '/^network\.icmp .* Unknown metric name/d' \
@@ -80,6 +84,8 @@ _filter_freebsd()
     else
 	sed \
 	    -e '/^disk\.all\.avactive .* Unknown metric name/d' \
+	    -e '/^disk\.all\.blkdiscard .* Unknown metric name/d' \
+	    -e '/^disk\.all\.discard .* Unknown metric name/d' \
 	    -e '/^disk\.dev\.avactive .* Unknown metric name/d' \
 	    -e '/^filesys .* Unknown metric name/d' \
 	    -e '/^filesys\..* Unknown metric name/d' \
@@ -128,6 +134,8 @@ _filter_netbsd()
 	    -e '/^disk\.all\.avactive .* Unknown metric name/d' \
 	    -e '/^disk\.all\.blkread .* Unknown metric name/d' \
 	    -e '/^disk\.all\.blkwrite .* Unknown metric name/d' \
+	    -e '/^disk\.all\.blkdiscard .* Unknown metric name/d' \
+	    -e '/^disk\.all\.discard .* Unknown metric name/d' \
 	    -e '/^disk\.dev\.avactive .* Unknown metric name/d' \
 	    -e '/^hinv\.nnode .* Unknown metric name/d' \
 	    -e '/^kernel\.all\.io\..* Unknown metric name/d' \
@@ -173,7 +181,11 @@ _filter_openbsd()
 	    -e '/^disk\.all\.avactive .* Unknown metric name/d' \
 	    -e '/^disk\.all\.blkread .* Unknown metric name/d' \
 	    -e '/^disk\.all\.blkwrite .* Unknown metric name/d' \
+	    -e '/^disk\.all\.blkdiscard .* Unknown metric name/d' \
+	    -e '/^disk\.all\.discard .* Unknown metric name/d' \
 	    -e '/^disk\.dev\.avactive .* Unknown metric name/d' \
+	    -e '/^disk\.dev\.aveq .* Unknown metric name/d' \
+	    -e '/^disk\.dev\.total_rawactive .* Unknown metric name/d' \
 	    -e '/^disk\.partitions\..* Unknown metric name/d' \
 	    -e '/^filesys.* Unknown metric name/d' \
 	    -e '/^hinv\.cpu\.clock .* Unknown metric name/d' \
@@ -231,6 +243,7 @@ _filter_openbsd()
 	    -e '/^network\.udp .* Unknown metric name/d' \
 	    -e '/^network\.udplite .* Unknown metric name/d' \
 	    -e '/^proc\..* Unknown metric name/d' \
+	    -e '/^vfs\..* Unknown metric name/d' \
 	    -e '/^zram\..* Unknown metric name/d' \
 	# openbsd
     fi
@@ -248,6 +261,9 @@ _filter_linux()
 	sed \
 	    -e '/^network\.softnet.* Metric not supported/d' \
 	    -e '/^nfsclient\.options.* Metric not supported/d' \
+	    -e '/^nvidia\.fanspeed.* Metric not supported/d' \
+	    -e '/^nvidia\.energy.* Metric not supported/d' \
+	    -e '/^nvidia\.power.* Metric not supported/d' \
 	    -e '/^proc\.namespaces.* Metric not supported/d' \
 	    -e '/^proc\.psinfo\.cgroups.* No data available/d' \
 	    -e '/^cgroup\..*\.container.* No data available/d' \
@@ -255,6 +271,8 @@ _filter_linux()
 	    -e '/^nfsclient\.options.* Unknown metric name/d' \
 	    -e '/^perfevent\.hwcounters.* Unknown metric name/d' \
 	    -e '/^proc\.smaps\..* Metric not supported/d' \
+	    -e '/^proc\.id\.container -12351 Missing metric value(s)/d' \
+	    -e '/^proc\.psinfo\.cgroups -12351 Missing metric value(s)/d' \
 	# linux
     fi
 }

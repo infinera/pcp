@@ -38,39 +38,48 @@ audit=/var/log/audit/audit.log
 sudo=`which sudo`
 
 # Did pmlogger_daily get run as expected?
-# But don't bother if it is just after midnight!
 #
-case `pmdate %H:%M`
-in
-    00:[012]*)
-	;;
-    *)
-	yesterday=`pmdate -1d %Y%m%d`
-	host=`hostname`
-	case $host
-	in
-	    # CONFIGURE-ME
-	    # - may need to add extra hosts here to enable this test
-	    #
-	    bozo|bozo-vm|vm01|vm03|vm36)
-		    if [ ! -f $PCP_LOG_DIR/pmlogger/$host/$yesterday.meta.xz -a ! -f $PCP_LOG_DIR/pmlogger/$host/$yesterday.meta ]
-		    then
-			# after a virgin install, or cleaning out the directory,
-			# or a hostname change, there will be NO $yesterday files
-			# at all, so be quiet if this is the case ...
-			#
-			nfile=`find  $PCP_LOG_DIR/pmlogger/$host -type f | grep "^$PCP_LOG_DIR/pmlogger/$host/$yesterday.*\\.meta" | wc -l | sed -e 's/ //g'`
-			if [ "$nfile" -gt 0 ]
+# Do this at most once each time check is run ... if it fails it will
+# fail for ALL QA tests, which is not helpful.  The file
+# $here/check.onetrip is created in "common", so it will be there at
+# the start of any check (or recheck or check-flakey) run.
+#
+if [ -f $here/check.onetrip ]
+then
+    # But don't bother if it is just after midnight!
+    #
+    case `pmdate %H:%M`
+    in
+	00:[012]*)
+	    ;;
+	*)
+	    yesterday=`pmdate -1d %Y%m%d`
+	    host=`hostname`
+	    case $host
+	    in
+		# CONFIGURE-ME
+		# - may need to add extra hosts here to enable this test
+		#
+		bozo|bozo-vm|vm01|vm03|vm36)
+			if [ ! -f $PCP_LOG_DIR/pmlogger/$host/$yesterday.meta.xz -a ! -f $PCP_LOG_DIR/pmlogger/$host/$yesterday.meta ]
 			then
-			    echo "check.callback: fail: pmlogger_daily not well!"
-			    echo "Missing $yesterday archive but $nfile component archives ..."
-			    ls -l $PCP_LOG_DIR/pmlogger/$host/$yesterday.*
+			    # after a virgin install, or cleaning out the directory,
+			    # or a hostname change, there will be NO $yesterday files
+			    # at all, so be quiet if this is the case ...
+			    #
+			    nfile=`find  $PCP_LOG_DIR/pmlogger/$host -type f | grep "^$PCP_LOG_DIR/pmlogger/$host/$yesterday.*\\.meta" | wc -l | sed -e 's/ //g'`
+			    if [ "$nfile" -gt 0 ]
+			    then
+				echo "check.callback: fail: pmlogger_daily not well!"
+				echo "Missing $yesterday archive but $nfile component archives ..."
+				ls -l $PCP_LOG_DIR/pmlogger/$host/$yesterday.*
+			    fi
 			fi
-		    fi
-		    ;;
-	esac
-	;;
-esac
+			;;
+	    esac
+	    ;;
+    esac
+fi
 
 status=0
 tmp=/var/tmp/check.callback-$$
@@ -82,7 +91,7 @@ then
     echo "--- start pre-check ---"
     ./941 --check $1
     ./870 --check $1
-    $sudo egrep '^type=(AVC|SELINUX).*pcp' $audit >$1.pre-avc 2>/dev/null
+    $sudo grep -E '^type=(AVC|SELINUX).*pcp' $audit >$1.pre-avc 2>/dev/null
     echo "before `wc -l <$1.pre-avc` AVC errors"
     echo "--- end pre-check ---"
     exit
@@ -149,7 +158,7 @@ else
 	else
 	    diff=true
 	fi
-	if $diff
+	if $diff_prog
 	then
 	    echo "... and different output from 3 seconds later"
 	    cat $tmp.err.2 $tmp.out.2
@@ -159,7 +168,20 @@ else
     fi
 fi
 
-# Check are all pmdas alive and well
+# Some PMDAs have trouble starting on some VMs ... if one of these
+# has failed, try restarting it
+pminfo -f pmcd.agent.status | grep 'value [^0]' >$tmp.out
+if grep '"nfsclient"' $tmp.out >/dev/null
+then
+    pmstore pmcd.control.sighup 1 >/dev/null
+    sleep 2
+elif grep '"openmetrics"' $tmp.out >/dev/null
+then
+    pmstore pmcd.control.sighup 1 >/dev/null
+    sleep 2
+fi
+
+# Check are all PMDAs alive and well
 #
 if pminfo -f pmcd.agent.status >$tmp.out 2>$tmp.err
 then
@@ -176,7 +198,7 @@ p
     do
 	if [ "$status" != 0 ]
 	then
-	    echo "check.callback: fail: pmda $name not well, status=$status!"
+	    echo "check.callback: fail: PMDA $name not well, status=$status!"
 	    $abort && status=1
 	fi
 	echo "$name" >>$tmp.pmdalist
@@ -187,7 +209,7 @@ p
 	then
 	    :
 	else
-	    echo "check.callback: fail: installed pmdas changed!"
+	    echo "check.callback: fail: installed PMDAs changed!"
 	    cat $tmp.out
 	    $abort && status=1
 	fi
@@ -207,16 +229,43 @@ fi
 # - may need to add metrics (in the sed part) that are OK to return
 #   'Unknown or illegal metric', but this is most unlikely
 #
-pminfo -v -b 5000 2>&1 \
-| grep 'Unknown or illegal metric' \
+# NOTE:
+# pmproxy metrics are a bit odd because they come from an aliased
+# mmv PMDA that might take a while to get itself organized after
+# a pmcd restart
+#
+pminfo -v -b 2000 2>&1 \
+| grep -E '(Unknown or illegal metric)|(Unknown metric name)' \
 | sed >$tmp.out \
     -e '/^sample.*\.bad\.unknown:/d' \
-    -e '/^pmproxy\.pid:/d' \
+    -e '/^pmproxy\./d' \
     # end
 if [ -s $tmp.out ]
 then
     echo "check.callback: fail: PMNS not well!"
     cat $tmp.out
+    pminfo -f pmcd.agent.status \
+    | sed \
+	-e '/^pmcd\.agent\.status/d' \
+	-e 's/.* or "//' \
+	-e 's/"] value / /' \
+	-e '/^$/d' \
+    | while read pmda status
+    do
+	if [ "$status" -ne 0 ]
+	then
+	    echo "Warning: $pmda PMDA exited? pmcd.agent.status=$status"
+	    echo "Relevant pmcd.log lines ..."
+	    grep "$pmda" "$PCP_LOG_DIR/pmcd/pmcd.log"
+	    if [ -f "$PCP_LOG_DIR/pmcd/$pmda.log" ]
+	    then
+		echo "=== $pmda.log ==="
+		cat "$PCP_LOG_DIR/pmcd/$pmda.log"
+	    else
+		echo "Warning: $PCP_LOG_DIR/pmcd/pmcd.log: not found"
+	    fi
+	fi
+    done
     $abort && status=1
 fi
 
@@ -234,11 +283,34 @@ fi
 # Check audit log for any Security Enhanced Linux access denials
 # related to PCP ...
 #
-$sudo egrep '^type=(AVC|SELINUX).*pcp' $audit 2>/dev/null >$1.post-avc
+$sudo grep -E '^type=(AVC|SELINUX).*pcp' $audit 2>/dev/null >$1.post-avc
 if [ -f $1.pre-avc ]
 then
     diff $1.pre-avc $1.post-avc \
     | sed -n -e '/> /s///p' >$tmp.out
+    # Now there are _some_ AVCs reported here that are selinux snarfoos
+    # rather than problems with PCP and the associated PCP policy files.
+    # These ones have been triaged up the wazoo, and can safely be ignored
+    # here.
+    #
+    case `admin/whatami`
+    in
+	vm39*RHEL\ 8.5*)
+	    sed <$tmp.out >$tmp.tmp \
+		-e '/{ write } .* comm="rpcinfo" name="rpcbind.sock" .* scontext=system_u:system_r:pcp_pmcd_t:s0 tcontext=system_u:object_r:rpcbind_var_run_t:s0 tclass=sock_file/d' \
+		-e '/{ sys_resource } .* comm="pmproxy" capability=24  scontext=system_u:system_r:pcp_pmproxy_t:s0 tcontext=system_u:system_r:pcp_pmproxy_t:s0 tclass=capability/d' \
+		-e '/{ sys_admin } .* comm="pmproxy" capability=21  scontext=system_u:system_r:pcp_pmproxy_t:s0 tcontext=system_u:system_r:pcp_pmproxy_t:s0 tclass=capability/d' \
+	    # end
+	    if diff $tmp.out $tmp.tmp >$tmp.new
+	    then
+		:
+	    else
+		echo "Note: check.callback chose to culled these new AVCs ..." >>$1.full
+		sed -n -e '/> /s///p' <$tmp.new >>$1.full
+		mv $tmp.tmp $tmp.out
+	    fi
+	    ;;
+    esac
     if [ -s $tmp.out ]
     then
 	echo "check.callback: fail: new SELinux/AVC denials"
@@ -248,5 +320,7 @@ then
     fi
 fi
 rm -f $1.pre-avc $1.post-avc
+
+rm -f $here/onetrip
 
 exit

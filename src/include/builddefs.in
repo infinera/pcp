@@ -1,5 +1,5 @@
 #
-# Copyright (c) 2012-2021 Red Hat.
+# Copyright (c) 2012-2022 Red Hat.
 # Copyright (c) 2008 Aconex.  All Rights Reserved.
 # Copyright (c) 2000,2003,2004 Silicon Graphics, Inc.  All Rights Reserved.
 #
@@ -57,7 +57,8 @@ LIBPCP_ABIDIR ?= src
 PCPLIB_LDFLAGS = -L$(TOPDIR)/src/libpcp/$(LIBPCP_ABIDIR) \
 		 -L$(TOPDIR)/src/libpcp_web/$(LIBPCP_ABIDIR) \
 		 -L$(TOPDIR)/src/libpcp_pmda/$(LIBPCP_ABIDIR) \
-		 -L$(TOPDIR)/src/libpcp_mmv/$(LIBPCP_ABIDIR)
+		 -L$(TOPDIR)/src/libpcp_mmv/$(LIBPCP_ABIDIR) \
+		 -L$(TOPDIR)/src/libpcp_archive/$(LIBPCP_ABIDIR)
 # backward compatibility
 PCP_LIBS = $(PCPLIB_LDFLAGS)
 
@@ -115,35 +116,39 @@ ifeq "$(TARGET_OS)" "openbsd"
 DSOSUFFIX = so
 endif
 
+CFLAGS_DEV =
 CFLAGS_ABI = @cflags_abi@
 CFLAGS_OPT = @optimization@
+CFLAGS_SANITIZER = @sanitizer@
 CFLAGS += -I$(TOPDIR)/src/include -I$(TOPDIR)/src/include/pcp \
 	-DPCP_VERSION=\"$(PCP_VERSION)\" \
-	$(PCFLAGS) $(LCFLAGS) $(WARN_OFF) $(CFLAGS_OPT)
+	$(PCFLAGS) $(LCFLAGS) $(WARN_OFF) $(CFLAGS_OPT) $(CFLAGS_SANITIZER) $(CFLAGS_DEV)
 
 PIECFLAGS = @PIECFLAGS@
 PIELDFLAGS = @PIELDFLAGS@
 INVISIBILITY = @INVISIBILITY@	# hide shared library symbols
 
-NSSCFLAGS = @NSSCFLAGS@
-NSPRCFLAGS = @NSPRCFLAGS@
-SASLCFLAGS = @SASLCFLAGS@
 AVAHICFLAGS = @avahi_CFLAGS@
 LZMACFLAGS = @lzma_CFLAGS@
 LIBUVCFLAGS = @libuv_CFLAGS@
 OPENSSLCFLAGS = @openssl_CFLAGS@
+SASLCFLAGS = @libsasl2_CFLAGS@
 
 LDFLAGS += $(PLDFLAGS) $(WARN_OFF) $(PCP_LIBS) $(LLDFLAGS)
 
 SRCFILES = GNUmakefile $(HFILES) $(CFILES) $(CXXFILES) $(MFILES) \
 	$(LSRCFILES) $(LFILES) $(YFILES) $(PYFILES)
 
-LDLIBS = $(LLDLIBS) $(PLDLIBS)
+GPERFTOOLS_LIBS = @gperftools_LIBS@
+
+# tcmalloc of gperftools must be linked last
+LDLIBS = $(LLDLIBS) $(PLDLIBS) $(GPERFTOOLS_LIBS)
 MAKEOPTS = --no-print-directory
 
 ifdef PROJECT
 QTDIRDIRT = build debug release .obj .ui .moc .qrc *.xcodeproj *.app
-QTDIRT = *.a *.o ui_* moc_* qrc_* Info.plist Makefile* object_script.*
+QTDIRT = *.a *.o ui_* moc_* qrc_* Info.plist Makefile* object_script.* \
+	.qmake.stash
 endif
 DEPDIRT = dep dep.bak
 MANDIRT = *.[1-9].gz *.[1-9].bz2 *.[1-9].lzma *.[1-9].xz *.[1-9].tmp
@@ -224,6 +229,12 @@ GENPMDA	= $(TOPDIR)/src/genpmda/genpmda
 PKGMK	= @pkgmk@
 MD5SUM	= @md5sum@
 INKSCAPE = @inkscape@
+CLANG = @clang@
+LLVM_STRIP = @llvm_strip@
+BPFTOOL = $(TOPDIR)/vendor/github.com/libbpf/bpftool/src/bpftool
+PMDABPF_ARCH = @pmdabpf_arch@
+PMDABPF_VMLINUXH = @pmdabpf_vmlinuxh@
+PMDABPF_MODULES = @pmdabpf_modules@
 
 HAVE_MANPAGES = @have_manpages@
 HAVE_GZIPPED_MANPAGES = @have_gzipped_manpages@
@@ -238,13 +249,13 @@ PCP_DESKTOP_DIR = @pcp_desktop_dir@
 PCP_PMNS_DIR = @pcp_pmns_dir@
 PCP_PMNSADM_DIR = @pcp_pmnsadm_dir@
 PCP_SELINUX_DIR = @pcp_selinux_dir@
-PCP_SELINUXADM_DIR = @pcp_selinuxadm_dir@
 PCP_BASHSHARE_DIR = @pcp_bashshare_dir@
 
 NEED_OLD_TBL_HEADER = @need_old_tbl_header@
 RDYNAMIC_FLAG = @rdynamic_flag@
 QT_RELEASE = @qt_release@
 QT_VERSION = @qt_version@
+CLANG_MAJOR_VERSION = @CLANG_MAJOR_VERSION@
 
 # configuration state affecting the entire build
 ENABLE_SHARED = @enable_shared@
@@ -254,55 +265,12 @@ ENABLE_AVAHI = @enable_avahi@
 ENABLE_DSTAT = @enable_dstat@
 ENABLE_QT = @enable_qt@
 ENABLE_QT3D = @enable_qt3d@
-ENABLE_PERL = @enable_perl@
 ENABLE_PYTHON2 = @enable_python2@
 ENABLE_PYTHON3 = @enable_python3@
 ENABLE_SYSTEMD = @enable_systemd@
 ENABLE_SELINUX = @enable_selinux@
 ENABLE_DECOMPRESSION = @enable_decompression@
 ENABLE_LZMA = @enable_lzma@
-
-# selinux configuration bits
-# pcpupstream.te
-PCP_SELINUX_FILES_LIST_NON_AUTH_DIRS = @pcp_selinux_files_list_non_auth_dirs@
-PCP_SELINUX_CAP_USERNS_PTRACE = @pcp_selinux_cap_userns_ptrace@
-PCP_SELINUX_CONTAINER_RUNTIME = @pcp_selinux_container_runtime@
-PCP_SELINUX_NSFS = @pcp_selinux_nsfs@
-PCP_SELINUX_DOCKER_VAR_LIB = @pcp_selinux_docker_var_lib@
-PCP_SELINUX_UNRESERVED_PORT = @pcp_selinux_unreserved_port@
-PCP_SELINUX_TRACEFS = @pcp_selinux_tracefs@
-PCP_SELINUX_HOSTNAME_EXEC_MAP = @pcp_selinux_hostname_exec_map@
-PCP_SELINUX_UNCONFINED = @pcp_selinux_unconfined@
-PCP_SELINUX_NUMAD = @pcp_selinux_numad@
-PCP_SELINUX_BPF = @pcp_selinux_bpf@
-PCP_SELINUX_RPM_VAR_LIB = @pcp_selinux_rpm_var_lib@
-PCP_SELINUX_VIRT_VAR_RUN = @pcp_selinux_virt_var_run@
-PCP_SELINUX_PROC_SECURITY = @pcp_selinux_proc_security@
-PCP_SELINUX_SBD_EXEC = @pcp_selinux_sbd_exec@
-PCP_SELINUX_FILES_MMAP_ALL_FILES = @pcp_selinux_files_mmap_all_files@
-PCP_SELINUX_CAP2_SYSLOG = @pcp_selinux_cap2_syslog@
-PCP_SELINUX_ICMP_SOCKET_CLASS = @pcp_selinux_icmp_socket_class@
-PCP_SELINUX_LOCKDOWN = @pcp_selinux_lockdown@
-PCP_SELINUX_LOCKDOWN_CLASS = @pcp_selinux_lockdown_class@
-# pcpqa.te
-PCP_SELINUX_INITRC_TMP = @pcp_selinux_initrc_tmp@
-PCP_SELINUX_SUDO_EXEC = @pcp_selinux_sudo_exec@
-PCP_SELINUX_SECURITY = @pcp_selinux_security@
-PCP_SELINUX_CHKPWD_EXEC = @pcp_selinux_chkpwd_exec@
-PCP_SELINUX_INITRC = @pcp_selinux_initrc@
-PCP_SELINUX_VAR_LOG = @pcp_selinux_var_log@
-PCP_SELINUX_LASTLOG = @pcp_selinux_lastlog@
-PCP_SELINUX_XAUTH_EXEC = @pcp_selinux_xauth_exec@
-PCP_SELINUX_LOGROTATE = @pcp_selinux_logrotate@
-PCP_SELINUX_FAILLOG = @pcp_selinux_faillog@
-PCP_SELINUX_NETLINK_SELINUX_SOCKET_CLASS = @pcp_selinux_netlink_selinux_socket_class@
-PCP_SELINUX_NETLINK_AUDIT_SOCKET_CLASS = @pcp_selinux_netlink_audit_socket_class@
-PCP_SELINUX_SOCK_FILE_CLASS = @pcp_selinux_sock_file_class@
-PCP_SELINUX_SECURITY_CLASS = @pcp_selinux_security_class@
-PCP_SELINUX_DIR_CLASS = @pcp_selinux_dir_class@
-PCP_SELINUX_RAWIP_SOCKET_CLASS = @pcp_selinux_rawip_socket_class@
-PCP_SELINUX_NETLINK_GENERIC_SOCKET_CLASS = @pcp_selinux_netlink_generic_socket_class@
-PCP_SELINUX_NETLINK_TCPDIAG_SOCKET_CLASS = @pcp_selinux_netlink_tcpdiag_socket_class@
 
 # for code supporting any modern version of perl
 HAVE_PERL = @have_perl@
@@ -333,27 +301,31 @@ LIB_FOR_DLOPEN = @lib_for_dlopen@
 LIB_FOR_HDR_HISTOGRAM = @lib_for_hdr_histogram@
 LIB_FOR_LZMA = @lib_for_lzma@
 LIB_FOR_MATH = @lib_for_math@
-LIB_FOR_NSS = @lib_for_nss@
-LIB_FOR_NSPR = @lib_for_nspr@
 LIB_FOR_PTHREADS = @lib_for_pthreads@
 LIB_FOR_READLINE = @lib_for_readline@
 LIB_FOR_REGEX = @lib_for_regex@
 LIB_FOR_RT = @lib_for_rt@
-LIB_FOR_SASL = @lib_for_sasl@
-LIB_FOR_SSL = @lib_for_ssl@
+LIB_FOR_BACKTRACE = @lib_for_backtrace@
 
 HAVE_LIBUV = @HAVE_LIBUV@
 LIB_FOR_LIBUV = @libuv_LIBS@
-HAVE_OPENSSL = @HAVE_OPENSSL@
-LIB_FOR_OPENSSL = @openssl_LIBS@
-HAVE_LIBVARLINK = @HAVE_LIBVARLINK@
-LIB_FOR_LIBVARLINK = @libvarlink_LIBS@
+HAVE_LIBBPF = @HAVE_LIBBPF@
+LIBBPF_VERSION = @libbpf_version@
+LIB_FOR_LIBBPF = @libbpf_LIBS@
+HAVE_LIBELF = @HAVE_LIBELF@
+LIB_FOR_LIBELF = @libelf_LIBS@
 HAVE_NCURSES = @HAVE_NCURSES@
 LIB_FOR_NCURSES = @ncurses_LIBS@
 HAVE_NCURSESW = @HAVE_NCURSESW@
 LIB_FOR_NCURSESW = @ncursesw_LIBS@
 HAVE_DEVMAPPER = @HAVE_DEVMAPPER@
 LIB_FOR_DEVMAPPER = @DEVMAPPER_LIBS@
+HAVE_CMOCKA = @HAVE_CMOCKA@
+LIB_FOR_CMOCKA = @cmocka_LIBS@
+HAVE_SASL = @HAVE_SASL@
+LIB_FOR_LIBSASL2 = @libsasl2_LIBS@
+HAVE_OPENSSL = @HAVE_OPENSSL@
+LIB_FOR_OPENSSL = @openssl_LIBS@
 
 # configuration state for optional performance domains
 SYSTEMD_CFLAGS = @SYSTEMD_CFLAGS@
@@ -361,10 +333,9 @@ SYSTEMD_LIBS = @SYSTEMD_LIBS@
 PFM_LIBS = @PFM_LIBS@
 IB_LIBS = @IB_LIBS@
 PMDA_BCC = @PMDA_BCC@
+PMDA_BPF = @PMDA_BPF@
 PMDA_BPFTRACE = @PMDA_BPFTRACE@
-PMDA_RPM = @PMDA_RPM@
 PMDA_JSON = @PMDA_JSON@
-PMDA_PODMAN = @PMDA_PODMAN@
 PMDA_STATSD = @PMDA_STATSD@
 PMDA_LIBVIRT = @PMDA_LIBVIRT@
 PMDA_SYSTEMD = @PMDA_SYSTEMD@
@@ -374,6 +345,7 @@ PMDA_OPENMETRICS = @PMDA_OPENMETRICS@
 PMDA_ELASTICSEARCH = @PMDA_ELASTICSEARCH@
 PMDA_MYSQL = @PMDA_MYSQL@
 PMDA_ORACLE = @PMDA_ORACLE@
+PMDA_MONGODB = @PMDA_MONGODB@
 PMDA_POSTGRESQL = @PMDA_POSTGRESQL@
 PMDA_SNMP = @PMDA_SNMP@
 PMDA_NGINX = @PMDA_NGINX@
@@ -613,7 +585,6 @@ endif
 
 PERL_MAKE_MAKEFILE = \
 	export PCP_TOPDIR="`cd $(TOPDIR) && pwd`"; \
-	NSS_CFLAGS="$(NSS_CFLAGS)" NSPR_CFLAGS="$(NSPR_CFLAGS)" \
         TARGET_OS="$(TARGET_OS)" CC="$(CC) $(CFLAGS_ABI)" perl Makefile.PL $(MAKEMAKER_EXTRA_OPTIONS) $(MAKEMAKER_OPTIONS)
 
 # Collect files from a Perl "make -f Makefile install" below
@@ -822,6 +793,11 @@ endif	# openbsd if
 endif	# cocoa ... freebsd if
 endif	# linux && !gentoo if
 
+# Linux and Unix platforms:
+ifeq "$(findstring $(PCP_PLATFORM),darwin mingw)" ""
+BINARY = build/$(QT_RELEASE)/$(COMMAND)
+LNMAKE = test ! -f $(BINARY) -o -L $(COMMAND) || ( rm -f $(COMMAND) && $(LN_S) $(BINARY) $(COMMAND) )
+WINDOW = x11
 # qmake botches the order of the -L arguments in the generated $(LIBS)
 # in the Makefile ... need to get the Qt libraries dir (begins with a /)
 # out from the head of the list and insert it before the first -l argument
@@ -832,13 +808,16 @@ endif	# linux && !gentoo if
 # LIBS = $(SUBLIBS) -L../libpcp/src -L../libpcp_qmc/src ... -L/usr/lib -lpcp_qmc ...
 #
 QTFIX = sed -e 's/Makefile.new/Makefile/g' <Makefile.new | $(AWK) '$$1 == "LIBS" { printf $$1; for (i=2;i<=NF;i++) { if ($$i~/^-L\//) { save=save " " $$i; continue } else if (save!="" && $$i~/^-l/) { printf " %s",save; save="" } printf " %s",$$i } if (save!="") printf " %s",save; print ""; next } { print }' >Makefile.fix
-
+#
 # Qt magic for build/installs across all the supported platforms
 # because qmake does not always get it right, e.g. omitting -fPIC for
 # static libraries in Qt5 on Ubuntu x86_64, we need to push our CFLAGS, CXXFLAGS
 # (usually empty) and LDFLAGS down
 #
-QTMAKE = rm -f Makefile.new Makefile.fix; CFLAGS='$(CFLAGS)' CXXFLAGS='$(CXXFLAGS)' LDFLAGS='$(LDFLAGS)' $(QMAKE) -o Makefile.new CONFIG+=$(QT_RELEASE) && $(QTFIX) && ( if [ -f Makefile ]; then if diff Makefile Makefile.fix >/dev/null; then :; else rm -f Makefile; mv Makefile.fix Makefile; fi; else mv Makefile.fix Makefile; fi ); rm -f Makefile.new Makefile.fix; $(MAKE) $(MAKEOPTS) -f Makefile
+QTMAKE = rm -f Makefile.new Makefile.fix; export CC='$(CC)'; export CXX='$(CXX)'; CFLAGS='$(CFLAGS)' CXXFLAGS='$(CXXFLAGS)' LDFLAGS='$(LDFLAGS)' $(QMAKE) -o Makefile.new CONFIG+=$(QT_RELEASE) && $(QTFIX) && ( if [ -f Makefile ]; then if diff Makefile Makefile.fix >/dev/null; then :; else rm -f Makefile; mv Makefile.fix Makefile; fi; else mv Makefile.fix Makefile; fi ); rm -f Makefile.new Makefile.fix; $(MAKE) $(MAKEOPTS) -f Makefile
+else
+# Windows and Mac platforms:
+QTMAKE = CFLAGS='$(CFLAGS)' CXXFLAGS='$(CXXFLAGS)' LDFLAGS='$(LDFLAGS)' $(QMAKE) CONFIG+=$(QT_RELEASE) && $(MAKE) $(MAKEOPTS) -f Makefile
 ifeq ($(PCP_PLATFORM),darwin)
 MACBUILD = build/$(QT_RELEASE)/$(COMMAND).app/Contents
 BINARY = $(MACBUILD)/MacOS/$(COMMAND)
@@ -850,10 +829,6 @@ BINARY = build/$(QT_RELEASE)/$(COMMAND)$(EXECSUFFIX)
 LNMAKE =
 WINDOW = win
 endif
-ifeq "$(findstring $(PCP_PLATFORM),darwin mingw)" ""
-BINARY = build/$(QT_RELEASE)/$(COMMAND)
-LNMAKE = test ! -f $(BINARY) -o -L $(COMMAND) || ( rm -f $(COMMAND) && $(LN_S) $(BINARY) $(COMMAND) )
-WINDOW = x11
 endif
 
 ifeq ($(PCP_PLATFORM),darwin)
@@ -884,7 +859,7 @@ MAC_FRAMEWORKS_DIR=$(MAC_APPSUPPORT_DIR)/Frameworks
 # rule before calling install rule for the binary.
 INSTALL_QT_FRAMEWORKS=\
     otool -L $(1) | awk '{if (NR != 1) {print $$1}}' |\
-    egrep 'Qt.*\.framework' | while read qt; do \
+    grep -E 'Qt.*\.framework' | while read qt; do \
 	tdir=`dirname $$qt`; \
 	install_name_tool -change $$qt $(MAC_FRAMEWORKS_DIR)/$$qt $(1);\
 	$(call INSTALL_DIRECTORY_HIERARCHY,$(MAC_FRAMEWORKS_DIR)/$$tdir,/Library/PCP); \
@@ -892,7 +867,7 @@ INSTALL_QT_FRAMEWORKS=\
 	fwqt="frameworks/$$qt"; \
 	cp /Library/Frameworks/$$qt frameworks/$$qt || exit 1; \
 	otool -L $$fwqt | awk '{if (NR != 1) {print $$1}}' |\
-	egrep 'Qt.*\.framework' | while read dep; do \
+	grep -E 'Qt.*\.framework' | while read dep; do \
 	    install_name_tool -change $$dep $(MAC_FRAMEWORKS_DIR)/$$dep $$fwqt;\
 	done; \
 	$(INSTALL) frameworks/$$qt $(MAC_FRAMEWORKS_DIR)/$$qt; \
@@ -922,6 +897,9 @@ PCP_GROUP = @pcp_group@
 PCP_USER_INSTALL = @pcp_user_install@
 PCP_GROUP_INSTALL = @pcp_group_install@
 
+# systemd service type for logutil scripts
+SD_SERVICE_TYPE=@sd_service_type@
+
 PCPLIB = -lpcp
 PCPLIB_EXTRAS = $(LIB_FOR_MATH) $(LIB_FOR_PTHREADS) $(LIB_FOR_DLOPEN) $(LIB_FOR_RT)
 ifneq "$(PCPLIB)" "$(LIB_FOR_BASENAME)"
@@ -934,8 +912,9 @@ PCP_GUILIB = -lpcp_gui $(PCPLIB)
 PCP_PMDALIB = -lpcp_pmda $(PCPLIB)
 PCP_TRACELIB = -lpcp_trace $(PCPLIB)
 PCP_MMVLIB = -lpcp_mmv $(PCPLIB)
-PCPWEBLIB_EXTRAS = $(LIB_FOR_OPENSSL) $(LIB_FOR_LIBUV) $(PCP_PMDALIB) $(PCP_MMVLIB)
+PCPWEBLIB_EXTRAS = $(LIB_FOR_LIBSASL2) $(LIB_FOR_OPENSSL) $(LIB_FOR_LIBUV) $(PCP_PMDALIB) $(PCP_MMVLIB)
 PCP_WEBLIB = -lpcp_web $(PCPWEBLIB_EXTRAS)
+PCP_ARCHIVELIB = -lpcp_archive
 
 ifdef PCP_ALTLIBS
 ifeq ($(PCP_LIB_DIR),$(PCP_LIB32_DIR))
@@ -946,5 +925,9 @@ PCP_ALTLIBS =
 endif
 endif
 endif
+
+# (optional) hook for developer build definitions
+#
+-include $(TOPDIR)/src/include/builddefs_dev
 
 endif # _BUILDDEFS_INCLUDED_

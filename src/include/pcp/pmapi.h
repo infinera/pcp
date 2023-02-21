@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2012-2020 Red Hat.
+ * Copyright (c) 2012-2022 Red Hat.
  * Copyright (c) 1997,2004 Silicon Graphics, Inc.  All Rights Reserved.
  *
  * This library is free software; you can redistribute it and/or modify it
@@ -54,8 +54,11 @@
 extern "C" {
 #endif
 
-#define PMAPI_VERSION_2	2
-#define PMAPI_VERSION	PMAPI_VERSION_2
+#define PMAPI_VERSION_2	2	/* traditional PMAPI */
+#define PMAPI_VERSION_3	3	/* nanosec precision */
+#ifndef PMAPI_VERSION
+#define PMAPI_VERSION	PMAPI_VERSION_2   /* default */
+#endif
 
 /*
  * -------- Naming Services --------
@@ -221,8 +224,12 @@ typedef struct pmDesc {
 #define PM_ERR_BADDERIVE	(-PM_ERR_BASE-64)   /* Derived metric definition failed */
 #define PM_ERR_NOLABELS		(-PM_ERR_BASE-65)   /* No support for label metadata */
 #define PM_ERR_PMDAFENCED	(-PM_ERR_BASE-66)   /* PMDA is currently fenced and unable to respond to requests */
+#define PM_ERR_RECTYPE		(-PM_ERR_BASE-67)   /* Incorrect record type in an archive */
+#define PM_ERR_FEATURE		(-PM_ERR_BASE-68)   /* Archive feature not supported */
+#define PM_ERR_TLS		(-PM_ERR_BASE-69)   /* TLS protocol failure */
 
 /* retired PM_ERR_CTXBUSY (-PM_ERR_BASE-97) Context is busy */
+#define PM_ERR_BOTCH		(-PM_ERR_BASE-97)   /* Internal inconsistency detected or assertion failed */
 #define PM_ERR_TOOSMALL		(-PM_ERR_BASE-98)   /* Insufficient elements in list */
 #define PM_ERR_TOOBIG		(-PM_ERR_BASE-99)   /* Result size exceeded */
 #define PM_ERR_FAULT		(-PM_ERR_BASE-100)  /* QA fault injected */
@@ -288,9 +295,10 @@ PCP_CALL extern int pmTraversePMNS_r(const char *, void(*)(const char *, void *)
 
 /*
  * Given a metric, find it's descriptor (caller supplies buffer for desc),
- * from the current context.
+ * from the current context.  Both singular and multi-descriptor variants.
  */
 PCP_CALL extern int pmLookupDesc(pmID, pmDesc *);
+PCP_CALL extern int pmLookupDescs(int, pmID *, pmDesc *);
 
 /*
  * Return the internal instance identifier, from the current context,
@@ -355,6 +363,8 @@ PCP_CALL extern int pmNewContext(int, const char *);
 #define PM_CTXFLAG_RELAXED	(1U<<12)/* encrypted if possible else not */
 #define PM_CTXFLAG_AUTH		(1U<<13)/* make authenticated connection */
 #define PM_CTXFLAG_CONTAINER	(1U<<14)/* container connection attribute */
+					/* don't check V3 archive features */
+#define PM_CTXFLAG_NO_FEATURE_CHECK	(1U<<15)
 
 /*
  * Duplicate current context -- returns handle to new one for pmUseContext()
@@ -416,7 +426,7 @@ typedef struct pmProfile {
 
 /*
  * Result structure for instance domain queries
- * Only the PMDAs and pmcd need to know about this.
+ * Only the PMDAs, pmcd and libpcp_archive clients need to know about this.
  */
 typedef struct pmInResult {
     pmInDom	indom;		/* instance domain */
@@ -496,7 +506,10 @@ typedef struct pmResult {
     pmValueSet		*vset[1];	/* set of value sets, one per PMID */
 } pmResult;
 
-/* High resolution event timer result from pmUnpackHighResEventRecords() */
+/*
+ * Result returned by pmFetchHighRes() and high resolution event timer
+ * result from pmUnpackHighResEventRecords()
+ */
 typedef struct pmHighResResult {
     struct timespec	timestamp;	/* time stamped by collector */
     int			numpmid;	/* number of PMIDs */
@@ -525,9 +538,12 @@ typedef union {
  * the number of metrics in the agument.  
  */
 PCP_CALL extern int pmFetch(int, pmID *, pmResult **);
+PCP_CALL extern int pmFetchHighRes(int, pmID *, pmHighResResult **);
+/* older name maintained for backwards compatibility */
+PCP_CALL extern int pmHighResFetch(int, pmID *, pmHighResResult **);
 
 /*
- * PMCD state changes returned as pmFetch function result for PM_CONTEXT_HOST
+ * PMCD state changes returned as fetch function results for PM_CONTEXT_HOST
  * contexts, i.e. when communicating with PMCD
  */
 #define PMCD_ADD_AGENT		(1<<0)
@@ -541,9 +557,10 @@ PCP_CALL extern int pmFetch(int, pmID *, pmResult **);
 #define PMCD_NAMES_CHANGE	(1<<4)
 
 /*
- * Variant that is used to return a pmResult from an archive
+ * Variant that is used to return a result from an archive.
  */
 PCP_CALL extern int pmFetchArchive(pmResult **);
+PCP_CALL extern int pmFetchHighResArchive(pmHighResResult **);
 
 /*
  * Support for metric values annotated with name:value pairs (labels).
@@ -611,8 +628,10 @@ PCP_CALL extern int pmMergeLabelSets(pmLabelSet **, int, char *, int,
 PCP_CALL extern void pmFreeLabelSets(pmLabelSet *, int);
 
 /*
- * struct timeval is sometimes 2 x 64-bit ... we use a 2 x 32-bit format for
- * PDUs, internally within libpcp and for (external) archive logs
+ * struct timeval is sometimes 2 x 64-bit ... for backwards compatibility
+ * we use a 2 x 32-bit format for down-rev PDUs, and on-disk in version 2
+ * archive logs.  Current PDUs and on-disk format version 3 do not use 32
+ * bit seconds in timestamps.
  */
 typedef struct pmTimeval {
     __int32_t	tv_sec;		/* seconds since Jan. 1, 1970 */
@@ -627,18 +646,29 @@ typedef struct pmTimespec {
 /*
  * Label Record at the start of every log file - as exported above
  * the PMAPI ...
- * NOTE MAXHOSTNAMELEN is a bad choice here for ll_hostname[], as
- *	it may vary on different hosts ... we use PM_LOG_MAXHOSTLEN instead, and
- *	size this to be the same as MAXHOSTNAMELEN in IRIX 5.3
  * NOTE	that the struct timeval means we have another struct (__pmLogLabel)
- *	for internal use that has a pmTimeval in place of the struct timeval.
+ *	for internal use that has a __pmTimestamp in place of the struct
+ *	timeval.
  */
-#define PM_TZ_MAXLEN	40
-#define PM_LOG_MAXHOSTLEN		64
-#define PM_LOG_MAGIC	0x50052600
-#define PM_LOG_VERS02	0x2
-#define PM_LOG_VOL_TI	-2	/* temporal index */
-#define PM_LOG_VOL_META	-1	/* meta data */
+#define PM_LOG_MAGIC		0x50052600
+#define PM_LOG_VERS02		0x2
+#define PM_LOG_VERS03		0x3
+#define PM_LOG_VOL_TI		-2	/* temporal index */
+#define PM_LOG_VOL_META		-1	/* meta data */
+#define PM_LOG_MAXHOSTLEN	64	/* V2 only, deprecated with V3 */
+#define PM_TZ_MAXLEN		40	/* V2 only, deprecated with V3 */
+#define PM_MAX_HOSTNAMELEN	256	/* max supported for V3 onward */
+#define PM_MAX_TIMEZONELEN	256	/* max supported for V3 onward */
+#define PM_MAX_ZONEINFOLEN	256	/* max supported (new with V3) */
+
+/*
+ * feature bits for V3 archives
+ */
+#define PM_LOG_FEATURE_NONE	0
+#define PM_LOG_FEATURE_QA	(1U<<31)	/* QA not for general use */
+/* the currently supported feature bits */
+#define PM_LOG_FEATURES		(PM_LOG_FEATURE_NONE | PM_LOG_FEATURE_QA)
+
 typedef struct pmLogLabel {
     int		ll_magic;	/* PM_LOG_MAGIC | log format version no. */
     pid_t	ll_pid;				/* PID of logger */
@@ -647,14 +677,26 @@ typedef struct pmLogLabel {
     char	ll_tz[PM_TZ_MAXLEN];		/* $TZ at collection host */
 } pmLogLabel;
 
+typedef struct pmHighResLogLabel {
+    int		magic;	/* PM_LOG_MAGIC | log format version no. */
+    pid_t	pid;		/* PID of logger */
+    struct timespec start;	/* start of this log */
+    char	hostname[PM_MAX_HOSTNAMELEN];	/* collection host full name */
+    char	timezone[PM_MAX_TIMEZONELEN];	/* generic, squashed $TZ */
+    char	zoneinfo[PM_MAX_ZONEINFOLEN];	/* local platform $TZ */
+} pmHighResLogLabel;
+
 /*
  * Get the label record from the current archive context, and discover
  * when the archive ends
  */
+PCP_CALL extern int pmGetHighResArchiveLabel(pmHighResLogLabel *);
+PCP_CALL extern int pmGetHighResArchiveEnd(struct timespec *);
 PCP_CALL extern int pmGetArchiveLabel(pmLogLabel *);
 PCP_CALL extern int pmGetArchiveEnd(struct timeval *);
 
 /* Free result buffer */
+PCP_CALL extern void pmFreeHighResResult(pmHighResResult *);
 PCP_CALL extern void pmFreeResult(pmResult *);
 
 /* Value extract from pmValue and type conversion */
@@ -669,16 +711,23 @@ PCP_CALL extern int pmConvScale(int, const pmAtomValue *, const pmUnits *, pmAto
 
 /* Sort instances for each metric within a pmResult */
 PCP_CALL extern void pmSortInstances(pmResult *);
+PCP_CALL extern void pmSortHighResInstances(pmHighResResult *);
 
 /* Adjust collection time and/or mode for pmFetch */
 PCP_CALL extern int pmSetMode(int, const struct timeval *, int);
+PCP_CALL extern int pmSetModeHighRes(int, const struct timespec *, const struct timespec *);
 #define PM_MODE_LIVE	0
 #define PM_MODE_INTERP	1
 #define PM_MODE_FORW	2
 #define PM_MODE_BACK	3
+/* Extended time base definitions and macros - for pmSetMode(3) only */
+#define PM_XTB_FLAG	0x1000000
+#define PM_XTB_SET(m)	(PM_XTB_FLAG | ((m) << 16))
+#define PM_XTB_GET(m)	(((m) & PM_XTB_FLAG) ? (((m) & 0xff0000) >> 16) : -1)
 
 /* Modify the value of one or more metrics */
 PCP_CALL extern int pmStore(const pmResult *);
+PCP_CALL extern int pmStoreHighRes(const pmHighResResult *);
 
 /* Get help and descriptive text */
 PCP_CALL extern int pmLookupText(pmID, int, char **);
@@ -718,18 +767,24 @@ PCP_CALL extern char *pmNumberStr_r(double, char *, int);
 PCP_CALL extern const char *pmEventFlagsStr(int);		/* NOT thread-safe */
 PCP_CALL extern char *pmEventFlagsStr_r(int, char *, int);
 
-/* Extended time base definitions and macros */
-#define PM_XTB_FLAG	0x1000000
-
-#define PM_XTB_SET(type) (PM_XTB_FLAG | ((type) << 16))
-#define PM_XTB_GET(x) (((x) & PM_XTB_FLAG) ? (((x) & 0xff0000) >> 16) : -1)
-
 /* Parse -t, -S, -T, -A and -O options */
 PCP_CALL extern int pmParseInterval(const char *, struct timeval *, char **);
+PCP_CALL extern int pmParseHighResInterval(const char *, struct timespec *, char **);
 PCP_CALL extern int pmParseTimeWindow(
       const char *, const char *, const char *, const char *,
       const struct timeval *, const struct timeval *,
       struct timeval *, struct timeval *, struct timeval *, char **);
+PCP_CALL extern int pmParseHighResTimeWindow(
+      const char *, const char *, const char *, const char *,
+      const struct timespec *, const struct timespec *,
+      struct timespec *, struct timespec *, struct timespec *, char **);
+
+/* Sentinel value for end-time parameters in time window parsing */
+#if PM_SIZEOF_TIME_T == 8
+#define PM_MAX_TIME_T	LONGLONG_MAX
+#else
+#define PM_MAX_TIME_T	INT_MAX
+#endif
 
 /* Reporting timezone */
 PCP_CALL extern int pmUseZone(const int);
@@ -775,7 +830,13 @@ PCP_CALL extern int pmsprintf(char *, size_t, const char *, ...) __PM_PRINTFLIKE
  * Safe version of fscanf("...%s...", buf) ... buf dynamically allocated,
  * guaranteed to be null-byte terminated and returns strlen(buf)
  */
-PCP_CALL extern size_t pmfstring(FILE *f, char **);
+PCP_CALL extern ssize_t pmfstring(FILE *f, char **);
+
+/*
+ * Safe version of strlen(s) that handles null pointer input, in
+ * which case zero is returned.
+ */
+PCP_CALL extern size_t pmstrlen(const char *);
 
 /*
  * Safe version of strncpy() ... args are deliberately different to
@@ -977,10 +1038,14 @@ typedef struct pmOptions {
     int			narchives;
     char **		hosts;
     char **		archives;
+#if PMAPI_VERSION == PMAPI_VERSION_3
+    struct timeval	unused[4];
+#else
     struct timeval	start;
     struct timeval	finish;
     struct timeval	origin;
     struct timeval	interval;
+#endif
     char *		align_optarg;
     char *		start_optarg;
     char *		finish_optarg;
@@ -995,6 +1060,12 @@ typedef struct pmOptions {
     unsigned int	nsflag  : 1;
     unsigned int	Lflag   : 1;
     unsigned int	zeroes  : 28;
+#if PMAPI_VERSION == PMAPI_VERSION_3
+    struct timespec	start;
+    struct timespec	finish;
+    struct timespec	origin;
+    struct timespec	interval;
+#endif
 } pmOptions;
 
 PCP_CALL extern int pmgetopt_r(int, char *const *, pmOptions *);
@@ -1048,7 +1119,7 @@ typedef struct pmEventRecord {
 } pmEventRecord;
 
 typedef struct pmHighResEventRecord {
-    pmTimespec	er_timestamp;	/* must be 2 x 64-bit format */
+    pmTimespec		er_timestamp;	/* must be 2 x 64-bit format */
     unsigned int	er_flags;	/* event record characteristics */
     int			er_nparams;	/* number of er_param[] entries */
     pmEventParameter	er_param[1];
@@ -1135,6 +1206,7 @@ PCP_CALL extern int pmClearDebug(const char *);
  * New style ...
  * Note that comments are important ... these are extracted and
  * built into pmdbg.h.
+ * For the "add a new debug flag" recipe, see ../../libpcp/src/mk.pmdbg
  */
 typedef struct {
     int	pdu;		/* PDU traffic at the Xmit and Recv level */
@@ -1142,7 +1214,7 @@ typedef struct {
     int	profile;	/* Changes and xmits for instance profile */
     int	value;		/* Metric value extraction and conversion */
     int	context;	/* Changes to PMAPI contexts */
-    int	indom;		/* Low-level instance profile xfers */
+    int	indom;		/* Instance domain operations */
     int	pdubuf;		/* PDU buffer operations */
     int	log;		/* Archive log manipulations */
     int	logmeta;	/* Archive metadata operations */
@@ -1180,8 +1252,17 @@ typedef struct {
     int access;		/* Access controls */
     int qa;		/* QA (transient, developers only) */
     int search;		/* Text search tracing */
-    int query;		/* libpcp_web query parsing and evaulation */
+    int query;		/* libpcp_web query parsing and evaluation */
     int	compress;	/* Archive compress/decompress operations */
+    int dev0;		/* Developer flag 0 */
+    int dev1;		/* Developer flag 1 */
+    int dev2;		/* Developer flag 2 */
+    int	pmlc;		/* Protocol between pmlc and pmlogger */
+    int	appl6;		/* Application-specific flag 6 */
+    int	appl7;		/* Application-specific flag 7 */
+    int	appl8;		/* Application-specific flag 8 */
+    int	appl9;		/* Application-specific flag 9 */
+    int tls;		/* Transport Layer Security operations */
 } pmdebugoptions_t;
 
 PCP_DATA extern pmdebugoptions_t	pmDebugOptions;
@@ -1253,6 +1334,15 @@ PCP_CALL extern double pmtimevalSub(const struct timeval *, const struct timeval
 PCP_CALL extern double pmtimevalToReal(const struct timeval *);
 PCP_CALL extern void pmtimevalFromReal(double, struct timeval *);
 PCP_CALL extern void pmPrintStamp(FILE *, const struct timeval *);
+
+/* struct timespec manipulations */
+PCP_CALL extern int pmtimespecNow(struct timespec *);
+PCP_CALL extern void pmtimespecInc(struct timespec *, const struct timespec *);
+PCP_CALL extern void pmtimespecDec(struct timespec *, const struct timespec *);
+PCP_CALL extern double pmtimespecAdd(const struct timespec *, const struct timespec *);
+PCP_CALL extern double pmtimespecSub(const struct timespec *, const struct timespec *);
+PCP_CALL extern double pmtimespecToReal(const struct timespec *);
+PCP_CALL extern void pmtimespecFromReal(double, struct timespec *);
 PCP_CALL extern void pmPrintHighResStamp(FILE *, const struct timespec *);
 
 /* filesystem path name separator */

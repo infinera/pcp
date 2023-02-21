@@ -17,8 +17,8 @@ TOPDIR = ../..
 include	$(TOPDIR)/src/include/builddefs
 include $(TOPDIR)/src/libpcp/src/GNUlibrarydefs
 
-MKFILE_SUBDIRS = cpu entropy filesys memory network percpu pernetif \
-		 global primary zeroconf
+MKFILE_SUBDIRS = cpu entropy filesys memory network percpu perdisk pernetif \
+		 power global primary zeroconf
 SUBDIRS	= $(MKFILE_SUBDIRS)
 
 CMDTARGET = pmieconf$(EXECSUFFIX)
@@ -34,7 +34,7 @@ LCFLAGS = -I$(TOPDIR)/src/pmie/src
 ifneq "$(CROSS_COMPILING)" "yes"
 STATICTARGETS = pmieconf.static$(EXECSUFFIX)
 STATIC_LIBPCP = $(TOPDIR)/src/libpcp_static/src/libpcp_static.a
-STATIC_LDLIBS = $(PCPLIB_EXTRAS) $(LIBPCP_LDLIBS)
+STATIC_LDLIBS = $(PCPLIB_EXTRAS) $(LIBPCP_LDLIBS) $(LIB_FOR_BACKTRACE)
 endif
 
 LDIRT = local $(CMDTARGET) $(STATICTARGETS) rate-syscalls \

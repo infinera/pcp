@@ -1,12 +1,12 @@
 /*
- * Copyright (c) 2012-2017,2020 Red Hat.
+ * Copyright (c) 2012-2017,2020-2022 Red Hat.
  * Copyright (c) 1995-2002,2004 Silicon Graphics, Inc.  All Rights Reserved.
- * 
+ *
  * This library is free software; you can redistribute it and/or modify it
  * under the terms of the GNU Lesser General Public License as published
  * by the Free Software Foundation; either version 2.1 of the License, or
  * (at your option) any later version.
- * 
+ *
  * This library is distributed in the hope that it will be useful, but
  * WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY
  * or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU Lesser General Public
@@ -48,7 +48,7 @@ typedef struct {
  */
 static __pmHashCtl	pc_hc;
 
-static int LogCheckForNextArchive(__pmContext *, int, pmResult **);
+static int LogCheckForNextArchive(__pmContext *, int, __pmResult **);
 static int LogChangeToNextArchive(__pmContext *);
 static int LogChangeToPreviousArchive(__pmContext *);
 
@@ -113,16 +113,27 @@ lock_ctx(__pmContext *ctxp, ctx_ctl_t *ccp)
 	ccp->need_ctx_unlock = 1;
     }
 
-return 0;
+    return 0;
+}
+
+static inline int
+__pmLogLabelVersion(const __pmLogLabel *llp)
+{
+    return llp->magic & 0xff;
+}
+
+int
+__pmLogVersion(const __pmLogCtl *lcp)
+{
+    return __pmLogLabelVersion(&lcp->label);
 }
 
 static int
-checkLabelConsistency (__pmContext *ctxp, const __pmLogLabel *lp)
+checkLabelConsistency(__pmContext *ctxp, const __pmLogLabel *lp)
 {
-    __pmArchCtl	*acp;
+    __pmArchCtl	*acp = ctxp->c_archctl;
 
     /* No checking to do if there are no other archives */
-    acp = ctxp->c_archctl;
     if (acp->ac_num_logs < 1)
 	return 0; /* ok */
 
@@ -132,160 +143,11 @@ checkLabelConsistency (__pmContext *ctxp, const __pmLogLabel *lp)
      * The version number is checked by __pmLogChkLabel.
      * Check the hostname.
      */
-    if (strcmp(lp->ill_hostname, ctxp->c_archctl->ac_log_list[0]->ml_hostname) != 0)
+    if (strcmp(lp->hostname, acp->ac_log_list[0]->hostname) != 0)
 	return PM_ERR_LOGHOST;
 
     /* All is ok */
     return 0;
-}
-
-int
-__pmLogChkLabel(__pmArchCtl *acp, __pmFILE *f, __pmLogLabel *lp, int vol)
-{
-    __pmLogCtl	*lcp = acp->ac_log;
-    int		len = 0;
-    int		version = UNKNOWN_VERSION;
-    int		xpectlen = sizeof(__pmLogLabel) + 2 * sizeof(len);
-    int		n;
-    int		sts;
-    int		diag_output = 0;
-    struct stat	sbuf;
-
-    if (vol >= 0 && vol < lcp->l_numseen && lcp->l_seen[vol]) {
-	/* FastPath, cached result of previous check for this volume */
-	__pmFseek(f, (long)(sizeof(__pmLogLabel) + 2*sizeof(int)), SEEK_SET);
-	version = 0;
-	goto func_return;
-    }
-
-    if (vol >= 0 && vol >= lcp->l_numseen) {
-	lcp->l_seen = (int *)realloc(lcp->l_seen, (vol+1)*(int)sizeof(lcp->l_seen[0]));
-	if (lcp->l_seen == NULL)
-	    lcp->l_numseen = 0;
-	else {
-	    int 	i;
-	    for (i = lcp->l_numseen; i < vol; i++)
-		lcp->l_seen[i] = 0;
-	    lcp->l_numseen = vol+1;
-	}
-    }
-
-    if (pmDebugOptions.log) {
-	fprintf(stderr, "__pmLogChkLabel: fd=%d vol=%d", __pmFileno(f), vol);
-	diag_output = 1;
-    }
-
-    __pmFseek(f, (long)0, SEEK_SET);
-    n = (int)__pmFread(&len, 1, sizeof(len), f);
-    len = ntohl(len);
-    if (n != sizeof(len) || len != xpectlen) {
-	if (__pmFeof(f)) {
-	    __pmClearerr(f);
-	    if (pmDebugOptions.log)
-		fprintf(stderr, " file is empty");
-	    version = PM_ERR_NODATA;
-	    goto func_return;
-	}
-	else {
-	    if (pmDebugOptions.log)
-		fprintf(stderr, " header read -> %d (expect %d) or bad header len=%d (expected %d)",
-		    n, (int)sizeof(len), len, xpectlen);
-	    if (__pmFerror(f)) {
-		__pmClearerr(f);
-		version = -oserror();
-		goto func_return;
-	    }
-	    else {
-		version = PM_ERR_LABEL;
-		goto func_return;
-	    }
-	}
-    }
-
-    if ((n = (int)__pmFread(lp, 1, sizeof(__pmLogLabel), f)) != sizeof(__pmLogLabel)) {
-	if (pmDebugOptions.log)
-	    fprintf(stderr, " bad label len=%d: expected %d",
-		n, (int)sizeof(__pmLogLabel));
-	if (__pmFerror(f)) {
-	    __pmClearerr(f);
-	    version = -oserror();
-	    goto func_return;
-	}
-	else {
-	    version = PM_ERR_LABEL;
-	    goto func_return;
-	}
-    }
-    else {
-	/* swab internal log label */
-	lp->ill_magic = ntohl(lp->ill_magic);
-	lp->ill_pid = ntohl(lp->ill_pid);
-	lp->ill_start.tv_sec = ntohl(lp->ill_start.tv_sec);
-	lp->ill_start.tv_usec = ntohl(lp->ill_start.tv_usec);
-	lp->ill_vol = ntohl(lp->ill_vol);
-    }
-
-    n = (int)__pmFread(&len, 1, sizeof(len), f);
-    len = ntohl(len);
-    if (n != sizeof(len) || len != xpectlen) {
-	if (pmDebugOptions.log)
-	    fprintf(stderr, " trailer read -> %d (expect %d) or bad trailer len=%d (expected %d)",
-		n, (int)sizeof(len), len, xpectlen);
-	if (__pmFerror(f)) {
-	    __pmClearerr(f);
-	    version = -oserror();
-	    goto func_return;
-	}
-	else {
-	    version = PM_ERR_LABEL;
-	    goto func_return;
-	}
-    }
-
-    version = lp->ill_magic & 0xff;
-    if ((lp->ill_magic & 0xffffff00) != PM_LOG_MAGIC ||
-	(version != PM_LOG_VERS02) || lp->ill_vol != vol) {
-	if (pmDebugOptions.log) {
-	    if ((lp->ill_magic & 0xffffff00) != PM_LOG_MAGIC)
-		fprintf(stderr, " label magic 0x%x not 0x%x as expected", (lp->ill_magic & 0xffffff00), PM_LOG_MAGIC);
-	    if (version != PM_LOG_VERS02)
-		fprintf(stderr, " label version %d not supported", version);
-	    if (lp->ill_vol != vol)
-		fprintf(stderr, " label volume %d not %d as expected", lp->ill_vol, vol);
-	}
-	version = PM_ERR_LABEL;
-	goto func_return;
-    }
-
-    if (__pmSetVersionIPC(__pmFileno(f), version) < 0)
-	return -oserror();
-    if (pmDebugOptions.log)
-	fprintf(stderr, " [magic=%8x version=%d vol=%d pid=%d host=%s]",
-		lp->ill_magic, version, lp->ill_vol, lp->ill_pid, lp->ill_hostname);
-
-    /*
-     * If we have the label record, and nothing else this is really
-     * an empty archive (probably pmlogger was killed off before any
-     * data records were written) ... better to return PM_ERR_NODATA
-     * here, rather than to stumble into PM_ERR_LOGREC at the first
-     * call to __pmLogRead*()
-     */
-    if ((sts = __pmFstat(f, &sbuf)) >= 0) {
-	if (sbuf.st_size == xpectlen) {
-	    if (pmDebugOptions.log)
-		fprintf(stderr, " file is empty");
-	    version = PM_ERR_NODATA;
-	}
-    }
-
-    if (vol >= 0 && vol < lcp->l_numseen)
-	lcp->l_seen[vol] = 1;
-
-func_return:
-    if (pmDebugOptions.log && diag_output)
-	fputc('\n', stderr);
-
-    return version;
 }
 
 static __pmFILE *
@@ -294,10 +156,10 @@ _logpeek(__pmArchCtl *acp, int vol)
     __pmLogCtl		*lcp = acp->ac_log;
     int			sts;
     __pmFILE		*f;
-    __pmLogLabel	label;
+    __pmLogLabel	label = {0};
     char		fname[MAXPATHLEN];
 
-    pmsprintf(fname, sizeof(fname), "%s.%d", lcp->l_name, vol);
+    pmsprintf(fname, sizeof(fname), "%s.%d", lcp->name, vol);
     /* need mutual exclusion here to avoid race with a concurrent uncompress */
     PM_LOCK(logutil_lock);
     if ((f = __pmFopen(fname, "r")) == NULL) {
@@ -306,12 +168,14 @@ _logpeek(__pmArchCtl *acp, int vol)
     }
     PM_UNLOCK(logutil_lock);
 
-    if ((sts = __pmLogChkLabel(acp, f, &label, vol)) < 0) {
+    sts = __pmLogChkLabel(acp, f, &label, vol);
+    __pmLogFreeLabel(&label);
+    if (sts < 0) {
 	__pmFclose(f);
 	setoserror(sts);
 	return NULL;
     }
-    
+
     return f;
 }
 
@@ -329,7 +193,7 @@ __pmLogChangeVol(__pmArchCtl *acp, int vol)
 	__pmResetIPC(__pmFileno(acp->ac_mfp));
 	__pmFclose(acp->ac_mfp);
     }
-    pmsprintf(fname, sizeof(fname), "%s.%d", lcp->l_name, vol);
+    pmsprintf(fname, sizeof(fname), "%s.%d", lcp->name, vol);
     /* need mutual exclusion here to avoid race with a concurrent uncompress */
     PM_LOCK(logutil_lock);
     if ((acp->ac_mfp = __pmFopen(fname, "r")) == NULL) {
@@ -338,70 +202,13 @@ __pmLogChangeVol(__pmArchCtl *acp, int vol)
     }
     PM_UNLOCK(logutil_lock);
 
-    if ((sts = __pmLogChkLabel(acp, acp->ac_mfp, &lcp->l_label, vol)) < 0) {
+    if ((sts = __pmLogChkLabel(acp, acp->ac_mfp, &lcp->label, vol)) < 0) {
 	return sts;
     }
     acp->ac_curvol = vol;
 
     if (pmDebugOptions.log)
 	fprintf(stderr, "__pmLogChangeVol: change to volume %d\n", vol);
-
-    return sts;
-}
-
-static int
-__pmLogLoadIndex(__pmLogCtl *lcp)
-{
-    int		sts = 0;
-    __pmFILE	*f = lcp->l_tifp;
-    int		n;
-    __pmLogTI	*tip;
-
-    lcp->l_numti = 0;
-    lcp->l_ti = NULL;
-
-    if (lcp->l_tifp != NULL) {
-	__pmFseek(f, (long)(sizeof(__pmLogLabel) + 2*sizeof(int)), SEEK_SET);
-	for ( ; ; ) {
-	    lcp->l_ti = (__pmLogTI *)realloc(lcp->l_ti, (1 + lcp->l_numti) * sizeof(__pmLogTI));
-	    if (lcp->l_ti == NULL) {
-		sts = -oserror();
-		break;
-	    }
-	    tip = &lcp->l_ti[lcp->l_numti];
-	    n = (int)__pmFread(tip, 1, sizeof(__pmLogTI), f);
-
-            if (n != sizeof(__pmLogTI)) {
-		if (__pmFeof(f)) {
-		    __pmClearerr(f);
-		    sts = 0; 
-		    break;
-		}
-	  	if (pmDebugOptions.log)
-	    	    fprintf(stderr, "__pmLogLoadIndex: bad TI entry len=%d: expected %d\n",
-		            n, (int)sizeof(__pmLogTI));
-		if (__pmFerror(f)) {
-		    __pmClearerr(f);
-		    sts = -oserror();
-		    break;
-		}
-		else {
-		    sts = PM_ERR_LOGREC;
-		    break;
-		}
-	    }
-	    else {
-		/* swab the temporal index record */
-		tip->ti_stamp.tv_sec = ntohl(tip->ti_stamp.tv_sec);
-		tip->ti_stamp.tv_usec = ntohl(tip->ti_stamp.tv_usec);
-		tip->ti_vol = ntohl(tip->ti_vol);
-		tip->ti_meta = ntohl(tip->ti_meta);
-		tip->ti_log = ntohl(tip->ti_log);
-	    }
-
-	    lcp->l_numti++;
-	}/*for*/
-    }/*not null*/
 
     return sts;
 }
@@ -480,40 +287,6 @@ __pmLogNewFile(const char *base, int vol)
 }
 
 int
-__pmLogWriteLabel(__pmFILE *f, const __pmLogLabel *lp)
-{
-    int		sts = 0;
-    struct {				/* skeletal external record */
-	int		header;
-	__pmLogLabel	label;
-	int		trailer;
-    } out;
-
-    out.header = out.trailer = htonl((int)sizeof(out));
-
-    /* swab */
-    out.label.ill_magic = htonl(lp->ill_magic);
-    out.label.ill_pid = htonl(lp->ill_pid);
-    out.label.ill_start.tv_sec = htonl(lp->ill_start.tv_sec);
-    out.label.ill_start.tv_usec = htonl(lp->ill_start.tv_usec);
-    out.label.ill_vol = htonl(lp->ill_vol);
-    memmove((void *)out.label.ill_hostname, (void *)lp->ill_hostname, sizeof(lp->ill_hostname));
-    memmove((void *)out.label.ill_tz, (void *)lp->ill_tz, sizeof(lp->ill_tz));
-
-    if ((sts = __pmFwrite(&out, 1, sizeof(out), f)) != sizeof(out)) {
-	char	errmsg[PM_MAXERRMSGLEN];
-	pmprintf("__pmLogWriteLabel: write failed: returns %d expecting %d: %s\n",
-	    sts, (int)sizeof(out), osstrerror_r(errmsg, sizeof(errmsg)));
-	pmflush();
-	sts = -oserror();
-    }
-    else
-	sts = 0;
-
-    return sts;
-}
-
-int
 __pmLogCreate(const char *host, const char *base, int log_version,
 	      __pmArchCtl *acp)
 {
@@ -521,49 +294,36 @@ __pmLogCreate(const char *host, const char *base, int log_version,
     int		save_error = 0;
     char	fname[MAXPATHLEN];
 
-    lcp->l_minvol = lcp->l_maxvol = acp->ac_curvol = 0;
-    lcp->l_hashpmid.nodes = lcp->l_hashpmid.hsize = 0;
-    lcp->l_hashindom.nodes = lcp->l_hashindom.hsize = 0;
-    lcp->l_trimindom.nodes = lcp->l_trimindom.hsize = 0;
-    lcp->l_hashlabels.nodes = lcp->l_hashlabels.hsize = 0;
-    lcp->l_hashtext.nodes = lcp->l_hashtext.hsize = 0;
-    lcp->l_tifp = lcp->l_mdfp = acp->ac_mfp = NULL;
+    lcp->minvol = lcp->maxvol = acp->ac_curvol = 0;
+    lcp->hashpmid.nodes = lcp->hashpmid.hsize = 0;
+    lcp->hashindom.nodes = lcp->hashindom.hsize = 0;
+    lcp->trimindom.nodes = lcp->trimindom.hsize = 0;
+    lcp->hashlabels.nodes = lcp->hashlabels.hsize = 0;
+    lcp->hashtext.nodes = lcp->hashtext.hsize = 0;
+    lcp->tifp = lcp->mdfp = acp->ac_mfp = NULL;
 
-    if ((lcp->l_tifp = __pmLogNewFile(base, PM_LOG_VOL_TI)) != NULL) {
-	if ((lcp->l_mdfp = __pmLogNewFile(base, PM_LOG_VOL_META)) != NULL) {
+    if ((lcp->tifp = __pmLogNewFile(base, PM_LOG_VOL_TI)) != NULL) {
+	if ((lcp->mdfp = __pmLogNewFile(base, PM_LOG_VOL_META)) != NULL) {
 	    if ((acp->ac_mfp = __pmLogNewFile(base, 0)) != NULL) {
-		char	tzbuf[PM_TZ_MAXLEN];
-		char	*tz;
-                int	sts;
+		char	*tz, tzbuf[MAXIMUM(PM_TZ_MAXLEN, PM_MAX_TIMEZONELEN)];
+		size_t	bytes;
 
-		tz = __pmTimezone_r(tzbuf, sizeof(tzbuf));
-
-		lcp->l_label.ill_magic = PM_LOG_MAGIC | log_version;
-		/*
-		 * Warning	ill_hostname may be truncated, but we
-		 *		guarantee it will be null-byte terminated
-		 */
-		strncpy(lcp->l_label.ill_hostname, host, PM_LOG_MAXHOSTLEN-1);
-		lcp->l_label.ill_hostname[PM_LOG_MAXHOSTLEN-1] = '\0';
-		lcp->l_label.ill_pid = (int)getpid();
-		/*
-		 * hack - how do you get the TZ for a remote host?
-		 */
-		strcpy(lcp->l_label.ill_tz, tz ? tz : "");
-		lcp->l_state = PM_LOG_STATE_NEW;
-
-                /*
-                 * __pmLogNewFile sets the IPC version to PDU_VERSION
-                 * we want log_version instead
-                 */
-		sts = __pmSetVersionIPC(__pmFileno(lcp->l_tifp), log_version);
-		if (sts < 0)
-                    return sts;
-		sts = __pmSetVersionIPC(__pmFileno(lcp->l_mdfp), log_version);
-		if (sts < 0)
-                    return sts;
-		sts = __pmSetVersionIPC(__pmFileno(acp->ac_mfp), log_version);
-		return sts;
+		lcp->label.magic = PM_LOG_MAGIC | log_version;
+		lcp->label.pid = (int)getpid();
+		if (lcp->label.hostname)
+		    free(lcp->label.hostname);
+		lcp->label.hostname = strdup(host);
+		if (lcp->label.timezone == NULL) {
+		    bytes = log_version == PM_LOG_VERS02 ?
+			    PM_TZ_MAXLEN : PM_MAX_TIMEZONELEN;
+		    if ((tz = __pmTimezone_r(tzbuf, bytes)) == NULL)
+			tz = "";
+		    lcp->label.timezone = strdup(tz);
+		}
+		if (lcp->label.zoneinfo == NULL && (tz = __pmZoneinfo()))
+		    lcp->label.zoneinfo = tz;
+		lcp->state = PM_LOG_STATE_NEW;
+		return 0;
 	    }
 	    else {
 		save_error = oserror();
@@ -579,7 +339,7 @@ __pmLogCreate(const char *host, const char *base, int log_version,
 	}
     }
 
-    lcp->l_tifp = lcp->l_mdfp = acp->ac_mfp = NULL;
+    lcp->tifp = lcp->mdfp = acp->ac_mfp = NULL;
     return oserror() ? -oserror() : -EPERM;
 }
 
@@ -617,10 +377,28 @@ logFreeHashInDom(__pmHashCtl *hcp)
 	for (hp = hcp->hash[i], prior_hp = NULL; hp != NULL; hp = hp->next) {
 	    for (idp = (__pmLogInDom *)hp->data, prior_idp = NULL;
 		idp != NULL; idp = idp->next) {
+		if ((idp->alloc & ~(PMLID_SELF|PMLID_INSTLIST|PMLID_NAMELIST|PMLID_NAMES)) != 0) {
+		    fprintf(stderr, "logFreeHashInDom(%p): Warning: bogus alloc flags: 0x%x for idp=%p\n",
+			hcp, idp->alloc & ~(PMLID_SELF|PMLID_INSTLIST|PMLID_NAMELIST|PMLID_NAMES), idp);
+		}
+
 		if (idp->buf != NULL)
 		    free(idp->buf);
-		if (idp->allinbuf == 0 && idp->namelist != NULL)
+		if (idp->numinst >= 0) {
+		    if (idp->alloc & PMLID_NAMES && idp->namelist != NULL) {
+			int		j;
+			for (j = 0; j < idp->numinst; j++) {
+			    if (idp->namelist[j] != NULL) {
+				free(idp->namelist[j]);
+				idp->namelist[j] = NULL;
+			    }
+			}
+		    }
+		}
+		if (idp->alloc & PMLID_NAMELIST && idp->namelist != NULL)
 		    free(idp->namelist);
+		if (idp->alloc & PMLID_INSTLIST && idp->instlist != NULL)
+		    free(idp->instlist);
 		if (prior_idp != NULL)
 		    free(prior_idp);
 		prior_idp = idp;
@@ -765,25 +543,27 @@ logFreeHashText(__pmHashCtl *type_ctl)
 static void
 logFreeMeta(__pmLogCtl *lcp)
 {
-    if (lcp->l_pmns != NULL) {
-	__pmFreePMNS(lcp->l_pmns);
-	lcp->l_pmns = NULL;
+    __pmLogFreeLabel(&lcp->label);
+
+    if (lcp->pmns != NULL) {
+	__pmFreePMNS(lcp->pmns);
+	lcp->pmns = NULL;
     }
 
-    if (lcp->l_hashpmid.hsize != 0)
-	logFreeHashPMID(&lcp->l_hashpmid);
+    if (lcp->hashpmid.hsize != 0)
+	logFreeHashPMID(&lcp->hashpmid);
 
-    if (lcp->l_hashindom.hsize != 0)
-	logFreeHashInDom(&lcp->l_hashindom);
+    if (lcp->hashindom.hsize != 0)
+	logFreeHashInDom(&lcp->hashindom);
 
-    if (lcp->l_trimindom.hsize != 0)
-	logFreeTrimInDom(&lcp->l_trimindom);
+    if (lcp->trimindom.hsize != 0)
+	logFreeTrimInDom(&lcp->trimindom);
 
-    if (lcp->l_hashlabels.hsize != 0)
-	logFreeHashLabels(&lcp->l_hashlabels);
+    if (lcp->hashlabels.hsize != 0)
+	logFreeHashLabels(&lcp->hashlabels);
 
-    if (lcp->l_hashtext.hsize != 0)
-	logFreeHashText(&lcp->l_hashtext);
+    if (lcp->hashtext.hsize != 0)
+	logFreeHashText(&lcp->hashtext);
 }
 
 /*
@@ -797,36 +577,36 @@ __pmLogClose(__pmArchCtl *acp)
     __pmLogCtl	*lcp = acp->ac_log;
 
     /*
-     * We no longer free l_pmns here or clear l_hashpmid or l_hashindom here.
+     * We no longer free pmns here or clear hashpmid or hashindom here.
      * They may be needed by the next archive of a multi-archive context.
      * They are now now freed as needed using logFreeMeta().
      */
-    if (lcp->l_tifp != NULL) {
-	__pmResetIPC(__pmFileno(lcp->l_tifp));
-	__pmFclose(lcp->l_tifp);
-	lcp->l_tifp = NULL;
+    if (lcp->tifp != NULL) {
+	__pmResetIPC(__pmFileno(lcp->tifp));
+	__pmFclose(lcp->tifp);
+	lcp->tifp = NULL;
     }
-    if (lcp->l_mdfp != NULL) {
-	__pmResetIPC(__pmFileno(lcp->l_mdfp));
-	__pmFclose(lcp->l_mdfp);
-	lcp->l_mdfp = NULL;
+    if (lcp->mdfp != NULL) {
+	__pmResetIPC(__pmFileno(lcp->mdfp));
+	__pmFclose(lcp->mdfp);
+	lcp->mdfp = NULL;
     }
     if (acp->ac_mfp != NULL) {
 	__pmResetIPC(__pmFileno(acp->ac_mfp));
 	__pmFclose(acp->ac_mfp);
 	acp->ac_mfp = NULL;
     }
-    if (lcp->l_name != NULL) {
-	free(lcp->l_name);
-	lcp->l_name = NULL;
+    if (lcp->name != NULL) {
+	free(lcp->name);
+	lcp->name = NULL;
     }
-    if (lcp->l_seen != NULL) {
-	free(lcp->l_seen);
-	lcp->l_seen = NULL;
-	lcp->l_numseen = 0;
+    if (lcp->seen != NULL) {
+	free(lcp->seen);
+	lcp->seen = NULL;
+	lcp->numseen = 0;
     }
-    if (lcp->l_ti != NULL)
-	free(lcp->l_ti);
+    if (lcp->ti != NULL)
+	free(lcp->ti);
 }
 
 int
@@ -834,19 +614,19 @@ __pmLogAddVolume(__pmArchCtl *acp, unsigned int vol)
 {
     __pmLogCtl	*lcp = acp->ac_log;
 
-    if (lcp->l_minvol == -1) {
-	lcp->l_minvol = vol;
-	lcp->l_maxvol = vol;
-    } else if (vol < lcp->l_minvol) {
-	lcp->l_minvol = vol;
-    } else if (vol > lcp->l_maxvol) {
-	lcp->l_maxvol = vol;
+    if (lcp->minvol == -1) {
+	lcp->minvol = vol;
+	lcp->maxvol = vol;
+    } else if (vol < lcp->minvol) {
+	lcp->minvol = vol;
+    } else if (vol > lcp->maxvol) {
+	lcp->maxvol = vol;
     }
     return 0;
 }
 
 int
-__pmLogLoadLabel(__pmArchCtl *acp, const char *name)
+__pmLogFindOpen(__pmArchCtl *acp, const char *name)
 {
     __pmLogCtl	*lcp = acp->ac_log;
     int		sts;
@@ -859,11 +639,7 @@ __pmLogLoadLabel(__pmArchCtl *acp, const char *name)
     char	*dir;
     DIR		*dirp = NULL;
     char	filename[MAXPATHLEN];
-#if defined(HAVE_READDIR64)
-    struct dirent64	*direntp;
-#else
     struct dirent	*direntp;
-#endif
 
     /*
      * find directory name component ... copy as dirname() may clobber
@@ -907,26 +683,22 @@ __pmLogLoadLabel(__pmArchCtl *acp, const char *name)
     }
 
     pmsprintf(filename, sizeof(filename), "%s%c%s", dir, sep, base);
-    if ((lcp->l_name = strdup(filename)) == NULL) {
+    if ((lcp->name = strdup(filename)) == NULL) {
 	sts = -oserror();
 	free(tbuf);
 	free(base);
 	return sts;
     }
 
-    lcp->l_minvol = -1;
-    lcp->l_tifp = lcp->l_mdfp = acp->ac_mfp = NULL;
-    lcp->l_ti = NULL;
-    lcp->l_numseen = 0; lcp->l_seen = NULL;
+    lcp->minvol = -1;
+    lcp->tifp = lcp->mdfp = acp->ac_mfp = NULL;
+    lcp->ti = NULL;
+    lcp->numseen = 0; lcp->seen = NULL;
 
     blen = (int)strlen(base);
     /* dirp is an on-stack variable, so readdir*() is THREADSAFE */
     if ((dirp = opendir(dir)) != NULL) {
-#if defined(HAVE_READDIR64)
-	while ((direntp = readdir64(dirp)) != NULL)		/* THREADSAFE */
-#else
 	while ((direntp = readdir(dirp)) != NULL)		/* THREADSAFE */
-#endif
 	{
 	    /*
 	     * direntp->d_name is defined as an array by POSIX, so we
@@ -945,14 +717,14 @@ __pmLogLoadLabel(__pmArchCtl *acp, const char *name)
 	    tp = &direntp->d_name[blen+1];
 	    if (strcmp(tp, "index") == 0) {
 		exists = 1;
-		if ((lcp->l_tifp = __pmFopen(filename, "r")) == NULL) {
+		if ((lcp->tifp = __pmFopen(filename, "r")) == NULL) {
 		    sts = -oserror();
 		    goto cleanup;
 		}
 	    }
 	    else if (strcmp(tp, "meta") == 0) {
 		exists = 1;
-		if ((lcp->l_mdfp = __pmFopen(filename, "r")) == NULL) {
+		if ((lcp->mdfp = __pmFopen(filename, "r")) == NULL) {
 		    sts = -oserror();
 		    goto cleanup;
 		}
@@ -982,11 +754,11 @@ __pmLogLoadLabel(__pmArchCtl *acp, const char *name)
 	
     }
 
-    if (lcp->l_minvol == -1 || lcp->l_mdfp == NULL) {
+    if (lcp->minvol == -1 || lcp->mdfp == NULL) {
 	if (pmDebugOptions.log) {
-	    if (lcp->l_minvol == -1)
+	    if (lcp->minvol == -1)
 		fprintf(stderr, "__pmLogOpen: Not found: data file \"%s.0\" (or similar)\n", base);
-	    if (lcp->l_mdfp == NULL)
+	    if (lcp->mdfp == NULL)
 		fprintf(stderr, "__pmLogOpen: Not found: metadata file \"%s.meta\"\n", base);
 	}
 	if (exists)
@@ -1014,40 +786,65 @@ __pmLogOpen(const char *name, __pmContext *ctxp)
 {
     __pmArchCtl	*acp = ctxp->c_archctl;
     __pmLogCtl	*lcp = ctxp->c_archctl->ac_log;
-    __pmLogLabel label;
+    __pmLogLabel label = {0};
     int		version;
     int		sts;
 
-    if ((sts = __pmLogLoadLabel(ctxp->c_archctl, name)) < 0)
+    if ((sts = __pmLogFindOpen(ctxp->c_archctl, name)) < 0) {
+	if (pmDebugOptions.log && pmDebugOptions.desperate) {
+	    char	errmsg[PM_MAXERRMSGLEN];
+	    fprintf(stderr, "__pmLogOpen(..., %s, ...): __pmLogFindOpen: %s\n",
+		name, pmErrStr_r(sts, errmsg, sizeof(errmsg)));
+	}
 	return sts;
+    }
 
     acp->ac_curvol = -1;
-    if ((sts = __pmLogChangeVol(acp, lcp->l_minvol)) < 0)
+    if ((sts = __pmLogChangeVol(acp, lcp->minvol)) < 0) {
+	if (pmDebugOptions.log && pmDebugOptions.desperate) {
+	    char	errmsg[PM_MAXERRMSGLEN];
+	    fprintf(stderr, "__pmLogOpen(..., %s, ...): __pmLogChangeVol: %s\n",
+		name, pmErrStr_r(sts, errmsg, sizeof(errmsg)));
+	}
 	goto cleanup;
+    }
     else
 	version = sts;
 
-    ctxp->c_origin = lcp->l_label.ill_start;
+    ctxp->c_origin = lcp->label.start;
 
-    if (lcp->l_tifp) {
-	sts = __pmLogChkLabel(acp, lcp->l_tifp, &label, PM_LOG_VOL_TI);
-	if (sts < 0)
+    if (lcp->tifp) {
+	sts = __pmLogChkLabel(acp, lcp->tifp, &label, PM_LOG_VOL_TI);
+	if (sts < 0) {
+	    if (pmDebugOptions.log && pmDebugOptions.desperate) {
+		char	errmsg[PM_MAXERRMSGLEN];
+		fprintf(stderr, "__pmLogOpen(..., %s, ...): __pmLogChkLabel TI: %s\n",
+		    name, pmErrStr_r(sts, errmsg, sizeof(errmsg)));
+	    }
 	    goto cleanup;
-	else if (sts != version) {
+	}
+	if (sts != version) {
 	    /* mismatch between meta & actual data versions! */
 	    sts = PM_ERR_LABEL;
 	    goto cleanup;
 	}
 
-	if (lcp->l_label.ill_pid != label.ill_pid ||
-		strcmp(lcp->l_label.ill_hostname, label.ill_hostname) != 0) {
+	if (lcp->label.pid != label.pid ||
+		strcmp(lcp->label.hostname, label.hostname) != 0) {
 	    sts = PM_ERR_LABEL;
 	    goto cleanup;
 	}
+	__pmLogFreeLabel(&label);
     }
 
-    if ((sts = __pmLogChkLabel(acp, lcp->l_mdfp, &label, PM_LOG_VOL_META)) < 0)
+    if ((sts = __pmLogChkLabel(acp, lcp->mdfp, &label, PM_LOG_VOL_META)) < 0) {
+	if (pmDebugOptions.log && pmDebugOptions.desperate) {
+	    char	errmsg[PM_MAXERRMSGLEN];
+	    fprintf(stderr, "__pmLogOpen(..., %s, ...): __pmLogChkLabel META: %s\n",
+		name, pmErrStr_r(sts, errmsg, sizeof(errmsg)));
+	}
 	goto cleanup;
+    }
     else if (sts != version) {	/* version mismatch between meta & ti */
 	sts = PM_ERR_LABEL;
 	goto cleanup;
@@ -1057,25 +854,44 @@ __pmLogOpen(const char *name, __pmContext *ctxp)
      * Perform consistency checks between this label and the labels of other
      * archives possibly making up this context.
      */
-    if ((sts = checkLabelConsistency(ctxp, &lcp->l_label)) < 0)
+    if ((sts = checkLabelConsistency(ctxp, &lcp->label)) < 0) {
+	if (pmDebugOptions.log && pmDebugOptions.desperate) {
+	    char	errmsg[PM_MAXERRMSGLEN];
+	    fprintf(stderr, "__pmLogOpen(..., %s, ...): checkLabelConsistency: %s\n",
+		name, pmErrStr_r(sts, errmsg, sizeof(errmsg)));
+	}
 	goto cleanup;
+    }
 
-    if ((sts = __pmLogLoadMeta(acp)) < 0)
+    if ((sts = __pmLogLoadMeta(acp)) < 0) {
+	if (pmDebugOptions.log && pmDebugOptions.desperate) {
+	    char	errmsg[PM_MAXERRMSGLEN];
+	    fprintf(stderr, "__pmLogOpen(..., %s, ...): __pmLogLoadMeta: %s\n",
+		name, pmErrStr_r(sts, errmsg, sizeof(errmsg)));
+	}
 	goto cleanup;
+    }
 
-    if ((sts = __pmLogLoadIndex(lcp)) < 0)
+    if ((sts = __pmLogLoadIndex(lcp)) < 0) {
+	if (pmDebugOptions.log && pmDebugOptions.desperate) {
+	    char	errmsg[PM_MAXERRMSGLEN];
+	    fprintf(stderr, "__pmLogOpen(..., %s, ...): __pmLogLoadIndex: %s\n",
+		name, pmErrStr_r(sts, errmsg, sizeof(errmsg)));
+	}
 	goto cleanup;
+    }
 
-    if (lcp->l_label.ill_pid != label.ill_pid ||
-	strcmp(lcp->l_label.ill_hostname, label.ill_hostname) != 0) {
+    if (lcp->label.pid != label.pid ||
+	strcmp(lcp->label.hostname, label.hostname) != 0) {
 	    sts = PM_ERR_LABEL;
 	    goto cleanup;
     }
+    __pmLogFreeLabel(&label);
 
-    PM_LOCK(lcp->l_lock);
-    lcp->l_refcnt = 0;
-    PM_UNLOCK(lcp->l_lock);
-    lcp->l_physend = -1;
+    PM_LOCK(lcp->lc_lock);
+    lcp->refcnt = 0;
+    PM_UNLOCK(lcp->lc_lock);
+    lcp->physend = -1;
 
     ctxp->c_mode = (ctxp->c_mode & 0xffff0000) | PM_MODE_FORW;
 
@@ -1083,104 +899,13 @@ __pmLogOpen(const char *name, __pmContext *ctxp)
 
 cleanup:
     __pmLogClose(acp);
+    __pmLogFreeLabel(&label);
     logFreeMeta(lcp);
     return sts;
 }
 
-void
-__pmLogPutIndex(const __pmArchCtl *acp, const pmTimeval *tp)
-{
-    __pmLogCtl	*lcp = acp->ac_log;
-    __pmLogTI	ti;
-    __pmLogTI	oti;
-    int		sts;
-
-    if (lcp->l_tifp == NULL || lcp->l_mdfp == NULL || acp->ac_mfp == NULL) {
-	/*
-	 * archive not really created (failed in __pmLogCreate) ...
-	 * nothing to be done
-	 */
-	return;
-    }
-
-    if (tp == NULL) {
-	struct timeval	tmp;
-
-	pmtimevalNow(&tmp);
-	ti.ti_stamp.tv_sec = (__int32_t)tmp.tv_sec;
-	ti.ti_stamp.tv_usec = (__int32_t)tmp.tv_usec;
-    }
-    else
-	ti.ti_stamp = *tp;		/* struct assignment */
-    ti.ti_vol = acp->ac_curvol;
-    __pmFflush(lcp->l_mdfp);
-    __pmFflush(acp->ac_mfp);
-
-    if (sizeof(off_t) > sizeof(__pm_off_t)) {
-	/* check for overflow of the offset ... */
-	off_t	tmp;
-
-	tmp = __pmFtell(lcp->l_mdfp);
-	assert(tmp >= 0);
-	ti.ti_meta = (__pm_off_t)tmp;
-	if (tmp != ti.ti_meta) {
-	    pmNotifyErr(LOG_ERR, "__pmLogPutIndex: PCP archive file (meta) too big\n");
-	    return;
-	}
-	tmp = __pmFtell(acp->ac_mfp);
-	assert(tmp >= 0);
-	ti.ti_log = (__pm_off_t)tmp;
-	if (tmp != ti.ti_log) {
-	    pmNotifyErr(LOG_ERR, "__pmLogPutIndex: PCP archive file (data) too big\n");
-	    return;
-	}
-    }
-    else {
-	ti.ti_meta = (__pm_off_t)__pmFtell(lcp->l_mdfp);
-	ti.ti_log = (__pm_off_t)__pmFtell(acp->ac_mfp);
-    }
-
-    if (ti.ti_log == 0) {
-	/*
-	 * this has been seen in QA where pmlogger churns quickly ...
-	 * trying to understand why
-	 */
-	struct stat	sbuf;
-	int		lsts;
-
-	fprintf(stderr, "__pmLogPutIndex: Botch: log offset == 0\n");
-	fprintf(stderr, "  __pmFileno=%d __pmFtell -> %ld\n", __pmFileno(acp->ac_mfp), (long)__pmFtell(acp->ac_mfp));
-	if ((lsts = __pmFstat(acp->ac_mfp, &sbuf)) < 0) {
-	    fprintf(stderr, "  __pmFstat failed -> %d\n", lsts);
-	}
-	else {
-	    fprintf(stderr, "  __pmFstat st_size=%ld st_ino=%ld\n", (long)sbuf.st_size, (long)sbuf.st_ino);
-	}
-    }
-
-    if (pmDebugOptions.log) {
-	fprintf(stderr, "__pmLogPutIndex: timestamp=%d.06%d vol=%d meta posn=%ld log posn=%ld\n",
-	    (int)ti.ti_stamp.tv_sec, (int)ti.ti_stamp.tv_usec,
-	    ti.ti_vol, (long)ti.ti_meta, (long)ti.ti_log);
-    }
-
-    oti.ti_stamp.tv_sec = htonl(ti.ti_stamp.tv_sec);
-    oti.ti_stamp.tv_usec = htonl(ti.ti_stamp.tv_usec);
-    oti.ti_vol = htonl(ti.ti_vol);
-    oti.ti_meta = htonl(ti.ti_meta);
-    oti.ti_log = htonl(ti.ti_log);
-    if ((sts = __pmFwrite(&oti, 1, sizeof(oti), lcp->l_tifp)) != sizeof(oti)) {
-	char	errmsg[PM_MAXERRMSGLEN];
-	pmprintf("__pmLogPutIndex: write failed: returns %d expecting %d: %s\n",
-	    sts, (int)sizeof(oti), osstrerror_r(errmsg, sizeof(errmsg)));
-	pmflush();
-    }
-    if (__pmFflush(lcp->l_tifp) != 0)
-	pmNotifyErr(LOG_ERR, "__pmLogPutIndex: PCP archive temporal index flush failed\n");
-}
-
 static int
-logputresult(int version,__pmArchCtl *acp, __pmPDU *pb)
+logputresult(int version, __pmArchCtl *acp, __pmPDU *pb)
 {
     /*
      * This is a bit tricky ...
@@ -1203,30 +928,31 @@ logputresult(int version,__pmArchCtl *acp, __pmPDU *pb)
      *
      * If version == 1, pb[] does not have room for trailer len.
      * If version == 2, pb[] does have room for trailer len.
+     * If version == 3, like 2 but different timestamp and into a v3 archive.
      */
     __pmLogCtl		*lcp = acp->ac_log;
+    __pmPDU		*start = &pb[2];
     int			sz;
     int			sts = 0;
     int			save_from;
-    __pmPDU		*start = &pb[2];
 
-    if (lcp->l_state == PM_LOG_STATE_NEW) {
-	int		i;
-	pmTimeval	*tvp;
+    if (lcp->state == PM_LOG_STATE_NEW) {
 	/*
 	 * first result, do the label record
+	 *
+	 * pb[3] => 3 __int32_t's before the timestamp starts
 	 */
-	i = sizeof(__pmPDUHdr) / sizeof(__pmPDU);
-	tvp = (pmTimeval *)&pb[i];
-	lcp->l_label.ill_start.tv_sec = ntohl(tvp->tv_sec);
-	lcp->l_label.ill_start.tv_usec = ntohl(tvp->tv_usec);
-	lcp->l_label.ill_vol = PM_LOG_VOL_TI;
-	__pmLogWriteLabel(lcp->l_tifp, &lcp->l_label);
-	lcp->l_label.ill_vol = PM_LOG_VOL_META;
-	__pmLogWriteLabel(lcp->l_mdfp, &lcp->l_label);
-	lcp->l_label.ill_vol = 0;
-	__pmLogWriteLabel(acp->ac_mfp, &lcp->l_label);
-	lcp->l_state = PM_LOG_STATE_INIT;
+	if (version >= 3)
+	    __pmLoadTimestamp((__int32_t *)&pb[3], &lcp->label.start);
+	else
+	    __pmLoadTimeval((__int32_t *)&pb[3], &lcp->label.start);
+	lcp->label.vol = PM_LOG_VOL_TI;
+	__pmLogWriteLabel(lcp->tifp, &lcp->label);
+	lcp->label.vol = PM_LOG_VOL_META;
+	__pmLogWriteLabel(lcp->mdfp, &lcp->label);
+	lcp->label.vol = 0;
+	__pmLogWriteLabel(acp->ac_mfp, &lcp->label);
+	lcp->state = PM_LOG_STATE_INIT;
     }
 
     sz = pb[0] - (int)sizeof(__pmPDUHdr) + 2 * (int)sizeof(int);
@@ -1257,12 +983,12 @@ logputresult(int version,__pmArchCtl *acp, __pmPDU *pb)
 	}
     }
     else {
-	/* assume version == 2 */
+	/* version == 2 or version == 3 */
 	start[(sz-1)/sizeof(__pmPDU)] = start[0];
 	if ((sts = __pmFwrite(start, 1, sz, acp->ac_mfp)) != sz) {
 	    char	errmsg[PM_MAXERRMSGLEN];
-	    pmprintf("__pmLogPutResult2: write failed: returns %d expecting %d: %s\n",
-	    	sts, sz, osstrerror_r(errmsg, sizeof(errmsg)));
+	    pmprintf("__pmLogPutResult%d: write failed: returns %d expecting %d: %s\n",
+	    	version, sts, sz, osstrerror_r(errmsg, sizeof(errmsg)));
 	    pmflush();
 	    sts = -oserror();
 	}
@@ -1295,12 +1021,22 @@ __pmLogPutResult2(__pmArchCtl *acp, __pmPDU *pb)
 }
 
 /*
+ * new routine, pb[] does have room for trailer, so only 1 write
+ * needed and this time we generate v3 archives
+ */
+int
+__pmLogPutResult3(__pmArchCtl *acp, __pmPDU *pb)
+{
+    return logputresult(3, acp, pb);
+}
+
+/*
  * check if PDU buffer seems even half-way reasonable ...
  * only used when trying to locate end of archive.
  * return 0 for OK, -1 for bad.
  */
 static int
-paranoidCheck(int len, __pmPDU *pb)
+paranoidCheck(int len, int version, __pmPDU *pb)
 {
     int			numpmid;
     size_t		hdrsz;		/* bytes for the PDU head+tail */
@@ -1310,44 +1046,65 @@ paranoidCheck(int len, __pmPDU *pb)
     int			vbsize;		/* size of pmValueBlocks */
     int			numval;		/* number of values */
     int			valfmt;
+    __pmPDU		*data;
 
     struct result_t {			/* from p_result.c */
 	__pmPDUHdr		hdr;
 	pmTimeval		timestamp;	/* when returned */
 	int			numpmid;	/* no. of PMIDs to follow */
 	__pmPDU			data[1];	/* zero or more */
-    }			*pp;
+    } *rp;
+
+    struct log_result_v3_t {		/* from p_result.c */
+	__int32_t	len;		/* PDU header -- repacked */
+	__int32_t	type;		/* ditto */
+	__int32_t	from;		/* ditto -- becomes len */
+	__int32_t	sec[2];		/* __pmTimestamp */
+	__int32_t	nsec;
+	__int32_t	numpmid;
+	__int32_t	data[1];	/* zero or more */
+    } *v3rp;
+
+    
     struct vlist_t {			/* from p_result.c */
-	pmID			pmid;
-	int			numval;		/* no. of vlist els to follow, or error */
-	int			valfmt;		/* insitu or pointer */
-	__pmValue_PDU		vlist[1];	/* zero or more */
-    }			*vlp;
+	pmID		pmid;
+	int		numval;		/* no. of vlist els to follow, or error */
+	int		valfmt;		/* insitu or pointer */
+	__pmValue_PDU	vlist[1];	/* zero or more */
+    } *vlp;
 
     /*
-     * to start with, need space for result_t with no data (__pmPDU)
+     * to start with, need space for *result_t with no data (__pmPDU)
      * ... this is the external size, which consists of
      * <header len>
-     * <timestamp> (2 words)
+     * <timestamp>
      * <numpmid>
      * <trailer len>
      *
-     * it is confusing because *pb and result_t include the fake
+     * it is confusing because *pb and *result_t include the fake
      * __pmPDUHdr which is not really in the external file
      */
-    hdrsz = 5 * sizeof(__pmPDU);
+
+    if (version >= PM_LOG_VERS03) {
+	v3rp = (struct log_result_v3_t *)pb;
+	numpmid = ntohl(v3rp->numpmid);
+	hdrsz = 6 * sizeof(__int32_t);
+	data = (__pmPDU *)v3rp->data;
+    } else {
+	rp = (struct result_t *)pb;
+	numpmid = ntohl(rp->numpmid);
+	hdrsz = 5 * sizeof(__pmPDU);
+	data = rp->data;
+    }
 
     if (len < hdrsz) {
 	if (pmDebugOptions.log) {
-	    fprintf(stderr, "\nparanoidCheck: len=%d, min len=%d\n",
-		len, (int)hdrsz);
-	    dumpbuf(len, &pb[3]); /* skip first 3 words, start @ timestamp */
+	    fprintf(stderr, "\nparanoidCheck: len=%d, min len=%zu\n",
+		len, hdrsz);
+	    dumpbuf(len, &pb[3]); /* skip first 3 words (PDU header) */
 	}
 	return -1;
     }
-
-    pp = (struct result_t *)pb;
-    numpmid = ntohl(pp->numpmid);
 
     /*
      * This is a re-implementation of much of __pmDecodeResult()
@@ -1358,7 +1115,7 @@ paranoidCheck(int len, __pmPDU *pb)
 	    if (pmDebugOptions.log) {
 		fprintf(stderr, "\nparanoidCheck: numpmid=%d len=%d, expected len=%d\n",
 		    numpmid, len, (int)hdrsz);
-		dumpbuf(len, &pb[3]); /* skip first 3 words, start @ timestamp */
+		dumpbuf(len, &pb[3]); /* skip first 3 words (PDU header) */
 	    }
 	    return -1;
 	}
@@ -1375,13 +1132,13 @@ paranoidCheck(int len, __pmPDU *pb)
 
     vsize = vbsize = 0;
     for (i = 0; i < numpmid; i++) {
-	vlp = (struct vlist_t *)&pp->data[vsize/sizeof(__pmPDU)];
+	vlp = (struct vlist_t *)&data[vsize/sizeof(__pmPDU)];
 	vsize += sizeof(vlp->pmid) + sizeof(vlp->numval);
 	if (len < hdrsz + vsize + vbsize) {
 	    if (pmDebugOptions.log) {
 		fprintf(stderr, "\nparanoidCheck: vset[%d] len=%d, need len>=%d (%d+%d+%d)\n",
 		    i, len, (int)(hdrsz + vsize + vbsize), (int)hdrsz, vsize, vbsize);
-		dumpbuf(len, &pb[3]); /* skip first 3 words, start @ timestamp */
+		dumpbuf(len, &pb[3]); /* skip first 3 words (PDU header) */
 	    }
 	    return -1;
 	}
@@ -1397,7 +1154,7 @@ paranoidCheck(int len, __pmPDU *pb)
 		if (pmDebugOptions.log) {
 		    fprintf(stderr, "\nparanoidCheck: vset[%d] bad valfmt=%d\n",
 			i, valfmt);
-		    dumpbuf(len, &pb[3]); /* skip first 3 words, start @ timestamp */
+		    dumpbuf(len, &pb[3]); /* skip first 3 words (PDU header) */
 		}
 		return -1;
 	    }
@@ -1421,7 +1178,7 @@ paranoidCheck(int len, __pmPDU *pb)
 			if (pmDebugOptions.log) {
 			    fprintf(stderr, "\nparanoidCheck: vset[%d] val[%d], bad pval index=%d not in range 0..%d\n",
 				i, j, index, (int)(len / sizeof(__pmPDU)));
-			    dumpbuf(len, &pb[3]); /* skip first 3 words, start @ timestamp */
+			    dumpbuf(len, &pb[3]); /* skip first 3 words (PDU header) */
 			}
 			return -1;
 		    }
@@ -1433,7 +1190,7 @@ paranoidCheck(int len, __pmPDU *pb)
 			if (pmDebugOptions.log) {
 			    fprintf(stderr, "\nparanoidCheck: vset[%d] val[%d], bad vlen=%d\n",
 				i, j, vlen);
-			    dumpbuf(len, &pb[3]); /* skip first 3 words, start @ timestamp */
+			    dumpbuf(len, &pb[3]); /* skip first 3 words (PDU header) */
 			}
 			return -1;
 		    }
@@ -1447,7 +1204,7 @@ paranoidCheck(int len, __pmPDU *pb)
 }
 
 static int
-paranoidLogRead(__pmContext *ctxp, int mode, __pmFILE *peekf, pmResult **result)
+paranoidLogRead(__pmContext *ctxp, int mode, __pmFILE *peekf, __pmResult **result)
 {
     return __pmLogRead_ctx(ctxp, mode, peekf, result, PMLOGREAD_TO_EOF);
 }
@@ -1463,17 +1220,19 @@ paranoidLogRead(__pmContext *ctxp, int mode, __pmFILE *peekf, pmResult **result)
  */
 
 int
-__pmLogGenerateMark_ctx(__pmContext *ctxp, int mode, pmResult **result)
+__pmLogGenerateMark_ctx(__pmContext *ctxp, int mode, __pmResult **result)
 {
     __pmLogCtl		*lcp = ctxp->c_archctl->ac_log;
-    pmResult		*pr;
+    __pmResult		*pr;
     int			sts;
-    struct timeval	end;
+    __pmTimestamp	end;
 
     PM_ASSERT_IS_LOCKED(ctxp->c_lock);
 
-    if ((pr = (pmResult *)malloc(sizeof(pmResult))) == NULL)
-	pmNoMem("generateMark", sizeof(pmResult), PM_FATAL_ERR);
+    if ((pr = __pmAllocResult(0)) == NULL) {
+	pmNoMem("generateMark", sizeof(__pmResult), PM_FATAL_ERR);
+	/* NOTREACHED */
+    }
 
     /*
      * A mark record has numpmid == 0 and the timestamp set to one millisecond
@@ -1485,22 +1244,20 @@ __pmLogGenerateMark_ctx(__pmContext *ctxp, int mode, pmResult **result)
 	    free(pr);
 	    return sts;
 	}
-	pr->timestamp.tv_sec = lcp->l_endtime.tv_sec;
-	pr->timestamp.tv_usec = lcp->l_endtime.tv_usec;
-	pr->timestamp.tv_usec += 1000;
-	if (pr->timestamp.tv_usec > 1000000) {
-	    pr->timestamp.tv_usec -= 1000000;
-	    pr->timestamp.tv_sec++;
+	pr->timestamp = lcp->endtime;
+	pr->timestamp.nsec += 1000000;
+	if (pr->timestamp.nsec > 1000000000) {
+	    pr->timestamp.nsec -= 1000000000;
+	    pr->timestamp.sec++;
 	}
     }
     else {
-	pr->timestamp.tv_sec = lcp->l_label.ill_start.tv_sec;
-	pr->timestamp.tv_usec = lcp->l_label.ill_start.tv_usec;
-	if (pr->timestamp.tv_usec >= 1000)
-	    pr->timestamp.tv_usec -= 1000;
+	pr->timestamp = lcp->label.start;
+	if (pr->timestamp.nsec >= 1000000)
+	    pr->timestamp.nsec -= 1000000;
 	else {
-	    pr->timestamp.tv_usec = 1000000 - 1000 + pr->timestamp.tv_usec;;
-	    pr->timestamp.tv_sec--;
+	    pr->timestamp.nsec = 1000000000 - 1000000 + pr->timestamp.nsec;
+	    pr->timestamp.sec--;
 	}
     }
     *result = pr;
@@ -1508,7 +1265,7 @@ __pmLogGenerateMark_ctx(__pmContext *ctxp, int mode, pmResult **result)
 }
 
 int
-__pmLogGenerateMark(__pmLogCtl *lcp, int mode, pmResult **result)
+__pmLogGenerateMark(__pmLogCtl *lcp, int mode, __pmResult **result)
 {
     int		sts;
     __pmContext	*ctxp;
@@ -1538,6 +1295,71 @@ clearMarkDone(__pmContext *ctxp)
 }
 
 /*
+ * Output a <mark> record ... last_stamp is the base timestamp and
+ * the timestamp of the <mark> record is last_stamp + inc (if inc
+ * is not NULL) else last_stamp.
+ *
+ * archive <mark> record is an array of __int32_t values
+ * V2			V3
+ * [0] len (header)	[0] len (header)
+ * [1] sec		[1]&[2] sec
+ * [2] nsec		[3] nsec
+ * [3] numpmid (0)	[4] numpmid (0)
+ * [4] len (trailer)	[5] len (trailer)
+ */
+int
+__pmLogWriteMark(__pmArchCtl *acp, const __pmTimestamp *last_stamp, const __pmTimestamp *inc)
+{
+    __int32_t		buf[6];		/* enough for V3 */
+    int			vers;
+    size_t		rlen;
+    int			k = 0;
+    int			sts;
+    __pmTimestamp	stamp;
+
+    stamp = *last_stamp;		/* struct assignment */
+    if (inc != NULL) {
+	/* optional increment */
+	__pmTimestampInc(&stamp, inc);
+    }
+
+    vers = __pmLogVersion(acp->ac_log);
+
+    if (vers >= PM_LOG_VERS03)
+	rlen = 6 * sizeof(__int32_t);
+    else
+	rlen = 5 * sizeof(__int32_t);
+
+    buf[k++] = htonl(rlen);	/* header len */
+
+    if (vers >= PM_LOG_VERS03) {
+	__pmPutTimestamp(&stamp, &buf[k]);
+	k += 3;
+    }
+    else {
+	__pmPutTimeval(&stamp, &buf[k]);
+	k += 2;
+    }
+
+    buf[k++] = 0;		/* numpmid */
+    buf[k] = buf[0];		/* trailer len */
+
+    sts = (int)__pmFwrite((__pmPDU *)buf, 1, rlen, acp->ac_mfp);
+    if (sts != rlen) {
+	if (pmDebugOptions.log) {
+	    char	errmsg[PM_MAXERRMSGLEN];
+	    fprintf(stderr, "__pmLogWriteMark: version %d write failed: returns %d expecting %zd: %s\n",
+		vers, sts, rlen, osstrerror_r(errmsg, sizeof(errmsg)));
+	}
+	sts = -oserror();
+    }
+    else
+	sts = 0;
+
+    return sts;
+}
+
+/*
  * read next forward or backward from the log
  *
  * by default (peekf == NULL) use acp->ac_mfp and roll volume or archive
@@ -1550,7 +1372,7 @@ clearMarkDone(__pmContext *ctxp)
  * can be carried down the call stack.
  */
 int
-__pmLogRead_ctx(__pmContext *ctxp, int mode, __pmFILE *peekf, pmResult **result, int option)
+__pmLogRead_ctx(__pmContext *ctxp, int mode, __pmFILE *peekf, __pmResult **result, int option)
 {
     __pmLogCtl	*lcp;
     __pmArchCtl	*acp;
@@ -1562,6 +1384,7 @@ __pmLogRead_ctx(__pmContext *ctxp, int mode, __pmFILE *peekf, pmResult **result,
     __pmPDU	*pb;
     __pmFILE	*f;
     int		n;
+    int		version;
     ctx_ctl_t	ctx_ctl = { NULL, 0 };
 
     sts = lock_ctx(ctxp, &ctx_ctl);
@@ -1570,6 +1393,7 @@ __pmLogRead_ctx(__pmContext *ctxp, int mode, __pmFILE *peekf, pmResult **result,
 
     lcp = ctxp->c_archctl->ac_log;
     acp = ctxp->c_archctl;
+    version = __pmLogLabelVersion(&lcp->label);
 
     /*
      * Strip any XTB data from mode, its not used here
@@ -1592,13 +1416,13 @@ __pmLogRead_ctx(__pmContext *ctxp, int mode, __pmFILE *peekf, pmResult **result,
 
     if (mode == PM_MODE_BACK) {
        for ( ; ; ) {
-	   if (offset <= sizeof(__pmLogLabel) + 2 * sizeof(int)) {
+	   if (offset <= __pmLogLabelSize(lcp)) {
 		if (pmDebugOptions.log)
 		    fprintf(stderr, "BEFORE start\n");
 		sts = PM_ERR_EOL;
 		if (peekf == NULL) {
 		    int		vol = acp->ac_curvol-1;
-		    while (vol >= lcp->l_minvol) {
+		    while (vol >= lcp->minvol) {
 			if (__pmLogChangeVol(acp, vol) >= 0) {
 			    f = acp->ac_mfp;
 			    __pmFseek(f, 0L, SEEK_END);
@@ -1612,7 +1436,7 @@ __pmLogRead_ctx(__pmContext *ctxp, int mode, __pmFILE *peekf, pmResult **result,
 			}
 			vol--;
 		    }
-		    if (vol >= lcp->l_minvol)
+		    if (vol >= lcp->minvol)
 			continue; /* Try this volume */
 
 		    /*
@@ -1639,7 +1463,7 @@ __pmLogRead_ctx(__pmContext *ctxp, int mode, __pmFILE *peekf, pmResult **result,
 			    assert(offset >= 0);
 			    if (pmDebugOptions.log) {
 				fprintf(stderr, "arch=%s vol=%d posn=%ld ",
-					lcp->l_name, acp->ac_curvol, (long)offset);
+					lcp->name, acp->ac_curvol, (long)offset);
 			    }
 			    continue; /* Try this archive */
 			}
@@ -1669,7 +1493,7 @@ again:
 	    if (peekf == NULL) {
 		/* Try the next volume. */
 		int	vol = acp->ac_curvol+1;
-		while (vol <= lcp->l_maxvol) {
+		while (vol <= lcp->maxvol) {
 		    if (__pmLogChangeVol(acp, vol) >= 0) {
 			f = acp->ac_mfp;
 			goto again;
@@ -1697,7 +1521,7 @@ again:
 			assert(offset >= 0);
 			if (pmDebugOptions.log) {
 			    fprintf(stderr, "arch=%s vol=%d posn=%ld ",
-				    lcp->l_name, acp->ac_curvol, (long)offset);
+				    lcp->name, acp->ac_curvol, (long)offset);
 			}
 			goto again;
 		    }
@@ -1805,12 +1629,11 @@ again:
 	header->len = sizeof(*header) + rlen;
 	header->type = PDU_RESULT;
 	header->from = FROM_ANON;
-	/* swab pdu buffer - done later in __pmDecodeResult */
+	/* swab PDU buffer - done later in __pmDecodeResult */
 
 	if (pmDebugOptions.pdu && pmDebugOptions.desperate) {
-	    int	j;
+	    int		j, jend = PM_PDU_SIZE(header->len);
 	    char	*p;
-	    int	jend = PM_PDU_SIZE(header->len);
 
 	    /* clear the padding bytes, lest they contain garbage */
 	    p = (char *)pb + header->len;
@@ -1860,7 +1683,7 @@ again:
 	goto func_return;
     }
 
-    if (option == PMLOGREAD_TO_EOF && paranoidCheck(head, pb) == -1) {
+    if (option == PMLOGREAD_TO_EOF && paranoidCheck(head, version, pb) == -1) {
 	__pmUnpinPDUBuf(pb);
 	sts = PM_ERR_LOGREC;
 	goto func_return;
@@ -1875,12 +1698,11 @@ again:
     if (pmDebugOptions.log) {
 	head -= sizeof(head) + sizeof(trail);
 	if (sts >= 0) {
-	    pmTimeval	tmp;
+	    double delta;
 	    fprintf(stderr, "@");
-	    pmPrintStamp(stderr, &(*result)->timestamp);
-	    tmp.tv_sec = (__int32_t)(*result)->timestamp.tv_sec;
-	    tmp.tv_usec = (__int32_t)(*result)->timestamp.tv_usec;
-	    fprintf(stderr, " (t=%.6f)", __pmTimevalSub(&tmp, &lcp->l_label.ill_start));
+	    __pmPrintTimestamp(stderr, &(*result)->timestamp);
+	    delta = __pmTimestampSub(&(*result)->timestamp, &lcp->label.start);
+	    fprintf(stderr, " (t=%.6f)", delta);
 	}
 	else {
 	    char	errmsg[PM_MAXERRMSGLEN];
@@ -1901,7 +1723,7 @@ again:
 
     if (pmDebugOptions.pdu) {
 	fprintf(stderr, "__pmLogRead timestamp=");
-	pmPrintStamp(stderr, &(*result)->timestamp);
+	__pmPrintTimestamp(stderr, &(*result)->timestamp);
 	fprintf(stderr, " " PRINTF_P_PFX "%p ... " PRINTF_P_PFX "%p", &pb[3], &pb[head/sizeof(__pmPDU)+3]);
 	fputc('\n', stderr);
 	dumpbuf(rlen, &pb[3]);		/* see above to explain "3" */
@@ -1919,7 +1741,7 @@ func_return:
 }
 
 int
-__pmLogRead(__pmArchCtl *acp, int mode, __pmFILE *peekf, pmResult **result, int option)
+__pmLogRead(__pmArchCtl *acp, int mode, __pmFILE *peekf, __pmResult **result, int option)
 {
     int		sts;
     __pmContext	*ctxp;
@@ -1959,7 +1781,7 @@ check_all_derived(int numpmid, pmID pmidlist[])
 }
 
 int
-__pmLogFetch(__pmContext *ctxp, int numpmid, pmID pmidlist[], pmResult **result)
+__pmLogFetch(__pmContext *ctxp, int numpmid, pmID pmidlist[], __pmResult **result)
 {
     int		i;
     int		j;
@@ -1968,13 +1790,13 @@ __pmLogFetch(__pmContext *ctxp, int numpmid, pmID pmidlist[], pmResult **result)
     int		sts = 0;
     int		found;
     double	tdiff;
-    pmResult	*newres;
+    __pmResult	*newres;
     pmDesc	desc;
     int		kval;
     __pmHashNode	*hp;
     pmid_ctl	*pcp;
     int		nskip;
-    pmTimeval	tmp;
+    __pmTimestamp	tmp;
     int		ctxp_mode;
     ctx_ctl_t	ctx_ctl = { NULL, 0 };
 
@@ -1992,7 +1814,9 @@ __pmLogFetch(__pmContext *ctxp, int numpmid, pmID pmidlist[], pmResult **result)
     all_derived = check_all_derived(numpmid, pmidlist);
 
     /* re-establish position */
-    __pmLogChangeVol(ctxp->c_archctl, ctxp->c_archctl->ac_vol);
+    sts = __pmLogChangeVol(ctxp->c_archctl, ctxp->c_archctl->ac_vol);
+    if (sts < 0)
+	goto func_return;
     __pmFseek(ctxp->c_archctl->ac_mfp, 
 	    (long)ctxp->c_archctl->ac_offset, SEEK_SET);
 
@@ -2007,7 +1831,9 @@ more:
 	     * no serial access, so need to make sure we are
 	     * starting in the correct place
 	     */
-	    __pmLogSetTime(ctxp);
+	    sts = __pmLogSetTime(ctxp);
+	    if (sts < 0)
+		goto func_return;
 	    ctxp->c_archctl->ac_offset = __pmFtell(ctxp->c_archctl->ac_mfp);
 	    ctxp->c_archctl->ac_vol = ctxp->c_archctl->ac_curvol;
 	    /*
@@ -2018,18 +1844,17 @@ more:
 	    nskip = 0;
 	    while (__pmLogRead_ctx(ctxp, ctxp_mode == PM_MODE_FORW ? PM_MODE_BACK : PM_MODE_FORW, NULL, result, PMLOGREAD_NEXT) >= 0) {
 		nskip++;
-		tmp.tv_sec = (__int32_t)(*result)->timestamp.tv_sec;
-		tmp.tv_usec = (__int32_t)(*result)->timestamp.tv_usec;
-		tdiff = __pmTimevalSub(&tmp, &ctxp->c_origin);
+		tmp = (*result)->timestamp;
+		tdiff = __pmTimestampSub(&tmp, &ctxp->c_origin);
 		if (ctxp_mode == PM_MODE_FORW && tdiff < 0) {
 		    /* too far ... next one forward is the one we need */
-		    pmFreeResult(*result);
+		    __pmFreeResult(*result);
 		    *result = NULL;
 		    break;
 		}
 		else if (ctxp_mode == PM_MODE_BACK && tdiff > 0) {
 		    /* too far ... next one back is the one we need */
-		    pmFreeResult(*result);
+		    __pmFreeResult(*result);
 		    *result = NULL;
 		    break;
 		}
@@ -2040,22 +1865,22 @@ more:
 		     * in the right direction to avoid reading it twice
 		     * (once above and once the next time through here)
 		     */
-		    pmFreeResult(*result);
+		    __pmFreeResult(*result);
 		    *result = NULL;
 		    break;
 		}
 		ctxp->c_archctl->ac_offset = __pmFtell(ctxp->c_archctl->ac_mfp);
 		ctxp->c_archctl->ac_vol = ctxp->c_archctl->ac_curvol;
-		pmFreeResult(*result);
-		tmp.tv_sec = -1;
+		__pmFreeResult(*result);
+		tmp.sec = -1;
 	    }
 	    ctxp->c_archctl->ac_serial = 1;
 	    if (pmDebugOptions.log) {
 		if (nskip) {
 		    fprintf(stderr, "__pmLogFetch: ctx=%d skip reverse %d to ",
 			pmWhichContext(), nskip);
-		    if (tmp.tv_sec != -1)
-			__pmPrintTimeval(stderr, &tmp);
+		    if (tmp.sec != -1)
+			__pmPrintTimestamp(stderr, &tmp);
 		    else
 			fprintf(stderr, "unknown time");
 		    fprintf(stderr, ", found=%d\n", found);
@@ -2070,13 +1895,12 @@ more:
 	}
 	if ((sts = __pmLogRead_ctx(ctxp, ctxp->c_mode, NULL, result, PMLOGREAD_NEXT)) < 0)
 	    break;
-	tmp.tv_sec = (__int32_t)(*result)->timestamp.tv_sec;
-	tmp.tv_usec = (__int32_t)(*result)->timestamp.tv_usec;
-	tdiff = __pmTimevalSub(&tmp, &ctxp->c_origin);
+	tmp = (*result)->timestamp;
+	tdiff = __pmTimestampSub(&tmp, &ctxp->c_origin);
 	if ((tdiff < 0 && ctxp_mode == PM_MODE_FORW) ||
 	    (tdiff > 0 && ctxp_mode == PM_MODE_BACK)) {
 		nskip++;
-		pmFreeResult(*result);
+		__pmFreeResult(*result);
 		*result = NULL;
 		continue;
 	}
@@ -2085,7 +1909,7 @@ more:
 	    if (nskip) {
 		fprintf(stderr, "__pmLogFetch: ctx=%d skip %d to ",
 		    pmWhichContext(), nskip);
-		    pmPrintStamp(stderr, &(*result)->timestamp);
+		    __pmPrintTimestamp(stderr, &(*result)->timestamp);
 		    fputc('\n', stderr);
 		}
 #ifdef DESPERATE
@@ -2096,8 +1920,7 @@ more:
 	}
     }
     if (found) {
-	ctxp->c_origin.tv_sec = (__int32_t)(*result)->timestamp.tv_sec;
-	ctxp->c_origin.tv_usec = (__int32_t)(*result)->timestamp.tv_usec;
+	ctxp->c_origin = (*result)->timestamp;
     }
 
     if (*result != NULL && (*result)->numpmid == 0) {
@@ -2107,7 +1930,7 @@ more:
 	 * otherwise keep searching
 	 */
 	if (numpmid != 0) {
-	    pmFreeResult(*result);
+	    __pmFreeResult(*result);
 	    goto more;
 	}
     }
@@ -2121,7 +1944,7 @@ more:
 	     *     from the log are assigned using the first two fields in the
 	     *     pmid_ctl struct -- since these are allocated once as
 	     *	   needed, and never free'd, we have to make sure pmFreeResult
-	     *     finds a pmValueSet in a pinned pdu buffer ... this means
+	     *     finds a pmValueSet in a pinned PDU buffer ... this means
 	     *     we must find at least one real value from the log to go
 	     *     with any "unavailable" results
 	     * (2) real pmValueSets can be ignored, they are in a pdubuf
@@ -2129,9 +1952,9 @@ more:
 	     *     pmFreeResult
 	     */
 
-	    i = (int)sizeof(pmResult) + numpmid * (int)sizeof(pmValueSet *);
-	    if ((newres = (pmResult *)malloc(i)) == NULL) {
-		pmNoMem("__pmLogFetch.newres", i, PM_FATAL_ERR);
+	    if ((newres = __pmAllocResult(numpmid)) == NULL) {
+		pmNoMem("__pmLogFetch.newres", sizeof(__pmResult) + (numpmid -1)* sizeof(pmValueSet *), PM_FATAL_ERR);
+		/* NOTREACHED */
 	    }
 	    newres->numpmid = numpmid;
 	    newres->timestamp = (*result)->timestamp;
@@ -2178,15 +2001,17 @@ more:
 		 * not one of our pmids was in the log record, try
 		 * another log record ...
 		 */
-		pmFreeResult(*result);
-		free(newres);
+		__pmFreeResult(*result);
+		newres->numpmid = 0;		/* don't free vset's */
+		__pmFreeResult(newres);
 		goto more;
 	    }
 	    /*
 	     * *result malloc'd in __pmLogRead, but vset[]'s are either in
 	     * pdubuf or the pmid_ctl struct
 	     */
-	    free(*result);
+	    (*result)->numpmid = 0;		/* don't free vset's */
+	    __pmFreeResult(*result);
 	    *result = newres;
 	}
 	else
@@ -2214,7 +2039,7 @@ more:
 		char	errmsg[PM_MAXERRMSGLEN];
 		pmNotifyErr(LOG_WARNING, "__pmLogFetch: missing pmDesc for pmID %s: %s",
 			    pmIDStr_r(desc.pmid, strbuf, sizeof(strbuf)), pmErrStr_r(sts, errmsg, sizeof(errmsg)));
-		pmFreeResult(newres);
+		__pmFreeResult(newres);
 		break;
 	    }
 	    if (desc.indom == PM_INDOM_NULL)
@@ -2226,12 +2051,12 @@ more:
 	     *
 	     * WARNING
 	     *		This compresses the pmValueSet INSITU, and since
-	     *		these are in a pdu buffer, it trashes the the
-	     *		pdu buffer and means there is no clever way of
-	     *		re-using the pdu buffer to satisfy multiple
-	     *		pmFetch requests
+	     *		these are in a PDU buffer it trashes the PDU
+	     *		buffer - which means there is no clever way of
+	     *		re-using the PDU buffer to satisfy multiple
+	     *		pmFetch requests.
 	     *		Fortunately, stdio buffering means copying to
-	     *		make additional pdu buffers is not too expensive.
+	     *		make additional PDU buffers is not too expensive.
 	     */
 	    kval = 0;
 	    for (j = 0; j < newres->vset[i]->numval; j++) {
@@ -2260,48 +2085,48 @@ func_return:
 }
 
 /*
- * error handling wrapper around __pmLogChangeVol() to deal with
- * missing volumes ... return lcp->l_ti[] index for entry matching
+ * error handling wrappers around __pmLogChangeVol() to deal with
+ * missing volumes ... return lcp->ti[] index for entry matching
  * success
  */
+
 static int
-VolSkip(__pmArchCtl *acp, int mode,  int j)
+VolSkip(__pmArchCtl *acp, int mode, int j)
 {
     __pmLogCtl	*lcp = acp->ac_log;
-    int		vol = lcp->l_ti[j].ti_vol;
+    int		vol = lcp->ti[j].vol;
 
-    while (lcp->l_minvol <= vol && vol <= lcp->l_maxvol) {
+    while (lcp->minvol <= vol && vol <= lcp->maxvol) {
 	if (__pmLogChangeVol(acp, vol) >= 0)
 	    return j;
-	if (pmDebugOptions.log) {
+	if (pmDebugOptions.log)
 	    fprintf(stderr, "VolSkip: Skip missing vol %d\n", vol);
-	}
 	if (mode == PM_MODE_FORW) {
-	    for (j++; j < lcp->l_numti; j++)
-		if (lcp->l_ti[j].ti_vol != vol)
+	    for (j++; j < lcp->numti; j++)
+		if (lcp->ti[j].vol != vol)
 		    break;
-	    if (j == lcp->l_numti)
+	    if (j == lcp->numti)
 		return PM_ERR_EOL;
-	    vol = lcp->l_ti[j].ti_vol;
+	    vol = lcp->ti[j].vol;
 	}
 	else {
 	    for (j--; j >= 0; j--)
-		if (lcp->l_ti[j].ti_vol != vol)
+		if (lcp->ti[j].vol != vol)
 		    break;
 	    if (j < 0)
 		return PM_ERR_EOL;
-	    vol = lcp->l_ti[j].ti_vol;
+	    vol = lcp->ti[j].vol;
 	}
     }
     return PM_ERR_EOL;
 }
 
-void
+int
 __pmLogSetTime(__pmContext *ctxp)
 {
     __pmArchCtl	*acp = ctxp->c_archctl;
     __pmLogCtl	*lcp = acp->ac_log;
-    pmTimeval	save_origin;
+    __pmTimestamp	save_origin;
     int		save_mode;
     double	t_hi;
     int		mode;
@@ -2310,12 +2135,13 @@ __pmLogSetTime(__pmContext *ctxp)
     mode = ctxp->c_mode & __PM_MODE_MASK; /* strip XTB data */
 
     if (mode == PM_MODE_INTERP)
-	mode = ctxp->c_delta > 0 ? PM_MODE_FORW : PM_MODE_BACK;
+	mode = ctxp->c_direction > 0 ? PM_MODE_FORW : PM_MODE_BACK;
 
     if (pmDebugOptions.log) {
-	fprintf(stderr, "__pmLogSetTime(%d) ", pmWhichContext());
-	__pmPrintTimeval(stderr, &ctxp->c_origin);
-	fprintf(stderr, " delta=%d", ctxp->c_delta);
+	fprintf(stderr, "%s(%d) ", "__pmLogSetTime", pmWhichContext());
+	__pmPrintTimestamp(stderr, &ctxp->c_origin);
+	fprintf(stderr, " delta=%s%lld.%09ld", ctxp->c_direction < 0 ? "-" : "",
+		(long long)ctxp->c_delta.sec, (long)ctxp->c_delta.nsec);
     }
 
     /*
@@ -2323,7 +2149,7 @@ __pmLogSetTime(__pmContext *ctxp)
      * We're looking for the first archive which starts after the origin.
      */
     for (i = 0; i < acp->ac_num_logs; ++i) {
-	t_hi = __pmTimevalSub(&acp->ac_log_list[i]->ml_starttime, &ctxp->c_origin);
+	t_hi = __pmTimestampSub(&acp->ac_log_list[i]->starttime, &ctxp->c_origin);
 	if (t_hi >= 0)
 	    break; /* found it! */
     }
@@ -2350,43 +2176,48 @@ __pmLogSetTime(__pmContext *ctxp)
     ctxp->c_origin = save_origin;
     ctxp->c_mode = save_mode;
 
-    if (lcp->l_numti) {
+    if (lcp->numti) {
 	/* we have a temporal index, use it! */
 	int		j = -1;
+	int		try;
 	int		toobig = 0;
 	int		match = 0;
+	int		tivol;
 	int		vol;
-	int		numti = lcp->l_numti;
+	int		numti = lcp->numti;
+	off_t		tilog;
 	__pmFILE	*f;
-	__pmLogTI	*tip = lcp->l_ti;
+	__pmLogTI	*tip = lcp->ti;
 	double		t_lo;
 	struct stat	sbuf;
 
 	sbuf.st_size = -1;
 
 	for (i = 0; i < numti; i++, tip++) {
-	    if (tip->ti_vol < lcp->l_minvol)
+	    tivol = tip->vol;
+	    tilog = tip->off_data;
+	    if (tivol < lcp->minvol)
 		/* skip missing preliminary volumes */
 		continue;
-	    if (tip->ti_vol == lcp->l_maxvol) {
+	    if (tivol == lcp->maxvol) {
 		/* truncated check for last volume */
 		if (sbuf.st_size < 0) {
 		    sbuf.st_size = 0;
-		    vol = lcp->l_maxvol;
-		    if (vol >= 0 && vol < lcp->l_numseen && lcp->l_seen[vol])
+		    vol = lcp->maxvol;
+		    if (vol >= 0 && vol < lcp->numseen && lcp->seen[vol])
 			__pmFstat(acp->ac_mfp, &sbuf);
-		    else if ((f = _logpeek(acp, lcp->l_maxvol)) != NULL) {
+		    else if ((f = _logpeek(acp, lcp->maxvol)) != NULL) {
 			__pmFstat(f, &sbuf);
 			__pmFclose(f);
 		    }
 		}
-		if (tip->ti_log > sbuf.st_size) {
+		if (tilog > sbuf.st_size) {
 		    j = i;
 		    toobig++;
 		    break;
 		}
 	    }
-	    t_hi = __pmTimevalSub(&tip->ti_stamp, &ctxp->c_origin);
+	    t_hi = __pmTimestampSub(&tip->stamp, &ctxp->c_origin);
 	    if (t_hi > 0) {
 		j = i;
 		break;
@@ -2403,37 +2234,55 @@ __pmLogSetTime(__pmContext *ctxp)
 	acp->ac_serial = 1;
 
 	if (match) {
+	    try = j;
 	    j = VolSkip(acp, mode, j);
-	    if (j < 0)
-		return;
-	    __pmFseek(acp->ac_mfp, (long)lcp->l_ti[j].ti_log, SEEK_SET);
+	    if (j < 0) {
+		if (pmDebugOptions.log)
+		    fprintf(stderr, "%s: VolSkip mode=%d vol=%d failed #1\n",
+				    "__pmLogSetTime", mode, try);
+		return PM_ERR_LOGFILE;
+	    }
+	    tilog = lcp->ti[j].off_data;
+	    __pmFseek(acp->ac_mfp, (long)tilog, SEEK_SET);
 	    if (mode == PM_MODE_BACK)
 		acp->ac_serial = 0;
 	    if (pmDebugOptions.log) {
 		fprintf(stderr, " at ti[%d]@", j);
-		__pmPrintTimeval(stderr, &lcp->l_ti[j].ti_stamp);
+		__pmPrintTimestamp(stderr, &lcp->ti[j].stamp);
 	    }
 	}
 	else if (j < 1) {
+	    try = 0;
 	    j = VolSkip(acp, PM_MODE_FORW, 0);
-	    if (j < 0)
-		return;
-	    __pmFseek(acp->ac_mfp, (long)lcp->l_ti[j].ti_log, SEEK_SET);
+	    if (j < 0) {
+		if (pmDebugOptions.log)
+		    fprintf(stderr, "%s: VolSkip mode=%d vol=%d failed #2\n",
+				    "__pmLogSetTime", PM_MODE_FORW, try);
+		return PM_ERR_LOGFILE;
+	    }
+	    tilog = lcp->ti[j].off_data;
+	    __pmFseek(acp->ac_mfp, (long)tilog, SEEK_SET);
 	    if (pmDebugOptions.log) {
 		fprintf(stderr, " before start ti@");
-		__pmPrintTimeval(stderr, &lcp->l_ti[j].ti_stamp);
+		__pmPrintTimestamp(stderr, &lcp->ti[j].stamp);
 	    }
 	}
 	else if (j == numti) {
+	    try = numti-1;
 	    j = VolSkip(acp, PM_MODE_BACK, numti-1);
-	    if (j < 0)
-		return;
-	    __pmFseek(acp->ac_mfp, (long)lcp->l_ti[j].ti_log, SEEK_SET);
+	    if (j < 0) {
+		if (pmDebugOptions.log)
+		    fprintf(stderr, "%s: VolSkip mode=%d vol=%d failed #3\n",
+				    "__pmLogSetTime", PM_MODE_BACK, try);
+		return PM_ERR_LOGFILE;
+	    }
+	    tilog = lcp->ti[j].off_data;
+	    __pmFseek(acp->ac_mfp, (long)tilog, SEEK_SET);
 	    if (mode == PM_MODE_BACK)
 		acp->ac_serial = 0;
 	    if (pmDebugOptions.log) {
 		fprintf(stderr, " after end ti@");
-		__pmPrintTimeval(stderr, &lcp->l_ti[j].ti_stamp);
+		__pmPrintTimestamp(stderr, &lcp->ti[j].stamp);
 	    }
 	}
 	else {
@@ -2444,30 +2293,42 @@ __pmLogSetTime(__pmContext *ctxp)
 	     * choose closest index point.  if toobig, [j] is not
 	     * really valid (log truncated or incomplete)
 	     */
-	    t_hi = __pmTimevalSub(&lcp->l_ti[j].ti_stamp, &ctxp->c_origin);
-	    t_lo = __pmTimevalSub(&ctxp->c_origin, &lcp->l_ti[j-1].ti_stamp);
+	    t_hi = __pmTimestampSub(&lcp->ti[j].stamp, &ctxp->c_origin);
+	    t_lo = __pmTimestampSub(&ctxp->c_origin, &lcp->ti[j-1].stamp);
 	    if (t_hi <= t_lo && !toobig) {
+		try = j;
 		j = VolSkip(acp, mode, j);
-		if (j < 0)
-		    return;
-		__pmFseek(acp->ac_mfp, (long)lcp->l_ti[j].ti_log, SEEK_SET);
+		if (j < 0) {
+		    if (pmDebugOptions.log)
+			fprintf(stderr, "%s: VolSkip mode=%d vol=%d failed #4\n",
+					"__pmLogSetTime", mode, try);
+		    return PM_ERR_LOGFILE;
+		}
+		tilog = lcp->ti[j].off_data;
+		__pmFseek(acp->ac_mfp, (long)tilog, SEEK_SET);
 		if (mode == PM_MODE_FORW)
 		    acp->ac_serial = 0;
 		if (pmDebugOptions.log) {
 		    fprintf(stderr, " before ti[%d]@", j);
-		    __pmPrintTimeval(stderr, &lcp->l_ti[j].ti_stamp);
+		    __pmPrintTimestamp(stderr, &lcp->ti[j].stamp);
 		}
 	    }
 	    else {
+		try = j-1;
 		j = VolSkip(acp, mode, j-1);
-		if (j < 0)
-		    return;
-		__pmFseek(acp->ac_mfp, (long)lcp->l_ti[j].ti_log, SEEK_SET);
+		if (j < 0) {
+		    if (pmDebugOptions.log)
+			fprintf(stderr, "%s: VolSkip mode=%d vol=%d failed #5\n",
+					"__pmLogSetTime", mode, try);
+		    return PM_ERR_LOGFILE;
+		}
+		tilog = lcp->ti[j].off_data;
+		__pmFseek(acp->ac_mfp, (long)tilog, SEEK_SET);
 		if (mode == PM_MODE_BACK)
 		    acp->ac_serial = 0;
 		if (pmDebugOptions.log) {
 		    fprintf(stderr, " after ti[%d]@", j);
-		    __pmPrintTimeval(stderr, &lcp->l_ti[j].ti_stamp);
+		    __pmPrintTimestamp(stderr, &lcp->ti[j].stamp);
 		}
 	    }
 	    if (acp->ac_serial && mode == PM_MODE_FORW) {
@@ -2475,11 +2336,11 @@ __pmLogSetTime(__pmContext *ctxp)
 		 * back up one record ...
 		 * index points to the END of the record!
 		 */
-		pmResult	*result;
+		__pmResult	*result;
 		if (pmDebugOptions.log)
 		    fprintf(stderr, " back up ...\n");
 		if (__pmLogRead_ctx(ctxp, PM_MODE_BACK, NULL, &result, PMLOGREAD_NEXT) >= 0)
-		    pmFreeResult(result);
+		    __pmFreeResult(result);
 		if (pmDebugOptions.log)
 		    fprintf(stderr, "...");
 	    }
@@ -2487,12 +2348,38 @@ __pmLogSetTime(__pmContext *ctxp)
     }
     else {
 	/* index either not available, or not useful */
+	int	j;
 	if (mode == PM_MODE_FORW) {
-	    __pmLogChangeVol(acp, lcp->l_minvol);
-	    __pmFseek(acp->ac_mfp, (long)(sizeof(__pmLogLabel) + 2*sizeof(int)), SEEK_SET);
+	    for (j = lcp->minvol; j <= lcp->maxvol; j++) {
+		if (__pmLogChangeVol(acp, j) >= 0)
+		    break;
+	    }
+	    if (j > lcp->maxvol) {
+		/* no volume found */
+		if (pmDebugOptions.log)
+		    fprintf(stderr, " index not useful, no volume between %d...%d\n",
+			    lcp->minvol, lcp->maxvol);
+		acp->ac_curvol = -1;
+		acp->ac_mfp = NULL;
+		return PM_ERR_LOGFILE;
+	    }
+
+	    __pmFseek(acp->ac_mfp, (long)__pmLogLabelSize(lcp), SEEK_SET);
 	}
 	else if (mode == PM_MODE_BACK) {
-	    __pmLogChangeVol(acp, lcp->l_maxvol);
+	    for (j = lcp->maxvol; j >= lcp->minvol; j--) {
+		if (__pmLogChangeVol(acp, j) >= 0)
+		    break;
+	    }
+	    if (j < lcp->minvol) {
+		/* no volume found */
+		if (pmDebugOptions.log)
+		    fprintf(stderr, " index not useful, no volume between %d...%d\n",
+			    lcp->maxvol, lcp->minvol);
+		acp->ac_curvol = -1;
+		acp->ac_mfp = NULL;
+		return PM_ERR_LOGFILE;
+	    }
 	    __pmFseek(acp->ac_mfp, (long)0, SEEK_END);
 	}
 
@@ -2508,31 +2395,65 @@ __pmLogSetTime(__pmContext *ctxp)
     acp->ac_offset = __pmFtell(acp->ac_mfp);
     assert(acp->ac_offset >= 0);
     acp->ac_vol = acp->ac_curvol;
+
+    return 0;
 }
 
-/* Read the label of the current archive. */
-int
-__pmGetArchiveLabel(__pmLogCtl *lcp, pmLogLabel *lp)
-{
-    __pmLogLabel	*rlp;
+/*
+ * Different routines implement the different API versions.
+ * We also have to copy the structure to hide differences
+ * between the internal and external structure versions.
+ */
+typedef int (*pmgetlabel_t)(__pmLogCtl *, void *);
 
-    /*
-     * we have to copy the structure to hide the differences
-     * between the internal pmTimeval and the external struct timeval
-     */
-    rlp = &lcp->l_label;
-    lp->ll_magic = rlp->ill_magic;
-    lp->ll_pid = (pid_t)rlp->ill_pid;
-    lp->ll_start.tv_sec = rlp->ill_start.tv_sec;
-    lp->ll_start.tv_usec = rlp->ill_start.tv_usec;
-    memcpy(lp->ll_hostname, rlp->ill_hostname, PM_LOG_MAXHOSTLEN);
-    memcpy(lp->ll_tz, rlp->ill_tz, sizeof(lp->ll_tz));
+static int
+__pmGetOriginalArchiveLabel(__pmLogCtl *lcp, void *userdata)
+{
+    pmLogLabel		*lp = (pmLogLabel *)userdata;
+    __pmLogLabel	*rlp = &lcp->label;
+    size_t		bytes;
+
+    lp->ll_magic = rlp->magic;
+    lp->ll_pid = (pid_t)rlp->pid;
+    lp->ll_start.tv_sec = rlp->start.sec;
+    lp->ll_start.tv_usec = rlp->start.nsec / 1000;
+    bytes = MINIMUM(strlen(rlp->hostname), PM_LOG_MAXHOSTLEN - 1);
+    memcpy(lp->ll_hostname, rlp->hostname, bytes);
+    lp->ll_hostname[bytes] = '\0';
+    bytes = MINIMUM(strlen(rlp->timezone), PM_TZ_MAXLEN - 1);
+    memcpy(lp->ll_tz, rlp->timezone, bytes);
+    lp->ll_tz[bytes] = '\0';
+    return 0;
+}
+
+static int
+__pmGetHighResArchiveLabel(__pmLogCtl *lcp, void *userdata)
+{
+    pmHighResLogLabel	*lp = (pmHighResLogLabel *)userdata;
+    __pmLogLabel	*rlp = &lcp->label;
+    size_t		bytes;
+
+    lp->magic = rlp->magic;
+    lp->pid = (pid_t)rlp->pid;
+    lp->start.tv_sec = rlp->start.sec;
+    lp->start.tv_nsec = rlp->start.nsec;
+    bytes = MINIMUM(strlen(rlp->hostname), PM_MAX_HOSTNAMELEN - 1);
+    memcpy(lp->hostname, rlp->hostname, bytes);
+    lp->hostname[bytes] = '\0';
+    bytes = MINIMUM(strlen(rlp->timezone), PM_MAX_TIMEZONELEN - 1);
+    memcpy(lp->timezone, rlp->timezone, bytes);
+    lp->timezone[bytes] = '\0';
+    bytes = rlp->zoneinfo == NULL ? 0 :
+	    MINIMUM(strlen(rlp->zoneinfo), PM_MAX_ZONEINFOLEN - 1);
+    if (bytes)
+	memcpy(lp->zoneinfo, rlp->zoneinfo, bytes);
+    lp->zoneinfo[bytes] = '\0';
     return 0;
 }
 
 /* Read the label of the first archive in the context. */
-int
-pmGetArchiveLabel(pmLogLabel *lp)
+static int
+__pmGetArchiveLabel(pmgetlabel_t getlabel, void *userdata)
 {
     int		save_arch = 0;		/* pander to gcc */
     int		save_vol = 0;		/* pander to gcc */
@@ -2569,7 +2490,7 @@ pmGetArchiveLabel(pmLogLabel *lp)
     }
 
     /* Get the label. */
-    if ((sts = __pmGetArchiveLabel(lcp, lp)) < 0) {
+    if ((sts = getlabel(lcp, userdata)) < 0) {
 	PM_UNLOCK(ctxp->c_lock);
 	return sts;
     }
@@ -2591,6 +2512,20 @@ pmGetArchiveLabel(pmLogLabel *lp)
     return 0;
 }
 
+/* Pass back the label in the original label format. */
+int
+pmGetArchiveLabel(pmLogLabel *lp)
+{
+    return __pmGetArchiveLabel(__pmGetOriginalArchiveLabel, (void *)lp);
+}
+
+/* Pass back the label in the high resolution label format. */
+int
+pmGetHighResArchiveLabel(pmHighResLogLabel *lp)
+{
+    return __pmGetArchiveLabel(__pmGetHighResArchiveLabel, (void *)lp);
+}
+
 /*
  * Get the end time of the current archive.
  *
@@ -2599,35 +2534,36 @@ pmGetArchiveLabel(pmLogLabel *lp)
  * so that the current context can be carried down the call stack.
  */
 int
-__pmGetArchiveEnd_ctx(__pmContext *ctxp, struct timeval *tp)
+__pmGetArchiveEnd_ctx(__pmContext *ctxp, __pmTimestamp *tsp)
 {
     __pmArchCtl	*acp = ctxp->c_archctl;
     __pmLogCtl	*lcp = ctxp->c_archctl->ac_log;
     struct stat	sbuf;
     __pmFILE	*f;
     long	save = 0;
-    pmResult	*rp = NULL;
-    pmResult	*nrp;
+    __pmResult	*rp = NULL;
+    __pmResult	*nrp;
     int		i;
     int		sts;
     int		found;
     int		head;
     long	offset;
     int		vol;
-    __pm_off_t	logend;
-    __pm_off_t	physend = 0;
+    int		vers = __pmLogVersion(lcp);
+    size_t	logend;
+    size_t	physend = 0;
 
     PM_ASSERT_IS_LOCKED(ctxp->c_lock);
 
     /*
      * default, when all else fails ...
      */
-    tp->tv_sec = INT_MAX;
-    tp->tv_usec = 0;
+    tsp->sec = PM_MAX_TIME_T;
+    tsp->nsec = 0;
 
     /*
-     * expect things to be stable, so l_maxvol is not empty, and
-     * l_physend does not change for l_maxvol ... the ugliness is
+     * expect things to be stable, so maxvol is not empty, and
+     * physend does not change for maxvol ... the ugliness is
      * to handle situations where these expectations are not met
      */
     found = 0;
@@ -2638,7 +2574,7 @@ __pmGetArchiveEnd_ctx(__pmContext *ctxp, struct timeval *tp)
      * start at last volume and work backwards until success or
      * failure
      */
-    for (vol = lcp->l_maxvol; vol >= lcp->l_minvol; vol--) {
+    for (vol = lcp->maxvol; vol >= lcp->minvol; vol--) {
 	if (acp->ac_curvol == vol) {
 	    f = acp->ac_mfp;
 	    save = __pmFtell(f);
@@ -2654,22 +2590,20 @@ __pmGetArchiveEnd_ctx(__pmContext *ctxp, struct timeval *tp)
 	    goto prior_vol;
 	}
 
-	if (vol == lcp->l_maxvol && sbuf.st_size == lcp->l_physend) {
+	if (vol == lcp->maxvol && sbuf.st_size == lcp->physend) {
 	    /* nothing changed, return cached stuff */
-	    tp->tv_sec = lcp->l_endtime.tv_sec;
-	    tp->tv_usec = lcp->l_endtime.tv_usec;
+	    *tsp = lcp->endtime;		/* struct assignment */
 	    sts = 0;
 	    break;
 	}
 
 	/* if this volume is empty, try previous volume */
-	if (sbuf.st_size <= (int)sizeof(__pmLogLabel) + 2*(int)sizeof(int)) {
+	if (sbuf.st_size <= __pmLogLabelSize(lcp))
 	    goto prior_vol;
-	}
 
-	physend = (__pm_off_t)sbuf.st_size;
-	if (sizeof(off_t) > sizeof(__pm_off_t)) {
-	    /* 64-bit off_t */
+	physend = sbuf.st_size;
+	if (sizeof(off_t) > sizeof(__pmoff32_t) && vers == PM_LOG_VERS02) {
+	    /* 64-bit off_t, version 2 archives */
 	    if (physend != sbuf.st_size) {
 		/* oops, 32-bit offset not the same */
 		pmNotifyErr(LOG_ERR, "pmGetArchiveEnd: PCP archive file"
@@ -2693,12 +2627,12 @@ __pmGetArchiveEnd_ctx(__pmContext *ctxp, struct timeval *tp)
 	 * block flush for a growing archive.  Scan temporal index, and use
 	 * last entry at or before end of physical file for this volume
 	 */
-	logend = (int)sizeof(__pmLogLabel) + 2*(int)sizeof(int);
-	for (i = lcp->l_numti - 1; i >= 0; i--) {
-	    if (lcp->l_ti[i].ti_vol != vol)
+	logend = __pmLogLabelSize(lcp);
+	for (i = lcp->numti - 1; i >= 0; i--) {
+	    if (lcp->ti[i].vol != vol)
 		continue;
-	    if (lcp->l_ti[i].ti_log <= physend) {
-		logend = lcp->l_ti[i].ti_log;
+	    if (lcp->ti[i].off_data <= physend) {
+		logend = lcp->ti[i].off_data;
 		break;
 	    }
 	}
@@ -2717,14 +2651,14 @@ __pmGetArchiveEnd_ctx(__pmContext *ctxp, struct timeval *tp)
 	 */
 	assert(f != NULL);
 	__pmFseek(f, (long)logend, SEEK_SET);
-	if (logend > (int)sizeof(__pmLogLabel) + 2*(int)sizeof(int)) {
+	if (logend > __pmLogLabelSize(lcp)) {
 	    if (paranoidLogRead(ctxp, PM_MODE_BACK, f, &rp) < 0) {
 		/* this is badly damaged! */
 		if (pmDebugOptions.log) {
 		    fprintf(stderr, "pmGetArchiveEnd: "
-                            "Error reading record ending at posn=%d ti[%d]@",
+                            "Error reading record ending at posn=%zu ti[%d]@",
 			    logend, i);
-		    __pmPrintTimeval(stderr, &lcp->l_ti[i].ti_stamp);
+		    __pmPrintTimestamp(stderr, &lcp->ti[i].stamp);
 		    fputc('\n', stderr);
 		}
 		break;
@@ -2749,7 +2683,7 @@ __pmGetArchiveEnd_ctx(__pmContext *ctxp, struct timeval *tp)
 	    /* this one is ok, remember it as it may be the last one */
 	    found = 1;
 	    if (rp != NULL)
-		pmFreeResult(rp);
+		__pmFreeResult(rp);
 	    rp = nrp;
 	}
 	if (found)
@@ -2775,12 +2709,10 @@ prior_vol:
 	__pmFclose(f);
 
     if (found) {
-	tp->tv_sec = (time_t)rp->timestamp.tv_sec;
-	tp->tv_usec = (int)rp->timestamp.tv_usec;
-	if (vol == lcp->l_maxvol) {
-	    lcp->l_endtime.tv_sec = (__int32_t)rp->timestamp.tv_sec;
-	    lcp->l_endtime.tv_usec = (__int32_t)rp->timestamp.tv_usec;
-	    lcp->l_physend = physend;
+	*tsp = rp->timestamp;
+	if (vol == lcp->maxvol) {
+	    lcp->endtime = rp->timestamp;
+	    lcp->physend = physend;
 	}
 	sts = 0;
     }
@@ -2789,14 +2721,14 @@ prior_vol:
 	 * rp is not NULL from found==1 path _or_ from error break
 	 * after an initial paranoidLogRead() success
 	 */
-	pmFreeResult(rp);
+	__pmFreeResult(rp);
     }
 
     return sts;
 }
 
 int
-__pmGetArchiveEnd(__pmArchCtl *acp, struct timeval *tp)
+__pmGetArchiveEnd(__pmArchCtl *acp, __pmTimestamp *tsp)
 {
     int		sts;
     __pmContext	*ctxp;
@@ -2810,7 +2742,7 @@ __pmGetArchiveEnd(__pmArchCtl *acp, struct timeval *tp)
 	PM_UNLOCK(ctxp->c_lock);
 	return PM_ERR_NOTARCHIVE;
     }
-    sts = __pmGetArchiveEnd_ctx(ctxp, tp);
+    sts = __pmGetArchiveEnd_ctx(ctxp, tsp);
     PM_UNLOCK(ctxp->c_lock);
     return sts;
 }
@@ -2819,17 +2751,33 @@ __pmGetArchiveEnd(__pmArchCtl *acp, struct timeval *tp)
 int
 pmGetArchiveEnd(struct timeval *tp)
 {
-    int		sts;
-    sts = pmGetArchiveEnd_ctx(NULL, tp);
-    return sts;
+    __pmTimestamp	stamp;
+    int			sts;
 
+    sts = pmGetArchiveEnd_ctx(NULL, &stamp);
+    tp->tv_sec = stamp.sec;
+    tp->tv_usec = stamp.nsec / 1000;
+    return sts;
+}
+
+/* Get the high resolution end time of the final archive in the context. */
+int
+pmGetHighResArchiveEnd(struct timespec *ts)
+{
+    __pmTimestamp	stamp;
+    int			sts;
+
+    sts = pmGetArchiveEnd_ctx(NULL, &stamp);
+    ts->tv_sec = stamp.sec;
+    ts->tv_nsec = stamp.nsec;
+    return sts;
 }
 
 /*
  * ctxp->c_lock is held throughout this routine
  */
 int
-pmGetArchiveEnd_ctx(__pmContext *ctxp, struct timeval *tp)
+pmGetArchiveEnd_ctx(__pmContext *ctxp, __pmTimestamp *tsp)
 {
     int		save_arch = 0;		/* pander to gcc */
     int		save_vol = 0;		/* pander to gcc */
@@ -2852,7 +2800,7 @@ pmGetArchiveEnd_ctx(__pmContext *ctxp, struct timeval *tp)
 	PM_ASSERT_IS_LOCKED(ctxp->c_lock);
 
     /*
-     * set l_physend and l_endtime
+     * set physend and endtime
      * at the end of ... ctxp->c_archctl->ac_log
      */
     if (ctxp->c_type != PM_CONTEXT_ARCHIVE) {
@@ -2875,7 +2823,7 @@ pmGetArchiveEnd_ctx(__pmContext *ctxp, struct timeval *tp)
 	restore = 1;
     }
 
-    if ((sts = __pmGetArchiveEnd_ctx(ctxp, tp)) < 0) {
+    if ((sts = __pmGetArchiveEnd_ctx(ctxp, tsp)) < 0) {
 	if (need_unlock)
 	    PM_UNLOCK(ctxp->c_lock);
 	return sts;
@@ -2920,7 +2868,7 @@ __pmLogChangeArchive(__pmContext *ctxp, int arch)
      * __pmFindOrOpenArchive() will take care of closing the active archive,
      * if necessary.
      */
-    sts = __pmFindOrOpenArchive(ctxp, mlcp->ml_name, 1/*multi_arch*/);
+    sts = __pmFindOrOpenArchive(ctxp, mlcp->name, 1/*multi_arch*/);
     if (sts < 0)
 	return sts;
 
@@ -2939,7 +2887,7 @@ __pmLogChangeArchive(__pmContext *ctxp, int arch)
  * so that the current context can be carried down the call stack.
  */
 static int
-LogCheckForNextArchive(__pmContext *ctxp, int mode, pmResult **result)
+LogCheckForNextArchive(__pmContext *ctxp, int mode, __pmResult **result)
 {
     __pmArchCtl	*acp;
     int		sts = 0;
@@ -2968,7 +2916,7 @@ LogCheckForNextArchive(__pmContext *ctxp, int mode, pmResult **result)
 }
 
 int
-__pmLogCheckForNextArchive(__pmLogCtl *lcp, int mode, pmResult **result)
+__pmLogCheckForNextArchive(__pmLogCtl *lcp, int mode, __pmResult **result)
 {
     int		sts;
     __pmContext	*ctxp;
@@ -2997,19 +2945,17 @@ __pmLogCheckForNextArchive(__pmLogCtl *lcp, int mode, pmResult **result)
 static int
 LogChangeToNextArchive(__pmContext *ctxp)
 {
-    __pmLogCtl	*lcp = ctxp->c_archctl->ac_log;
-    __pmArchCtl	*acp;
-    pmTimeval prev_endtime;
-    pmTimeval	save_origin;
-    int		save_mode;
+    __pmLogCtl		*lcp = ctxp->c_archctl->ac_log;
+    __pmArchCtl		*acp = ctxp->c_archctl;
+    __pmTimestamp	prev_endtime;
+    __pmTimestamp	save_origin;
+    int			save_mode;
 
     /*
      * Check whether there is a subsequent archive to switch to.
      */
-    acp = ctxp->c_archctl;
-    if (acp->ac_cur_log >= acp->ac_num_logs - 1) {
+    if (acp->ac_cur_log >= acp->ac_num_logs - 1)
 	return PM_ERR_EOL; /* no more archives */
-    }
 
     /*
      * We're changing to the next archive because we have reached the end of
@@ -3019,11 +2965,11 @@ LogChangeToNextArchive(__pmContext *ctxp)
      * transtition because archives can be 'live' and their ranges
      * in time can change dynamically.
      *
-     * l_endtime for the current archive was updated when the <mark>
+     * endtime for the current archive was updated when the <mark>
      * record was generated. Save it.
      */
-    prev_endtime = lcp->l_endtime;
-	       
+    prev_endtime = lcp->endtime;		/* struct assignment */
+
     /*
      * __pmLogChangeArchive() will update the c_origin and c_mode fields of
      * the current context via __pmLogOpen(). However, we don't want that
@@ -3042,16 +2988,15 @@ LogChangeToNextArchive(__pmContext *ctxp)
      * We want to reposition to the start of the archive.
      * Start after the header + label record + trailer
      */
-    acp->ac_offset = sizeof(__pmLogLabel) + 2*sizeof(int);
+    acp->ac_offset = __pmLogLabelSize(lcp);
     acp->ac_vol = acp->ac_curvol;
 
     /*
      * Check for temporal overlap here. Do this last in case the API client
      * chooses to keep reading anyway.
      */
-    if (__pmTimevalSub(&prev_endtime, &lcp->l_label.ill_start) > 0) {
+    if (__pmTimestampSub(&prev_endtime, &lcp->label.start) > 0)
 	return PM_ERR_LOGOVERLAP;
-    }
 
     return 0;
 }
@@ -3089,20 +3034,20 @@ static int
 LogChangeToPreviousArchive(__pmContext *ctxp)
 {
     __pmLogCtl		*lcp = ctxp->c_archctl->ac_log;
-    __pmArchCtl		*acp;
-    struct timeval	current_endtime;
-    pmTimeval		prev_starttime;
-    pmTimeval		save_origin;
+    __pmArchCtl		*acp = ctxp->c_archctl;
+    __pmTimestamp	current_endtime;
+    __pmTimestamp	prev_starttime;
+    __pmTimestamp	prev_endtime;
+    __pmTimestamp	save_origin;
     int			save_mode;
     int			sts;
+    int			j;
 
     /*
      * Check whether there is a previous archive to switch to.
      */
-    acp = ctxp->c_archctl;
-    if (acp->ac_cur_log == 0) {
+    if (acp->ac_cur_log == 0)
 	return PM_ERR_EOL; /* no more archives */
-    }
 
     /*
      * We're changing to the previous archive because we have reached the
@@ -3114,7 +3059,7 @@ LogChangeToPreviousArchive(__pmContext *ctxp)
      *
      * Save the start time of the current archive.
      */
-    prev_starttime = lcp->l_label.ill_start;
+    prev_starttime = lcp->label.start;
 
     /*
      * __pmLogChangeArchive() will update the c_origin and c_mode fields of
@@ -3135,24 +3080,35 @@ LogChangeToPreviousArchive(__pmContext *ctxp)
      * We need the current end time of the new archive in order to compare
      * with the start time of the previous one.
      */
-    if ((sts = __pmGetArchiveEnd_ctx(ctxp, &current_endtime)) < 0) {
+    if ((sts = __pmGetArchiveEnd_ctx(ctxp, &current_endtime)) < 0)
 	return sts;
-    }
 
     /* Set up to scan backwards from the end of the archive. */
-    __pmLogChangeVol(acp, lcp->l_maxvol);
+    for (j = lcp->maxvol; j >= lcp->minvol; j--) {
+	if (__pmLogChangeVol(acp, j) >= 0)
+	    break;
+    }
+    if (j < lcp->minvol) {
+	/* no volume found */
+	if (pmDebugOptions.log)
+	    fprintf(stderr, "LogChangeToPreviousArchive: no volume between %d...%d\n",
+		    lcp->maxvol, lcp->minvol);
+	acp->ac_curvol = -1;
+	acp->ac_mfp = NULL;
+	return PM_ERR_LOGFILE;
+    }
     __pmFseek(acp->ac_mfp, (long)0, SEEK_END);
-    ctxp->c_archctl->ac_offset = __pmFtell(acp->ac_mfp);
-    assert(ctxp->c_archctl->ac_offset >= 0);
-    ctxp->c_archctl->ac_vol = ctxp->c_archctl->ac_curvol;
+    acp->ac_offset = __pmFtell(acp->ac_mfp);
+    assert(acp->ac_offset >= 0);
+    acp->ac_vol = acp->ac_curvol;
 
     /*
      * Check for temporal overlap here. Do this last in case the API client
      * chooses to keep reading anyway.
      */
-    if (__pmTimevalSub(&lcp->l_endtime, &prev_starttime) > 0) {
+    prev_endtime = lcp->endtime;		/* struct assignment */
+    if (__pmTimestampSub(&prev_endtime, &prev_starttime) > 0)
 	return PM_ERR_LOGOVERLAP;  /* temporal overlap */
-    }
 
     return 0;
 }
@@ -3179,10 +3135,10 @@ __pmLogChangeToPreviousArchive(__pmLogCtl **lcp)
     return sts;
 }
 
-pmTimeval *
+__pmTimestamp *
 __pmLogStartTime(__pmArchCtl *acp)
 {
-    return &acp->ac_log_list[0]->ml_starttime;
+    return &acp->ac_log_list[0]->starttime;
 }
 
 void
@@ -3195,27 +3151,32 @@ __pmArchCtlFree(__pmArchCtl *acp)
     __pmLogCtl *lcp = acp->ac_log;
 
     if (lcp != NULL) {
-	PM_LOCK(lcp->l_lock);
-	if (--lcp->l_refcnt == 0) {
-	    PM_UNLOCK(lcp->l_lock);
+	PM_LOCK(lcp->lc_lock);
+	if (--lcp->refcnt == 0) {
+	    PM_UNLOCK(lcp->lc_lock);
 	    __pmLogClose(acp);
 	    logFreeMeta(lcp);
 #ifdef PM_MULTI_THREAD
-	    __pmDestroyMutex(&lcp->l_lock);
+	    __pmDestroyMutex(&lcp->lc_lock);
 #endif
 	    free(lcp);
 	}
 	else
-	    PM_UNLOCK(lcp->l_lock);
+	    PM_UNLOCK(lcp->lc_lock);
     }
 
     /* We need to clean up the archive list. */
     if (acp->ac_log_list != NULL) {
 	while (--acp->ac_num_logs >= 0) {
-	    assert (acp->ac_log_list[acp->ac_num_logs] != NULL);
-	    free(acp->ac_log_list[acp->ac_num_logs]->ml_name);
-	    free(acp->ac_log_list[acp->ac_num_logs]->ml_hostname);
-	    free(acp->ac_log_list[acp->ac_num_logs]->ml_tz);
+	    assert(acp->ac_log_list[acp->ac_num_logs] != NULL);
+	    if (acp->ac_log_list[acp->ac_num_logs]->name != NULL)
+		free(acp->ac_log_list[acp->ac_num_logs]->name);
+	    if (acp->ac_log_list[acp->ac_num_logs]->hostname != NULL)
+		free(acp->ac_log_list[acp->ac_num_logs]->hostname);
+	    if (acp->ac_log_list[acp->ac_num_logs]->timezone != NULL)
+		free(acp->ac_log_list[acp->ac_num_logs]->timezone);
+	    if (acp->ac_log_list[acp->ac_num_logs]->zoneinfo != NULL)
+		free(acp->ac_log_list[acp->ac_num_logs]->zoneinfo);
 	    free(acp->ac_log_list[acp->ac_num_logs]);
 	}
 	free(acp->ac_log_list);

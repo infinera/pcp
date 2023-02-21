@@ -21,6 +21,10 @@ PCPTESTSUITE = pcp-testsuite
 PCPTESTSUITE_FILES = pcp-testsuite.dirs pcp-testsuite.postinst
 PCPTESTSUITE_DOC_DIR = $(PCP_DOC_DIR)/../pcp-testsuite
 
+PCPZEROCONF = pcp-zeroconf
+PCPZEROCONF_FILES = pcp-zeroconf.dirs pcp-zeroconf.install pcp-zeroconf.postinst
+PCPZEROCONF_DOC_DIR = $(PCP_DOC_DIR)/../pcp-zeroconf
+
 PCPIMPORTSAR = pcp-import-sar2pcp
 PCPIMPORTSAR_FILES = pcp-import-sar2pcp.install
 PCPIMPORTSAR_DOC_DIR = $(PCP_DOC_DIR)/../pcp-import-sar2pcp
@@ -112,6 +116,10 @@ default: pcp.preinst pcp.postinst pcp.postrm control pcp-gui.install
 include $(BUILDRULES)
 
 install: default
+ifeq ($(ENABLE_SYSTEMD),true)
+	$(INSTALL) -m 644 pcp.sysusers $(PCP_SYSTEMDSYSUSERS_DIR)/pcp.conf
+	$(INSTALL) -m 644 pcp-testsuite.sysusers $(PCP_SYSTEMDSYSUSERS_DIR)/pcp-testsuite.conf
+endif
 ifeq ($(PACKAGE_DISTRIBUTION), debian)
 	$(INSTALL) -m 755 -d $(LINTDIR)
 	$(INSTALL) -m 644 $(PCP_LINT) $(LINTDIR)/pcp
@@ -135,6 +143,13 @@ ifeq ($(PACKAGE_DISTRIBUTION), debian)
 	$(INSTALL) -m 755 -d $(PCPTESTSUITE_DOC_DIR)
 	$(INSTALL) -m 644 copyright $(PCPTESTSUITE_DOC_DIR)
 	$(INSTALL) -m 644 changelog $(PCPTESTSUITE_DOC_DIR)/changelog.Debian
+endif
+
+install-zeroconf: default
+ifeq ($(PACKAGE_DISTRIBUTION), debian)
+	$(INSTALL) -m 755 -d $(PCPZEROCONF_DOC_DIR)
+	$(INSTALL) -m 644 copyright $(PCPZEROCONF_DOC_DIR)
+	$(INSTALL) -m 644 changelog $(PCPZEROCONF_DOC_DIR)/changelog.Debian
 endif
 
 install-pcpcfg: default
@@ -294,17 +309,17 @@ ifeq ($(PACKAGE_DISTRIBUTION), debian)
 endif
 endif
 
-pcp.preinst:	pcp.preinst.head $(SCRIPTS)/cleanconfigs configversions pcp.preinst.tail
+pcp.preinst:	pcp.preinst.head $(SCRIPTS)/cleanconfigs configversions pcp.preinst.tail cull_old_conffiles
 	rm -f $@
-	cat pcp.preinst.head $(SCRIPTS)/cleanconfigs configversions pcp.preinst.tail > $@
+	cat pcp.preinst.head $(SCRIPTS)/cleanconfigs configversions cull_old_conffiles pcp.preinst.tail > $@
 
-pcp.postinst:	pcp.postinst.head configversions pcp.postinst.tail
+pcp.postinst:	pcp.postinst.head configversions pcp.postinst.tail cull_old_conffiles
 	rm -f $@
-	cat pcp.postinst.head configversions pcp.postinst.tail > $@
+	cat pcp.postinst.head configversions cull_old_conffiles pcp.postinst.tail > $@
 
-pcp.postrm:	pcp.postrm.head configversions pcp.postrm.tail
+pcp.postrm:	pcp.postrm.head configversions pcp.postrm.tail cull_old_conffiles
 	rm -f $@
-	cat pcp.postrm.head configversions pcp.postrm.tail > $@
+	cat pcp.postrm.head configversions cull_old_conffiles pcp.postrm.tail > $@
 
 pcp-gui.install:	pcp-gui.install.base pcp-gui.install.hicolor
 	rm -f pcp-gui.install
@@ -323,6 +338,9 @@ ifeq ($(ENABLE_PYTHON3), true)
 endif
 ifeq ($(ENABLE_QT), true)
 	cat control.pcpgui >>control
+endif
+ifeq ($(HAVE_PYTHON_OPENPYXL), true)
+	cat control.pcp2xlsx >>control
 endif
 ifeq ($(PMDA_INFINIBAND), true)
 	cat control.pmdaib >>control

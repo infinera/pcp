@@ -1,5 +1,5 @@
 /*
- * utils for pmlogextract
+ * utils for pmlogreduce
  *
  * Copyright (c) 2017 Red Hat.
  * Copyright (c) 1997-2002 Silicon Graphics, Inc.  All Rights Reserved.
@@ -17,25 +17,6 @@
 
 #include "pmlogreduce.h"
 
-int
-_pmLogPut(__pmFILE *f, __pmPDU *pb)
-{
-    int		rlen = ntohl(pb[0]);
-    int		sts;
-
-    if (pmDebugOptions.log) {
-	fprintf(stderr, "_pmLogPut: fd=%d rlen=%d\n",
-	    __pmFileno(f), rlen);
-    }
-
-    if ((sts = (int)__pmFwrite(pb, 1, rlen, f)) != rlen) {
-	if (pmDebugOptions.log)
-	    fprintf(stderr, "_pmLogPut: fwrite=%d %s\n", sts, osstrerror());
-	return -oserror();
-    }
-    return 0;
-}
-
 /*
  * construct new external label, and check label records from
  * input archives
@@ -43,22 +24,29 @@ _pmLogPut(__pmFILE *f, __pmPDU *pb)
 void
 newlabel(void)
 {
-    __pmLogLabel	*lp = &logctl.l_label;
+    __pmLogLabel	*lp = &logctl.label;
 
     /* check version number */
-    if ((ilabel.ll_magic & 0xff) != PM_LOG_VERS02) {
-	fprintf(stderr,"%s: Error: version number %d (not %d as expected) in archive (%s)\n",
-		pmGetProgname(), ilabel.ll_magic & 0xff, PM_LOG_VERS02, iname);
+    if ((ilabel.ll_magic & 0xff) != PM_LOG_VERS02 &&
+        (ilabel.ll_magic & 0xff) != PM_LOG_VERS03) {
+	fprintf(stderr,"%s: Error: version number %d (not %d or %d as expected) in archive (%s)\n",
+		pmGetProgname(), ilabel.ll_magic & 0xff, PM_LOG_VERS02, PM_LOG_VERS03, iname);
 	exit(1);
     }
 
-    /* copy magic number, host and timezone, use our pid */
-    lp->ill_magic = ilabel.ll_magic;
-    lp->ill_pid = (int)getpid();
-    strncpy(lp->ill_hostname, ilabel.ll_hostname, PM_LOG_MAXHOSTLEN);
-    lp->ill_hostname[PM_LOG_MAXHOSTLEN-1] = '\0';
-    strncpy(lp->ill_tz, ilabel.ll_tz, PM_TZ_MAXLEN);
-    lp->ill_tz[PM_TZ_MAXLEN-1] = '\0';
+    /* copy magic number, host and timezone info, use our pid */
+    lp->magic = ilabel.ll_magic;
+    lp->pid = (int)getpid();
+    if (lp->hostname)
+	free(lp->hostname);
+    lp->hostname = strdup(ilabel.ll_hostname);
+    if (lp->timezone)
+	free(lp->timezone);
+    lp->timezone = strdup(ilabel.ll_tz);
+    if (lp->zoneinfo)
+	free(lp->zoneinfo);
+    /* TODO: use v3 archive zoneinfo */
+    lp->zoneinfo = NULL;
 }
 
 
@@ -68,35 +56,32 @@ newlabel(void)
 void
 writelabel(void)
 {
-    logctl.l_label.ill_vol = 0;
-    __pmLogWriteLabel(archctl.ac_mfp, &logctl.l_label);
-    logctl.l_label.ill_vol = PM_LOG_VOL_TI;
-    __pmLogWriteLabel(logctl.l_tifp, &logctl.l_label);
-    logctl.l_label.ill_vol = PM_LOG_VOL_META;
-    __pmLogWriteLabel(logctl.l_mdfp, &logctl.l_label);
+    logctl.label.vol = 0;
+    __pmLogWriteLabel(archctl.ac_mfp, &logctl.label);
+    logctl.label.vol = PM_LOG_VOL_TI;
+    __pmLogWriteLabel(logctl.tifp, &logctl.label);
+    logctl.label.vol = PM_LOG_VOL_META;
+    __pmLogWriteLabel(logctl.mdfp, &logctl.label);
 }
 
 /*
  *  switch output volumes
  */
 void
-newvolume(char *base, pmTimeval *tvp)
+newvolume(char *base, __pmTimestamp *tsp)
 {
     __pmFILE		*newfp;
     int			nextvol = archctl.ac_curvol + 1;
-    struct timeval	stamp;
 
     if ((newfp = __pmLogNewFile(base, nextvol)) != NULL) {
 	__pmFclose(archctl.ac_mfp);
 	archctl.ac_mfp = newfp;
-	logctl.l_label.ill_vol = archctl.ac_curvol = nextvol;
-	__pmLogWriteLabel(archctl.ac_mfp, &logctl.l_label);
+	logctl.label.vol = archctl.ac_curvol = nextvol;
+	__pmLogWriteLabel(archctl.ac_mfp, &logctl.label);
 	__pmFflush(archctl.ac_mfp);
-	stamp.tv_sec = tvp->tv_sec;
-	stamp.tv_usec = tvp->tv_usec;
 	fprintf(stderr, "%s: New log volume %d, at ",
 		pmGetProgname(), nextvol);
-	pmPrintStamp(stderr, &stamp);
+	__pmPrintTimestamp(stderr, tsp);
 	fputc('\n', stderr);
 	return;
     }

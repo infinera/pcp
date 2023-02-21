@@ -186,6 +186,25 @@ _reboot_setup()
     fi
 }
 
+# if _pmda_setup() is interrupted, we need to cleanup
+# (a) remove the mutual exclusion lock file, and
+# (b) make sure any pending operation will be repeated at the
+#     next restart
+#
+_pmda_setup_cleanup()
+{
+    echo "_pmda_setup: Interrupted!"
+    rm -rf $tmp $PCP_TMPFILE_DIR/pmda.auto.update
+    for file in $PCP_PMDAS_DIR/*/.Need*.pending
+    do
+	[ "$file" = "$PCP_PMDAS_DIR/*/.Need*.pending" ] && continue
+	guard=`echo $file | sed -e 's@.*/@@' -e 's/\.pending$//'`
+	pmda=`echo $file | sed -e 's@/.Need.*@@' -e 's@.*/@@'`
+	echo "_pmda_setup_cleanup: reset $guard for $pmda PMDA"
+	mv -f $PCP_PMDAS_DIR/$pmda/$guard.pending $PCP_PMDAS_DIR/$pmda/$guard
+    done
+}
+
 # Note: _pmda_setup() is run only once per rc script invocation ...
 #       even though this may call Install and/or Remove scripts
 #       for multiple PMDAs which may in turn (recursively) call
@@ -195,6 +214,21 @@ _pmda_setup()
 {
     # Auto-Install and/or Auto-Remove PMDAs?
     #
+    if $PCP_BINADM_DIR/pmlock $PCP_TMPFILE_DIR/pmda.auto.update
+    then
+	# we got the lock, proceed
+	$PCP_BINADM_DIR/pmpost "PMDA setup: pid=$$ acquire lock"
+	:
+    else
+	# one of us is already running
+	#
+	$PCP_BINADM_DIR/pmpost "PMDA setup: pid=$$ lock failed"
+	return
+    fi
+
+    # if we are interrupted, remove the lock file
+    trap "_pmda_setup_cleanup; exit \$status" 1 2 3 15
+
     if [ -d "$PCP_PMDAS_DIR" ]
     then
 	here=`pwd`
@@ -204,42 +238,81 @@ _pmda_setup()
 	_pmda_enact Install Installing
 	cd "$here"
     fi
+
+    rm -f $PCP_TMPFILE_DIR/pmda.auto.update
+    $PCP_BINADM_DIR/pmpost "PMDA setup: pid=$$ release lock"
+
+    # re-instate mainline trap
+    #
+    trap "rm -rf $tmp; exit \$status" 0 1 2 3 15
 }
 
 # Take automated setup action (Install or Remove) for PMDAs
+# Protocol here is:
+#	.Need${action} => package installs may leave these behind
+#			  to indicate action needed here
+#	.Need${action}.pending => action is running
+#	.Need${action}.failed => action run but failed (these will
+#				 trigger a retry the next time pmcd is
+#				 restated
 #
 _pmda_enact()
 {
     action=$1
     verb=$2
 
-    for file in */.Need$action
+    for file in */.Need${action}*
     do
-	[ "$file" = "*/.Need$action" ] && break
+	# skip all of this if no files from glob expansion
+	#
+	[ "$file" = "*/.Need${action}*" ] && break
 	pmda=`dirname $file`
-	if [ -d "$pmda" -a -f "$pmda/.Need$action" ]
-	then
-	    cd $pmda
-	    $PCP_ECHO_PROG "$verb $pmda PMDA ..."
+	# sanity ... $pmda really should be a directory name
+	#
+	[ -d "$pmda" ] || continue
+	# rename marker file asap and _before_ calling action script
+	# because that script might call this start script recursively,
+	# and we don't want to get stuck in an infinite loop.
+	# 
+	case "$file"
+	in
+	    */.Need${action}|*/.Need${action}.failed|*/.Need${action}.pending)
+		case "$file"
+		in
+		    */.Need${action}.pending)
+			# interrupted? we have the mutex lock here, so
+			# just proceed
+			#
+			;;
+		    *)
+			rm -f $pmda/.Need${action}.pending
+			mv $file $pmda/.Need${action}.pending
+			;;
+		esac
+		$PCP_ECHO_PROG "$verb $pmda PMDA ..."
+		cd $pmda
+		if ./${action} </dev/null >/dev/null
+		then
+		    # success
+		    $PCP_BINADM_DIR/pmpost "PMDA setup: automated $action: $pmda"
+		    rm -f .Need${action}.pending
+		else
+		    # failure
+		    $PCP_BINADM_DIR/pmpost "PMDA setup: automated $action FAILED (exit=$?): $pmda"
+		    # leave the marker, but rename to .failed, this
+		    # will allow another attempt at the next restart
+		    # and maybe we'll be luckier next time
+		    #
+		    mv .Need${action}.pending .Need${action}.failed
+		fi
+		cd "$PCP_PMDAS_DIR"
+		;;
 
-	    # rename marker file _before_ calling action script because
-	    # that script might call this start script recursively, and
-	    # we don't want to get stuck in an infinite loop.
-	    # 
-	    rm -f .Need${action}.sav
-	    mv .Need${action} .Need${action}.sav
-	    if ./${action} </dev/null >/dev/null
-	    then
-		# success
-		$PCP_BINADM_DIR/pmpost "PMDA setup: automated $action: $pmda"
-		rm -f .Need$action.sav
-	    else
-		# put the file back, maybe we'll be luckier next time
-		$PCP_BINADM_DIR/pmpost "PMDA setup: automated $action FAILED (exit=$?): $pmda"
-		mv .Need$action.sav .Need$action
-	    fi
-	    cd "$PCP_PMDAS_DIR"
-	fi
+	    *)
+		$PCP_BINADM_DIR/pmpost "PMDA automated setup: botch: what is $file?"
+		;;
+	esac
+
     done
 }
 

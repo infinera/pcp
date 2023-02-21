@@ -27,12 +27,12 @@ pminfo -T \
 function skip_me(m)
 {
     # for OpenMetrics we forward on the underlying domain help text
-    return (m == "kernel.percpu.interrupts.line21" || m ~ "^openmetrics")
+    return (m ~ "^openmetrics")
 }
 /Help:/ { metric = line; next }
 { 
-    if (skip_me(metric)) next
     line = $0
+    if (skip_me(metric)) next
     if (length(line) > maxlen && metric != lastone) {
 	printf "[%d] %s, full help text is too long: %d\n", NR, metric, length(line)
 	lastone = metric

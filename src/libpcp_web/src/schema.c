@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2017-2021 Red Hat.
+ * Copyright (c) 2017-2022 Red Hat.
  *
  * This library is free software; you can redistribute it and/or modify it
  * under the terms of the GNU Lesser General Public License as published
@@ -23,42 +23,14 @@
 #define STRINGIFY(s)	#s
 #define TO_STRING(s)	STRINGIFY(s)
 #define SERIES_VERSION	2
-#define SERVER_VERSION	5
+#define REDIS_VERSION	5
 
 extern sds		cursorcount;
 static sds		maxstreamlen;
 static sds		streamexpire;
-
-typedef struct redisScript {
-    sds			hash;
-    const char		*text;
-} redisScript;
-
-static redisScript	*scripts;
-static int		nscripts;
-
-static void
-redisScriptsInit(void)
-{
-    const unsigned char	*text;
-    unsigned char	hash[20];
-    char		hashbuf[42];
-    redisScript		*script;
-    SHA1_CTX		shactx;
-    int			i;
-
-    for (i = 0; i < nscripts; i++) {
-	script = &scripts[i];
-	text = (const unsigned char *)script->text;
-
-	/* Calculate unique script identifier from its contents */
-	SHA1Init(&shactx);
-	SHA1Update(&shactx, text, strlen((char *)text));
-	SHA1Final(hash, &shactx);
-	pmwebapi_hash_str(hash, hashbuf, sizeof(hashbuf));
-	scripts->hash = sdsnew(hashbuf);
-    }
-}
+static sds		DEFAULT_CURSORCOUNT;
+static sds		DEFAULT_MAXSTREAMLEN;
+static sds		DEFAULT_STREAMEXPIRE;
 
 static void
 initRedisSlotsBaton(redisSlotsBaton *baton,
@@ -80,8 +52,10 @@ redis_slots_finished(void *arg)
 
     seriesBatonCheckMagic(baton, MAGIC_SLOTS, "redis_slots_finished");
 
-    if (baton->error == 0)
+    if (baton->error == 0) {
+	baton->slots->state = SLOTS_READY;
 	baton->done(baton->arg);
+    }
     memset(baton, 0, sizeof(*baton));
     free(baton);
 }
@@ -131,15 +105,13 @@ doneRedisMapBaton(redisMapBaton *baton)
 
 static void
 redis_map_publish_callback(
-	redisAsyncContext *redis, redisReply *reply, const sds cmd, void *arg)
+	redisClusterAsyncContext *c, void *r, void *arg)
 {
     redisMapBaton	*baton = (redisMapBaton *)arg;
+    redisReply          *reply = r;
 
     seriesBatonCheckMagic(baton, MAGIC_MAPPING, "redis_map_publish_callback");
-    /* no cluster redirection checking is needed for this callback */
-    sdsfree(cmd);
-
-    checkIntegerReply(baton->info, baton->userdata, reply,
+    checkIntegerReply(baton->info, baton->userdata, c, reply,
 			"%s: %s", PUBLISH, "new %s mapping",
 			redisMapName(baton->mapping));
     doneRedisMapBaton(baton);
@@ -152,37 +124,33 @@ redis_map_publish(redisMapBaton *baton)
     sds			msg, key, cmd;
 
     pmwebapi_hash_str((unsigned char *)baton->mapKey, hash, sizeof(hash));
-    msg = sdscatfmt(sdsempty(), "%S:%S", hash, baton->mapStr);
+    msg = sdscatfmt(sdsempty(), "%s:%S", hash, baton->mapStr);
     key = sdscatfmt(sdsempty(), "pcp:channel:%s", redisMapName(baton->mapping));
     cmd = redis_command(3);
     cmd = redis_param_str(cmd, PUBLISH, PUBLISH_LEN);
     cmd = redis_param_sds(cmd, key);
     cmd = redis_param_sds(cmd, msg);
     sdsfree(msg);
+    sdsfree(key);
 
-    redisSlotsRequest(baton->slots, PUBLISH, key, cmd,
+    redisSlotsRequest(baton->slots, cmd,
 			redis_map_publish_callback, baton);
+    sdsfree(cmd);
 }
 
 static void
 redis_map_request_callback(
-	redisAsyncContext *redis, redisReply *reply, const sds cmd, void *arg)
+	redisClusterAsyncContext *c, void *r, void *arg)
 {
     redisMapBaton	*baton = (redisMapBaton *)arg;
-    int			newname, sts;
+    redisReply          *reply = r;
+    int			newname;
 
     seriesBatonCheckMagic(baton, MAGIC_MAPPING, "redis_map_request_callback");
-    sts = redisSlotsRedirect(baton->slots, reply, baton->info, baton->userdata,
-			     cmd, redis_map_request_callback, arg);
-    if (sts > 0)
-	return;	/* short-circuit as command was re-submitted */
 
-    if (sts == 0)
-	newname = checkIntegerReply(baton->info, baton->userdata, reply,
-			"%s: %s (%s)", HSET, "string mapping script",
-			redisMapName(baton->mapping));
-    else
-	newname = sts;
+    newname = checkIntegerReply(baton->info, baton->userdata, c, reply,
+                     "%s: %s (%s)", HSET, "string mapping script",
+                     redisMapName(baton->mapping));
 
     /* publish any newly created name mapping */
     if (newname > 0)
@@ -202,8 +170,10 @@ redisMapRequest(redisMapBaton *baton, redisMap *map, sds name, sds value)
     cmd = redis_param_sds(cmd, key);
     cmd = redis_param_sds(cmd, name);
     cmd = redis_param_sds(cmd, value);
+    sdsfree(key);
 
-    redisSlotsRequest(baton->slots, HSET, key, cmd, redis_map_request_callback, baton);
+    redisSlotsRequest(baton->slots, cmd, redis_map_request_callback, baton);
+    sdsfree(cmd);
 }
 
 void
@@ -241,51 +211,36 @@ redisGetMap(redisSlots *slots, redisMap *mapping, unsigned char *hash, sds mapSt
 
 static void
 redis_source_context_name(
-	redisAsyncContext *c, redisReply *reply, const sds cmd, void *arg)
+	redisClusterAsyncContext *c, void *r, void *arg)
 {
     seriesLoadBaton		*baton = (seriesLoadBaton *)arg;
-    int				sts;
+    redisReply                  *reply = r;
 
-    sts = redisSlotsRedirect(baton->slots, reply, baton->info, baton->userdata,
-			     cmd, redis_source_context_name, arg);
-    if (sts > 0)
-	return;	/* short-circuit as command was re-submitted */
-    if (sts == 0)
-	checkIntegerReply(baton->info, baton->userdata, reply,
+    checkIntegerReply(baton->info, baton->userdata, c, reply,
 		"%s: %s", SADD, "mapping context to source or host name");
     doneSeriesLoadBaton(baton, "redis_source_context_name");
 }
 
 static void
 redis_source_location(
-	redisAsyncContext *c, redisReply *reply, const sds cmd, void *arg)
+	redisClusterAsyncContext *c, void *r, void *arg)
 {
     seriesLoadBaton		*baton = (seriesLoadBaton *)arg;
-    int				sts;
+    redisReply                  *reply = r;
 
-    sts = redisSlotsRedirect(baton->slots, reply, baton->info, baton->userdata,
-			     cmd, redis_source_location, arg);
-    if (sts > 0)
-	return;	/* short-circuit as command was re-submitted */
-    if (sts == 0)
-	checkIntegerReply(baton->info, baton->userdata, reply,
+    checkIntegerReply(baton->info, baton->userdata, c, reply,
 		"%s: %s", GEOADD, "mapping source location");
     doneSeriesLoadBaton(baton, "redis_source_location");
 }
 
 static void
 redis_context_name_source(
-	redisAsyncContext *c, redisReply *reply, const sds cmd, void *arg)
+	redisClusterAsyncContext *c, void *r, void *arg)
 {
     seriesLoadBaton		*baton = (seriesLoadBaton *)arg;
-    int				sts;
+    redisReply                  *reply = r;
 
-    sts = redisSlotsRedirect(baton->slots, reply, baton->info, baton->userdata,
-			     cmd, redis_context_name_source, arg);
-    if (sts > 0)
-	return;	/* short-circuit as command was re-submitted */
-    if (sts == 0)
-	checkIntegerReply(baton->info, baton->userdata, reply,
+    checkIntegerReply(baton->info, baton->userdata, c, reply,
 		"%s: %s", SADD, "mapping source names to context");
     doneSeriesLoadBaton(baton, "redis_context_name_source");
 }
@@ -312,7 +267,9 @@ redis_series_source(redisSlots *slots, void *arg)
     cmd = redis_param_str(cmd, SADD, SADD_LEN);
     cmd = redis_param_sds(cmd, key);
     cmd = redis_param_sha(cmd, context->name.hash);
-    redisSlotsRequest(slots, SADD, key, cmd, redis_source_context_name, arg);
+    sdsfree(key);
+    redisSlotsRequest(slots, cmd, redis_source_context_name, arg);
+    sdsfree(cmd);
 
     pmwebapi_hash_str(context->hostid, hashbuf, sizeof(hashbuf));
     key = sdscatfmt(sdsempty(), "pcp:source:context.name:%s", hashbuf);
@@ -320,7 +277,9 @@ redis_series_source(redisSlots *slots, void *arg)
     cmd = redis_param_str(cmd, SADD, SADD_LEN);
     cmd = redis_param_sds(cmd, key);
     cmd = redis_param_sha(cmd, context->name.hash);
-    redisSlotsRequest(slots, SADD, key, cmd, redis_source_context_name, arg);
+    sdsfree(key);
+    redisSlotsRequest(slots, cmd, redis_source_context_name, arg);
+    sdsfree(cmd);
 
     pmwebapi_hash_str(context->name.hash, hashbuf, sizeof(hashbuf));
     key = sdscatfmt(sdsempty(), "pcp:context.name:source:%s", hashbuf);
@@ -329,7 +288,9 @@ redis_series_source(redisSlots *slots, void *arg)
     cmd = redis_param_sds(cmd, key);
     cmd = redis_param_sha(cmd, context->name.id);
     cmd = redis_param_sha(cmd, context->hostid);
-    redisSlotsRequest(slots, SADD, key, cmd, redis_context_name_source, arg);
+    sdsfree(key);
+    redisSlotsRequest(slots, cmd, redis_context_name_source, arg);
+    sdsfree(cmd);
 
     key = sdsnew("pcp:source:location");
     val = sdscatprintf(sdsempty(), "%.8f", context->location[0]);
@@ -342,56 +303,43 @@ redis_series_source(redisSlots *slots, void *arg)
     cmd = redis_param_sha(cmd, context->name.hash);
     sdsfree(val2);
     sdsfree(val);
-    redisSlotsRequest(slots, GEOADD, key, cmd, redis_source_location, arg);
+    sdsfree(key);
+    redisSlotsRequest(slots, cmd, redis_source_location, arg);
+    sdsfree(cmd);
 }
 
 static void
 redis_series_inst_name_callback(
-	redisAsyncContext *c, redisReply *reply, const sds cmd, void *arg)
+	redisClusterAsyncContext *c, void *r, void *arg)
 {
     seriesLoadBaton		*baton = (seriesLoadBaton *)arg;
-    int				sts;
+    redisReply                  *reply = r;
 
-    sts = redisSlotsRedirect(baton->slots, reply, baton->info, baton->userdata,
-			     cmd, redis_series_inst_name_callback, arg);
-    if (sts > 0)
-	return;	/* short-circuit as command was re-submitted */
-    if (sts == 0)
-	checkIntegerReply(baton->info, baton->userdata, reply,
+    checkIntegerReply(baton->info, baton->userdata, c, reply,
 		"%s: %s", SADD, "mapping series to inst name");
     doneSeriesLoadBaton(baton, "redis_series_inst_name_callback");
 }
 
 static void
 redis_instances_series_callback(
-	redisAsyncContext *c, redisReply *reply, const sds cmd, void *arg)
+	redisClusterAsyncContext *c, void *r, void *arg)
 {
     seriesLoadBaton		*baton = (seriesLoadBaton *)arg;
-    int				sts;
+    redisReply                  *reply = r;
 
-    sts = redisSlotsRedirect(baton->slots, reply, baton->info, baton->userdata,
-			     cmd, redis_instances_series_callback, arg);
-    if (sts > 0)
-	return;	/* short-circuit as command was re-submitted */
-    if (sts == 0)
-	checkIntegerReply(baton->info, baton->userdata, reply,
+    checkIntegerReply(baton->info, baton->userdata, c, reply,
 		"%s: %s", SADD, "mapping instance to series");
     doneSeriesLoadBaton(baton, "redis_instances_series_callback");
 }
 
 static void
 redis_series_inst_callback(
-	redisAsyncContext *c, redisReply *reply, const sds cmd, void *arg)
+	redisClusterAsyncContext *c, void *r, void *arg)
 {
     seriesLoadBaton		*baton = (seriesLoadBaton *)arg;
-    int				sts;
+    redisReply                  *reply = r;
 
-    sts = redisSlotsRedirect(baton->slots, reply, baton->info, baton->userdata,
-			     cmd, redis_series_inst_callback, arg);
-    if (sts > 0)
-	return;	/* short-circuit as command was re-submitted */
-    if (sts == 0)
-	checkStatusReplyOK(baton->info, baton->userdata, reply,
+    checkStatusReplyOK(baton->info, baton->userdata, c, reply,
 		"%s: %s", HMSET, "setting metric inst");
     doneSeriesLoadBaton(baton, "redis_series_inst_callback");
 }
@@ -421,9 +369,11 @@ redis_series_instance(redisSlots *slots, metric_t *metric, instance_t *instance,
     cmd = redis_command(2 + metric->numnames);
     cmd = redis_param_str(cmd, SADD, SADD_LEN);
     cmd = redis_param_sds(cmd, key);
+    sdsfree(key);
     for (i = 0; i < metric->numnames; i++)
 	cmd = redis_param_sha(cmd, metric->names[i].hash);
-    redisSlotsRequest(slots, SADD, key, cmd, redis_series_inst_name_callback, arg);
+    redisSlotsRequest(slots, cmd, redis_series_inst_name_callback, arg);
+    sdsfree(cmd);
 
     for (i = 0; i < metric->numnames; i++) {
 	seriesBatonReference(baton, "redis_series_instance");
@@ -433,7 +383,9 @@ redis_series_instance(redisSlots *slots, metric_t *metric, instance_t *instance,
 	cmd = redis_param_str(cmd, SADD, SADD_LEN);
 	cmd = redis_param_sds(cmd, key);
 	cmd = redis_param_sha(cmd, instance->name.hash);
-	redisSlotsRequest(slots, SADD, key, cmd, redis_instances_series_callback, arg);
+	sdsfree(key);
+	redisSlotsRequest(slots, cmd, redis_instances_series_callback, arg);
+	sdsfree(cmd);
     }
 
     pmwebapi_hash_str(instance->name.hash, hashbuf, sizeof(hashbuf));
@@ -449,7 +401,9 @@ redis_series_instance(redisSlots *slots, metric_t *metric, instance_t *instance,
     cmd = redis_param_str(cmd, "source", sizeof("series")-1);
     cmd = redis_param_sha(cmd, metric->indom->domain->context->name.hash);
     sdsfree(val);
-    redisSlotsRequest(slots, HMSET, key, cmd, redis_series_inst_callback, arg);
+    sdsfree(key);
+    redisSlotsRequest(slots, cmd, redis_series_inst_callback, arg);
+    sdsfree(cmd);
 }
 
 static void
@@ -556,34 +510,24 @@ annotate_metric(const pmLabel *label, const char *json, void *arg)
 
 static void
 redis_series_labelvalue_callback(
-	redisAsyncContext *c, redisReply *reply, const sds cmd, void *arg)
+	redisClusterAsyncContext *c, void *r, void *arg)
 {
     seriesLoadBaton		*load = (seriesLoadBaton *)arg;
-    int				sts;
+    redisReply                  *reply = r;
 
-    sts = redisSlotsRedirect(load->slots, reply, load->info, load->userdata,
-			     cmd, redis_series_labelvalue_callback, arg);
-    if (sts > 0)
-	return;	/* short-circuit as command was re-submitted */
-    if (sts == 0)
-	checkStatusReplyOK(load->info, load->userdata, reply,
+    checkStatusReplyOK(load->info, load->userdata, c, reply,
 		"%s: %s", HMSET, "setting series label value");
     doneSeriesLoadBaton(arg, "redis_series_labelvalue_callback");
 }
 
 static void
 redis_series_maplabelvalue_callback(
-	redisAsyncContext *c, redisReply *reply, const sds cmd, void *arg)
+	redisClusterAsyncContext *c, void *r, void *arg)
 {
     seriesLoadBaton		*load = (seriesLoadBaton *)arg;
-    int				sts;
+    redisReply                  *reply = r;
 
-    sts = redisSlotsRedirect(load->slots, reply, load->info, load->userdata,
-			     cmd, redis_series_maplabelvalue_callback, arg);
-    if (sts > 0)
-	return;	/* short-circuit as command was re-submitted */
-    if (sts == 0)
-	checkStatusReplyOK(load->info, load->userdata, reply,
+    checkStatusReplyOK(load->info, load->userdata, c, reply,
 		"%s: %s", HMSET, "setting series map label value");
     doneSeriesLoadBaton(arg, "redis_series_maplabelvalue_callback");
 }
@@ -591,34 +535,24 @@ redis_series_maplabelvalue_callback(
 
 static void
 redis_series_labelflags_callback(
-	redisAsyncContext *c, redisReply *reply, const sds cmd, void *arg)
+	redisClusterAsyncContext *c, void *r, void *arg)
 {
     seriesLoadBaton		*load = (seriesLoadBaton *)arg;
-    int				sts;
+    redisReply                  *reply = r;
 
-    sts = redisSlotsRedirect(load->slots, reply, load->info, load->userdata,
-			     cmd, redis_series_labelflags_callback, arg);
-    if (sts > 0)
-	return;	/* short-circuit as command was re-submitted */
-    if (sts == 0)
-	checkStatusReplyOK(load->info, load->userdata, reply,
+    checkStatusReplyOK(load->info, load->userdata, c, reply,
 		"%s: %s", HMSET, "setting series label flags");
     doneSeriesLoadBaton(arg, "redis_series_labelflags_callback");
 }
 
 static void
 redis_series_label_set_callback(
-	redisAsyncContext *c, redisReply *reply, const sds cmd, void *arg)
+	redisClusterAsyncContext *c, void *r, void *arg)
 {
     seriesLoadBaton		*load = (seriesLoadBaton *)arg;
-    int				sts;
+    redisReply                  *reply = r;
 
-    sts = redisSlotsRedirect(load->slots, reply, load->info, load->userdata,
-			     cmd, redis_series_label_set_callback, arg);
-    if (sts > 0)
-	return;	/* short-circuit as command was re-submitted */
-    if (sts == 0)
-	checkIntegerReply(load->info, load->userdata, reply,
+    checkIntegerReply(load->info, load->userdata, c, reply,
 		"%s %s", SADD, "pcp:series:label.X.value:Y");
     doneSeriesLoadBaton(arg, "redis_series_label_set_callback");
 }
@@ -645,8 +579,10 @@ redis_series_label(redisSlots *slots, metric_t *metric, char *hash,
 	cmd = redis_param_sha(cmd, list->nameid);
 	cmd = redis_param_sds(cmd, val);
 	sdsfree(val);
-	redisSlotsRequest(slots, HMSET, key, cmd,
+	sdsfree(key);
+	redisSlotsRequest(slots, cmd,
 				redis_series_labelflags_callback, arg);
+	sdsfree(cmd);
     }
 
     key = sdscatfmt(sdsempty(), "pcp:labelvalue:series:%s", hash);
@@ -655,8 +591,10 @@ redis_series_label(redisSlots *slots, metric_t *metric, char *hash,
     cmd = redis_param_sds(cmd, key);
     cmd = redis_param_sha(cmd, list->nameid);
     cmd = redis_param_sha(cmd, list->valueid);
-    redisSlotsRequest(slots, HMSET, key, cmd,
+    sdsfree(key);
+    redisSlotsRequest(slots, cmd,
 			redis_series_labelvalue_callback, arg);
+    sdsfree(cmd);
 
     pmwebapi_hash_str(list->nameid, namehash, sizeof(namehash));
     pmwebapi_hash_str(list->valueid, valhash, sizeof(valhash));
@@ -667,18 +605,22 @@ redis_series_label(redisSlots *slots, metric_t *metric, char *hash,
     cmd = redis_param_sds(cmd, key);
     cmd = redis_param_sha(cmd, list->valueid);
     cmd = redis_param_sds(cmd, list->value);
-    redisSlotsRequest(slots, HMSET, key, cmd,
+    sdsfree(key);
+    redisSlotsRequest(slots, cmd,
 			redis_series_maplabelvalue_callback, arg);
+    sdsfree(cmd);
 
     key = sdscatfmt(sdsempty(), "pcp:series:label.%s.value:%s",
 		    namehash, valhash);
     cmd = redis_command(2 + metric->numnames);
     cmd = redis_param_str(cmd, SADD, SADD_LEN);
     cmd = redis_param_sds(cmd, key);
+    sdsfree(key);
     for (i = 0; i < metric->numnames; i++)
 	cmd = redis_param_sha(cmd, metric->names[i].hash);
-    redisSlotsRequest(slots, SADD, key, cmd,
+    redisSlotsRequest(slots, cmd,
 			redis_series_label_set_callback, arg);
+    sdsfree(cmd);
 }
 
 static void
@@ -815,68 +757,48 @@ redis_series_metric(redisSlots *slots, metric_t *metric,
 
 static void
 redis_metric_name_series_callback(
-	redisAsyncContext *c, redisReply *reply, const sds cmd, void *arg)
+	redisClusterAsyncContext *c, void *r, void *arg)
 {
     seriesLoadBaton		*load = (seriesLoadBaton *)arg;
-    int				sts;
+    redisReply                  *reply = r;
 
-    sts = redisSlotsRedirect(load->slots, reply, load->info, load->userdata,
-			     cmd, redis_metric_name_series_callback, arg);
-    if (sts > 0)
-	return;	/* short-circuit as command was re-submitted */
-    if (sts == 0)
-	checkIntegerReply(load->info, load->userdata, reply,
+    checkIntegerReply(load->info, load->userdata, c, reply,
 			"%s %s", SADD, "map metric name to series");
     doneSeriesLoadBaton(arg, "redis_metric_name_series_callback");
 }
 
 static void
 redis_series_metric_name_callback(
-	redisAsyncContext *c, redisReply *reply, const sds cmd, void *arg)
+	redisClusterAsyncContext *c, void *r, void *arg)
 {
     seriesLoadBaton		*load = (seriesLoadBaton *)arg;
-    int				sts;
+    redisReply                  *reply = r;
 
-    sts = redisSlotsRedirect(load->slots, reply, load->info, load->userdata,
-			     cmd, redis_series_metric_name_callback, arg);
-    if (sts > 0)
-	return;	/* short-circuit as command was re-submitted */
-    if (sts == 0)
-	checkIntegerReply(load->info, load->userdata, reply,
+    checkIntegerReply(load->info, load->userdata, c, reply,
 			"%s: %s", SADD, "map series to metric name");
     doneSeriesLoadBaton(arg, "redis_series_metric_name_callback");
 }
 
 static void
 redis_desc_series_callback(
-	redisAsyncContext *c, redisReply *reply, const sds cmd, void *arg)
+	redisClusterAsyncContext *c, void *r, void *arg)
 {
     seriesLoadBaton		*load = (seriesLoadBaton *)arg;
-    int				sts;
+    redisReply                  *reply = r;
 
-    sts = redisSlotsRedirect(load->slots, reply, load->info, load->userdata,
-			     cmd, redis_desc_series_callback, arg);
-    if (sts > 0)
-	return;	/* short-circuit as command was re-submitted */
-    if (sts == 0)
-	checkStatusReplyOK(load->info, load->userdata, reply,
+    checkStatusReplyOK(load->info, load->userdata, c, reply,
 			"%s: %s", HMSET, "setting metric desc");
     doneSeriesLoadBaton(arg, "redis_desc_series_callback");
 }
 
 static void
 redis_series_source_callback(
-	redisAsyncContext *c, redisReply *reply, const sds cmd, void *arg)
+	redisClusterAsyncContext *c, void *r, void *arg)
 {
     seriesLoadBaton		*load = (seriesLoadBaton *)arg;
-    int				sts;
+    redisReply                  *reply = r;
 
-    sts = redisSlotsRedirect(load->slots, reply, load->info, load->userdata,
-			     cmd, redis_series_source_callback, arg);
-    if (sts > 0)
-	return;	/* short-circuit as command was re-submitted */
-    if (sts == 0)
-	checkIntegerReply(load->info, load->userdata, reply,
+    checkIntegerReply(load->info, load->userdata, c, reply,
 			"%s: %s", SADD, "mapping series to context");
     doneSeriesLoadBaton(arg, "redis_series_source_callback");
 }
@@ -914,8 +836,10 @@ redis_series_metadata(context_t *context, metric_t *metric, void *arg)
 	cmd = redis_param_str(cmd, SADD, SADD_LEN);
 	cmd = redis_param_sds(cmd, key);
 	cmd = redis_param_sha(cmd, metric->names[i].hash);
-	redisSlotsRequest(slots, SADD, key, cmd,
+	sdsfree(key);
+	redisSlotsRequest(slots, cmd,
 			redis_series_metric_name_callback, arg);
+	sdsfree(cmd);
 
 	pmwebapi_hash_str(metric->names[i].hash, hashbuf, sizeof(hashbuf));
 	key = sdscatfmt(sdsempty(), "pcp:metric.name:series:%s", hashbuf);
@@ -923,8 +847,10 @@ redis_series_metadata(context_t *context, metric_t *metric, void *arg)
 	cmd = redis_param_str(cmd, SADD, SADD_LEN);
 	cmd = redis_param_sds(cmd, key);
 	cmd = redis_param_sha(cmd, metric->names[i].id);
-	redisSlotsRequest(slots, SADD, key, cmd,
+	sdsfree(key);
+	redisSlotsRequest(slots, cmd,
 			redis_metric_name_series_callback, arg);
+	sdsfree(cmd);
 
 	key = sdscatfmt(sdsempty(), "pcp:desc:series:%s", hashbuf);
 	cmd = redis_command(14);
@@ -942,7 +868,9 @@ redis_series_metadata(context_t *context, metric_t *metric, void *arg)
 	cmd = redis_param_str(cmd, type, strlen(type));
 	cmd = redis_param_str(cmd, "units", sizeof("units")-1);
 	cmd = redis_param_str(cmd, units, strlen(units));
-	redisSlotsRequest(slots, HMSET, key, cmd, redis_desc_series_callback, arg);
+	sdsfree(key);
+	redisSlotsRequest(slots, cmd, redis_desc_series_callback, arg);
+	sdsfree(cmd);
 
 	if ((baton->flags & PM_SERIES_FLAG_TEXT) && slots->search)
 	    redis_search_text_add(slots, PM_SEARCH_TYPE_METRIC,
@@ -957,9 +885,11 @@ redis_series_metadata(context_t *context, metric_t *metric, void *arg)
     cmd = redis_command(2 + metric->numnames);
     cmd = redis_param_str(cmd, SADD, SADD_LEN);
     cmd = redis_param_sds(cmd, key);
+    sdsfree(key);
     for (i = 0; i < metric->numnames; i++)
 	cmd = redis_param_sha(cmd, metric->names[i].hash);
-    redisSlotsRequest(slots, SADD, key, cmd, redis_series_source_callback, arg);
+    redisSlotsRequest(slots, cmd, redis_series_source_callback, arg);
+    sdsfree(cmd);
 
 check_instances:
     if (metric->desc.indom != PM_INDOM_NULL &&
@@ -1093,44 +1023,38 @@ append:
 
 static void
 redis_series_stream_callback(
-	redisAsyncContext *c, redisReply *reply, const sds cmd, void *arg)
+	redisClusterAsyncContext *c, void *r, void *arg)
 {
     redisStreamBaton	*baton = (redisStreamBaton *)arg;
+    redisReply          *reply = r;
     sds			msg;
-    int			sts;
 
     seriesBatonCheckMagic(baton, MAGIC_STREAM, "redis_series_stream_callback");
-    sts = redisSlotsRedirect(baton->slots, reply, baton->info, baton->userdata,
-			     cmd, redis_series_stream_callback, arg);
-    if (sts > 0)
-	return;	/* short-circuit as command was re-submitted */
-    if (sts == 0) {
-	if (testReplyError(reply, REDIS_ESTREAMXADD)) {
+    if (testReplyError(reply, REDIS_ESTREAMXADD)) {
+	// duplicate streams can happen when pmproxy is restarted and discovery
+	// re-adds a part of the archive; only show warnings in desperate mode
+	if (UNLIKELY(pmDebugOptions.desperate)) {
 	    infofmt(msg, "duplicate or early stream %s insert at time %s",
 		baton->hash, baton->stamp);
-	    batoninfo(baton, PMLOG_WARNING, msg);
-	}
-	else {
-	    checkStreamReplyString(baton->info, baton->userdata, reply,
-		baton->stamp, "stream %s status mismatch at time %s",
-		baton->hash, baton->stamp);
+	    batoninfo(baton, PMLOG_DEBUG, msg);
 	}
     }
+    else {
+        checkStreamReplyString(baton->info, baton->userdata, c, reply,
+		baton->stamp, "stream %s status mismatch at time %s",
+		baton->hash, baton->stamp);
+    }
+
     doneRedisStreamBaton(baton);
 }
 
 static void
 redis_series_timer_callback(
-	redisAsyncContext *c, redisReply *reply, const sds cmd, void *arg)
+	redisClusterAsyncContext *c, void *r, void *arg)
 {
     seriesLoadBaton	*baton = (seriesLoadBaton *)arg;
-    int			sts;
 
     seriesBatonCheckMagic(baton, MAGIC_LOAD, "redis_series_timer_callback");
-    sts = redisSlotsRedirect(baton->slots, reply, baton->info, baton->userdata,
-			     cmd, redis_series_timer_callback, arg);
-    if (sts > 0)
-	return;	/* short-circuit as command was re-submitted */
     doneSeriesLoadBaton(baton, "redis_series_timer_callback");
 }
 
@@ -1195,17 +1119,19 @@ redis_series_stream(redisSlots *slots, sds stamp, metric_t *metric,
     cmd = redis_param_sds(cmd, maxstreamlen);
     cmd = redis_param_sds(cmd, stamp);
     cmd = redis_param_raw(cmd, stream);
+    sdsfree(key);
     sdsfree(stream);
-
-    redisSlotsRequest(slots, XADD, key, cmd, redis_series_stream_callback, baton);
+    redisSlotsRequest(slots, cmd, redis_series_stream_callback, baton);
+    sdsfree(cmd);
 
     key = sdscatfmt(sdsempty(), "pcp:values:series:%s", hash);
     cmd = redis_command(3);	/* EXPIRE key timer */
     cmd = redis_param_str(cmd, EXPIRE, EXPIRE_LEN);
     cmd = redis_param_sds(cmd, key);
     cmd = redis_param_sds(cmd, streamexpire);
-
-    redisSlotsRequest(slots, EXPIRE, key, cmd, redis_series_timer_callback, load);
+    sdsfree(key);
+    redisSlotsRequest(slots, cmd, redis_series_timer_callback, load);
+    sdsfree(cmd);
 }
 
 static void
@@ -1234,19 +1160,13 @@ redis_series_mark(redisSlots *redis, sds timestamp, int data, void *arg)
 
 static void
 redis_update_version_callback(
-	redisAsyncContext *c, redisReply *reply, const sds cmd, void *arg)
+	redisClusterAsyncContext *c, void *r, void *arg)
 {
     redisSlotsBaton	*baton = (redisSlotsBaton *)arg;
-    int			sts;
+    redisReply          *reply = r;
 
     seriesBatonCheckMagic(baton, MAGIC_SLOTS, "redis_update_version_callback");
-
-    sts = redisSlotsRedirect(baton->slots, reply, baton->info, baton->userdata,
-			     cmd, redis_update_version_callback, arg);
-    if (sts > 0)
-	return;	/* short-circuit as command was re-submitted */
-    if (sts == 0)
-	checkStatusReplyOK(baton->info, baton->userdata, reply,
+    checkStatusReplyOK(baton->info, baton->userdata, c, reply,
 			"%s setup", "pcp:version:schema");
     redis_slots_end_phase(baton);
 }
@@ -1264,23 +1184,21 @@ redis_update_version(redisSlotsBaton *baton)
     cmd = redis_param_str(cmd, SETS, SETS_LEN);
     cmd = redis_param_sds(cmd, key);
     cmd = redis_param_str(cmd, ver, sizeof(ver)-1);
-    redisSlotsRequest(baton->slots, SETS, key, cmd, redis_update_version_callback, baton);
+    sdsfree(key);
+    redisSlotsRequest(baton->slots, cmd, redis_update_version_callback, baton);
+    sdsfree(cmd);
 }
 
 static void
 redis_load_series_version_callback(
-	redisAsyncContext *c, redisReply *reply, const sds cmd, void *arg)
+	redisClusterAsyncContext *c, void *r, void *arg)
 {
     redisSlotsBaton	*baton = (redisSlotsBaton *)arg;
+    redisReply          *reply = r;
     unsigned int	version = 0;
-    int			sts;
     sds			msg;
 
     seriesBatonCheckMagic(baton, MAGIC_SLOTS, "redis_load_series_version_callback");
-    sts = redisSlotsRedirect(baton->slots, reply, baton->info, baton->userdata,
-				cmd, redis_load_series_version_callback, arg);
-    if (sts > 0)
-	return;	/* short-circuit as command was re-submitted */
 
     if (!reply) {
 	baton->version = 0;	/* NIL - no version key yet */
@@ -1294,10 +1212,8 @@ redis_load_series_version_callback(
 	    batoninfo(baton, PMLOG_ERROR, msg);
 	}
     } else if (reply->type == REDIS_REPLY_ERROR) {
-	if (sts < 0) {
-	    infofmt(msg, "version check error: %s", reply->str);
-	    batoninfo(baton, PMLOG_REQUEST, msg);
-	}
+	infofmt(msg, "version check error: %s", reply->str);
+	batoninfo(baton, PMLOG_REQUEST, msg);
     } else if (reply->type != REDIS_REPLY_NIL) {
 	infofmt(msg, "unexpected schema version reply type (%s)",
 		redis_reply_type(reply));
@@ -1328,26 +1244,23 @@ redis_load_series_version(void *arg)
     cmd = redis_command(2);
     cmd = redis_param_str(cmd, GETS, GETS_LEN);
     cmd = redis_param_sds(cmd, key);
-    redisSlotsRequest(baton->slots, GETS, key, cmd, redis_load_series_version_callback, baton);
+    sdsfree(key);
+    redisSlotsRequest(baton->slots, cmd, redis_load_series_version_callback, baton);
+    sdsfree(cmd);
 }
 
 static void
 redis_load_version_callback(
-	redisAsyncContext *c, redisReply *reply, const sds cmd, void *arg)
+	redisClusterAsyncContext *c, void *r, void *arg)
 {
     redisSlotsBaton	*baton = (redisSlotsBaton *)arg;
+    redisReply		*reply = r;
     unsigned int	server_version = 0;
     size_t		l;
     char		*endnum;
-    int			sts;
     sds			msg;
 
-    seriesBatonCheckMagic(baton, MAGIC_SLOTS, "redis_load_version_callback");
-    sts = redisSlotsRedirect(baton->slots, reply, baton->info, baton->userdata,
-				cmd, redis_load_version_callback, arg);
-    if (sts > 0)
-	return;
-	
+    seriesBatonCheckMagic(baton, MAGIC_SLOTS, "redis_load_version_callback");	
     if (!reply) {
 	/* This situation should not happen, since we can always get server info from redis */
 	infofmt(msg, "no redis version reply");
@@ -1360,10 +1273,13 @@ redis_load_version_callback(
 	    	if (*endnum != '.') {
 		    infofmt(msg, "redis server version parse error");
 		    batoninfo(baton, PMLOG_ERROR, msg);
-	    	} else if (server_version < SERVER_VERSION) {
+	    	} else if (server_version < REDIS_VERSION) {
 		    infofmt(msg, "unsupported redis server (got v%u, expected v%u or above)", 
-				server_version, SERVER_VERSION);
+				server_version, REDIS_VERSION);
 	    	    batoninfo(baton, PMLOG_ERROR, msg);
+		    baton->slots->state = SLOTS_ERR_FATAL;
+		    /* set error flag and do not continue with other callbacks of this baton */
+		    baton->error = 1;
 	    	}
 	    	break;
 	    }
@@ -1374,10 +1290,8 @@ redis_load_version_callback(
 	    }
 	}
     } else if (reply->type == REDIS_REPLY_ERROR) {
-	if (sts < 0) {
-	    infofmt(msg, "redis server version check error: %s", reply->str);
-	    batoninfo(baton, PMLOG_REQUEST, msg);
-	}
+	infofmt(msg, "redis server version check error: %s", reply->str);
+	batoninfo(baton, PMLOG_REQUEST, msg);
     } else {
 	infofmt(msg, "unexpected redis server version reply type (%s)", redis_reply_type(reply));
 	batoninfo(baton, PMLOG_ERROR, msg);
@@ -1396,7 +1310,9 @@ redis_load_version(void *arg)
     cmd = redis_command(2);
     cmd = redis_param_str(cmd, INFO, INFO_LEN);
     cmd = redis_param_str(cmd, "SERVER", sizeof("SERVER")-1);
-    redisSlotsRequest(baton->slots, INFO, NULL, cmd, redis_load_version_callback, baton);
+    // TODO: check all nodes in cluster
+    redisSlotsRequestFirstNode(baton->slots, cmd, redis_load_version_callback, baton);
+    sdsfree(cmd);
 }
 
 static int
@@ -1430,11 +1346,11 @@ decodeCommandKey(redisSlotsBaton *baton, int index, redisReply *reply)
     }
 
     node = reply->element[3];
-    if ((position = checkIntegerReply(baton->info, baton->userdata, node,
+    if ((position = checkIntegerReply(baton->info, baton->userdata, slots->acc, node,
 			"KEY position for %s element %d", COMMAND, index)) < 0)
 	return -EINVAL;
     node = reply->element[0];
-    if ((cmd = checkStringReply(baton->info, baton->userdata, node,
+    if ((cmd = checkStringReply(baton->info, baton->userdata, slots->acc, node,
 			"NAME for %s element %d", COMMAND, index)) == NULL)
 	return -EINVAL;
 
@@ -1449,23 +1365,25 @@ decodeCommandKey(redisSlotsBaton *baton, int index, redisReply *reply)
 
 static void
 redis_load_keymap_callback(
-	redisAsyncContext *c, redisReply *reply, const sds cmd, void *arg)
+	redisClusterAsyncContext *c, void *r, void *arg)
 {
     redisSlotsBaton	*baton = (redisSlotsBaton *)arg;
+    redisReply		*reply = r;
     redisReply		*command;
     sds			msg;
     int			i;
 
     seriesBatonCheckMagic(baton, MAGIC_SLOTS, "redis_load_keymap_callback");
 
-    /* no cluster redirection checking is needed for this callback */
-    sdsfree(cmd);
-
-    if (reply->type == REDIS_REPLY_ARRAY) {
+    if (!reply) {
+	infofmt(msg, "received NULL reply in redis_load_keymap_callback");
+	batoninfo(baton, PMLOG_ERROR, msg);
+    }
+    else if (reply->type == REDIS_REPLY_ARRAY) {
 	for (i = 0; i < reply->elements; i++) {
 	    command = reply->element[i];
 	    if (checkArrayReply(baton->info, baton->userdata,
-			command, "%s entry %d", COMMAND, i) == 0)
+			c, command, "%s entry %d", COMMAND, i) == 0)
 		decodeCommandKey(baton, i, command);
 	}
     } else if (reply->type == REDIS_REPLY_ERROR) {
@@ -1489,194 +1407,53 @@ redis_load_keymap(void *arg)
 
     cmd = redis_command(1);
     cmd = redis_param_str(cmd, COMMAND, COMMAND_LEN);
-    redisSlotsRequest(baton->slots, GETS, NULL, cmd, redis_load_keymap_callback, baton);
-}
-
-static int
-decodeRedisNode(redisSlotsBaton *baton, redisReply *reply, redisSlotServer *server)
-{
-    redisReply		*value;
-    unsigned int	port;
-    sds			msg;
-
-    /* expecting IP address and port (integer), ignore optional node ID */
-    if (reply->elements < 2) {
-	infofmt(msg, "insufficient elements in cluster NODE reply");
-	batoninfo(baton, PMLOG_WARNING, msg);
-	return -EINVAL;
-    }
-
-    value = reply->element[1];
-    if (value->type != REDIS_REPLY_INTEGER) {
-	infofmt(msg, "expected integer port in cluster NODE reply");
-	batoninfo(baton, PMLOG_WARNING, msg);
-	return -EINVAL;
-    }
-    port = (unsigned int)value->integer;
-
-    value = reply->element[0];
-    if (value->type != REDIS_REPLY_STRING) {
-	infofmt(msg, "expected string hostspec in cluster NODE reply");
-	batoninfo(baton, PMLOG_WARNING, msg);
-	return -EINVAL;
-    }
-
-    server->hostspec = sdscatfmt(sdsempty(), "%s:%u", value->str, port);
-    return server->hostspec ? 0 : -ENOMEM;
-}
-
-static int
-decodeRedisSlot(redisSlotsBaton *baton, redisReply *reply)
-{
-    redisSlotServer	*servers = NULL;
-    redisSlotRange	slots, *sp;
-    redisReply		*node;
-    long long		slot;
-    int			i, n;
-    sds			msg;
-
-    /* expecting start and end slot range integers, then node arrays */
-    if (reply->elements < 3) {
-	infofmt(msg, "insufficient elements in cluster SLOT reply");
-	batoninfo(baton, PMLOG_WARNING, msg);
-	return -EINVAL;
-    }
-    memset(&slots, 0, sizeof(slots));
-
-    node = reply->element[0];
-    if ((slot = checkIntegerReply(baton->info, baton->userdata,
-				node, "%s start", "SLOT")) < 0) {
-	infofmt(msg, "expected integer start in cluster SLOT reply");
-	batoninfo(baton, PMLOG_WARNING, msg);
-	return -EINVAL;
-    }
-    slots.start = (__uint32_t)slot;
-    node = reply->element[1];
-    if ((slot = checkIntegerReply(baton->info, baton->userdata,
-				node, "%s end", "SLOT")) < 0) {
-	infofmt(msg, "expected integer end in cluster SLOT reply");
-	batoninfo(baton, PMLOG_WARNING, msg);
-	return -EINVAL;
-    }
-    slots.end = (__uint32_t)slot;
-    node = reply->element[2];
-    if ((decodeRedisNode(baton, node, &slots.primary)) < 0)
-	return -EINVAL;
-
-    if ((sp = calloc(1, sizeof(redisSlotRange))) == NULL)
-	return -ENOMEM;
-    *sp = slots;    /* struct copy */
-
-    if ((n = reply->elements - 3) > 0)
-	if ((servers = calloc(n, sizeof(redisSlotServer))) == NULL)
-	    n = 0;
-    sp->nreplicas = n;
-    sp->replicas = servers;
-
-    for (i = 0; i < n; i++) {
-	node = reply->element[i + 3];
-	if (checkArrayReply(baton->info, baton->userdata,
-				node, "%s range %u-%u replica %d",
-				"SLOTS", sp->start, sp->end, i) == 0)
-	    decodeRedisNode(baton, node, &sp->replicas[i]);
-    }
-
-    return redisSlotRangeInsert(baton->slots, sp);
-}
-
-static void
-decodeRedisSlots(redisSlotsBaton *baton, redisReply *reply)
-{
-    redisReply		*slot;
-    int			i;
-
-    for (i = 0; i < reply->elements; i++) {
-	slot = reply->element[i];
-	if (checkArrayReply(baton->info, baton->userdata,
-			slot, "%s %s entry %d", CLUSTER, "SLOTS", i) == 0)
-	    decodeRedisSlot(baton, slot);
-    }
-}
-
-static void
-redis_load_slots_callback(
-	redisAsyncContext *c, redisReply *reply, const sds cmd, void *arg)
-{
-    redisSlotsBaton	*baton = (redisSlotsBaton *)arg;
-    redisSlots		*slots = baton->slots;
-
-    seriesBatonCheckMagic(baton, MAGIC_SLOTS, "redis_load_slots_callback");
-
-    slots->setup = 1;	/* we've received initial response from Redis */
-    slots->refresh = 0;	/* we're processing CLUSTER SLOTS command now */
-
-    /* no cluster redirection checking is needed for this callback */
+    redisSlotsRequestFirstNode(baton->slots, cmd, redis_load_keymap_callback, baton);
     sdsfree(cmd);
-
-    if (reply && testReplyError(reply, REDIS_ENOCLUSTER) == 0) {
-	/* cluster of Redis instances, following the cluster spec */
-	if (checkArrayReply(baton->info, baton->userdata,
-				reply, "%s %s", CLUSTER, "SLOTS") == 0) {
-	    redisSlotsClear(slots);
-	    decodeRedisSlots(baton, reply);
-	}
-    }
-    redis_slots_end_phase(baton);
 }
 
-static void
-redis_load_slots(void *arg)
-{
-    redisSlotsBaton	*baton = (redisSlotsBaton *)arg;
-    sds			cmd;
-
-    seriesBatonReference(baton, "redis_load_slots");
-
-    cmd = redis_command(2);
-    cmd = redis_param_str(cmd, CLUSTER, CLUSTER_LEN);
-    cmd = redis_param_str(cmd, "SLOTS", sizeof("SLOTS")-1);
-    redisSlotsRequest(baton->slots, CLUSTER, NULL, cmd, redis_load_slots_callback, baton);
-}
-
-redisSlots *
-redisSlotsConnect(dict *config, redisSlotsFlags flags,
+void
+redisSchemaLoad(redisSlots *slots, redisSlotsFlags flags,
 		redisInfoCallBack info, redisDoneCallBack done,
 		void *userdata, void *events, void *arg)
 {
     redisSlotsBaton		*baton;
-    redisSlots			*slots;
     sds				msg;
     unsigned int		i = 0;
 
-    if ((baton = (redisSlotsBaton *)calloc(1, sizeof(redisSlotsBaton))) != NULL) {
-	if ((slots = redisSlotsInit(config, events)) != NULL) {
-	    initRedisSlotsBaton(baton, info, done, userdata, events, arg);
-	    baton->slots = slots;
-	    baton->current = &baton->phases[0];
-	    baton->phases[i++].func = redis_load_slots;
-
-	    /* Prepare mapping of commands to key positions if needed */
-	    if (flags & SLOTS_KEYMAP)
-		baton->phases[i++].func = redis_load_keymap;
-	    /* Verify pmseries schema version and create it if needed */
-	    if (flags & SLOTS_VERSION) {
-		baton->phases[i++].func = redis_load_version; /* Redis v5 */
-		baton->phases[i++].func = redis_load_series_version;
-	    }
-	    /* Register the pmsearch schema with RediSearch if needed */
-	    if (flags & SLOTS_SEARCH)
-		baton->phases[i++].func = redis_load_search_schema;
-	    baton->phases[i++].func = redis_slots_finished;
-	    assert(i <= SLOTS_PHASES);
-	    seriesBatonPhases(baton->current, i, baton);
-	    return slots;
-	}
-	redis_slots_end_phase(baton);
+    baton = (redisSlotsBaton *)calloc(1, sizeof(redisSlotsBaton));
+    if (baton == NULL) {
+	infofmt(msg, "Failed to allocate memory for Redis slots baton");
+	info(PMLOG_ERROR, msg, arg);
+	sdsfree(msg);
+	return;
     }
-    infofmt(msg, "Failed to allocate memory for Redis slots");
-    info(PMLOG_ERROR, msg, arg);
-    sdsfree(msg);
-    return NULL;
+
+    initRedisSlotsBaton(baton, info, done, userdata, events, arg);
+    baton->slots = slots;
+    baton->current = &baton->phases[0];
+
+    /* Prepare mapping of commands to key positions if needed */
+    if (flags & SLOTS_KEYMAP)
+	baton->phases[i++].func = redis_load_keymap;
+    /* Verify pmseries schema version and create it if needed */
+    if (flags & SLOTS_VERSION) {
+	baton->phases[i++].func = redis_load_version; /* Redis v5 */
+	baton->phases[i++].func = redis_load_series_version;
+    }
+    /* Register the pmsearch schema with RediSearch if needed */
+    if (flags & SLOTS_SEARCH) {
+	/* if we got a route update means we are in cluster mode */
+	if (slots->acc->cc->route_version > 0) {
+	    pmNotifyErr(LOG_INFO, "disabling RediSearch because it does not "
+		"support Redis cluster mode\n");
+	} else {
+	    baton->phases[i++].func = redis_load_search_schema;
+	}
+    }
+
+    baton->phases[i++].func = redis_slots_finished;
+    assert(i <= SLOTS_PHASES);
+    seriesBatonPhases(baton->current, i, baton);
 }
 
 seriesModuleData *
@@ -1738,7 +1515,7 @@ pmSeriesSetMetricRegistry(pmSeriesModule *module, mmv_registry_t *registry)
     seriesModuleData	*data = getSeriesModuleData(module);
 
     if (data) {
-	data->metrics = registry;
+	data->registry = registry;
 	return 0;
     }
     return -ENOMEM;
@@ -1753,21 +1530,38 @@ redisSeriesInit(struct dict *config)
 	if ((option = pmIniFileLookup(config, "pmseries", "cursor.count")))
 	    cursorcount = option;
 	else
-	    cursorcount = sdsnew("256");
+	    cursorcount = DEFAULT_CURSORCOUNT = sdsnew("256");
     }
 
     if (!maxstreamlen) {
 	if ((option = pmIniFileLookup(config, "pmseries", "stream.maxlen")))
 	    maxstreamlen = option;
-	else
-	    maxstreamlen = sdsnew("8640");	/* 1 day, ~10 second delta */
+	else	/* default value:  1 day, ~10 second delta */
+	    maxstreamlen = DEFAULT_MAXSTREAMLEN = sdsnew("8640");
     }
 
     if (!streamexpire) {
 	if ((option = pmIniFileLookup(config, "pmseries", "stream.expire")))
 	    streamexpire = option;
-	else
-	    streamexpire = sdsnew("86400");	/* 1 day (without changes) */
+	else	/* default value: 1 day (without changes) */
+	    streamexpire = DEFAULT_STREAMEXPIRE = sdsnew("86400");
+    }
+}
+
+static void
+redisSeriesClose(void)
+{
+    if (DEFAULT_CURSORCOUNT) {
+	sdsfree(DEFAULT_CURSORCOUNT);
+	DEFAULT_CURSORCOUNT = NULL;
+    }
+    if (DEFAULT_MAXSTREAMLEN) {
+	sdsfree(DEFAULT_MAXSTREAMLEN);
+	DEFAULT_MAXSTREAMLEN = NULL;
+    }
+    if (DEFAULT_STREAMEXPIRE) {
+	sdsfree(DEFAULT_STREAMEXPIRE);
+	DEFAULT_STREAMEXPIRE = NULL;
     }
 }
 
@@ -1776,90 +1570,110 @@ redisGlobalsInit(struct dict *config)
 {
     redisSeriesInit(config);
     redisSearchInit(config);
-    redisScriptsInit();
     redisMapsInit();
+}
+
+void
+redisGlobalsClose(void)
+{
+    redisSeriesClose();
+    redisSearchClose();
+    redisMapsClose();
 }
 
 static void
 pmSeriesSetupMetrics(pmSeriesModule *module)
 {
     seriesModuleData	*data = getSeriesModuleData(module);
-    pmUnits		nounits = MMV_UNITS(0,0,0,0,0,0);
-    pmInDom		noindom = MMV_INDOM_NULL;
+    pmAtomValue		**metrics;
+    pmUnits		countunits = MMV_UNITS(0,0,1,0,0,0);
+    void		*map;
 
-    if (data == NULL || data->metrics == NULL)
+    if (data == NULL || data->registry == NULL)
     	return; /* no metric registry has been set up */
 
     /*
      * various RESTAPI request call counters
      */
-    mmv_stats_add_metric(data->metrics, "query.calls", 1,
-	MMV_TYPE_U64, MMV_SEM_COUNTER, nounits, noindom,
-	"total RESTAPI calls to /series/values", NULL);
+    mmv_stats_add_metric(data->registry, "query.calls", 1,
+	MMV_TYPE_U64, MMV_SEM_COUNTER, countunits, MMV_INDOM_NULL,
+	"calls to /series/values",
+	"total RESTAPI calls to /series/values");
 
-    mmv_stats_add_metric(data->metrics, "descs.calls", 2,
-	MMV_TYPE_U64, MMV_SEM_COUNTER, nounits, noindom,
-	"total RESTAPI calls to /series/descs", NULL);
+    mmv_stats_add_metric(data->registry, "descs.calls", 2,
+	MMV_TYPE_U64, MMV_SEM_COUNTER, countunits, MMV_INDOM_NULL,
+	"calls to /series/descs",
+	"total RESTAPI calls to /series/descs");
 
-    mmv_stats_add_metric(data->metrics, "instances.calls", 3,
-	MMV_TYPE_U64, MMV_SEM_COUNTER, nounits, noindom,
-	"total RESTAPI calls to /series/instances", NULL);
+    mmv_stats_add_metric(data->registry, "instances.calls", 3,
+	MMV_TYPE_U64, MMV_SEM_COUNTER, countunits, MMV_INDOM_NULL,
+	"calls to /series/instances",
+	"total RESTAPI calls to /series/instances");
 
-    mmv_stats_add_metric(data->metrics, "sources.calls", 4,
-	MMV_TYPE_U64, MMV_SEM_COUNTER, nounits, noindom,
-	"total RESTAPI calls to /series/sources", NULL);
+    mmv_stats_add_metric(data->registry, "sources.calls", 4,
+	MMV_TYPE_U64, MMV_SEM_COUNTER, countunits, MMV_INDOM_NULL,
+	"calls to /series/sources",
+	"total RESTAPI calls to /series/sources");
 
-    mmv_stats_add_metric(data->metrics, "metrics.calls", 5,
-	MMV_TYPE_U64, MMV_SEM_COUNTER, nounits, noindom,
-	"total RESTAPI calls to /series/metrics", NULL);
+    mmv_stats_add_metric(data->registry, "metrics.calls", 5,
+	MMV_TYPE_U64, MMV_SEM_COUNTER, countunits, MMV_INDOM_NULL,
+	"calls to /series/metrics",
+	"total RESTAPI calls to /series/metrics");
 
-    mmv_stats_add_metric(data->metrics, "values.calls", 6,
-	MMV_TYPE_U64, MMV_SEM_COUNTER, nounits, noindom,
-	"total RESTAPI calls to /series/values", NULL);
+    mmv_stats_add_metric(data->registry, "values.calls", 6,
+	MMV_TYPE_U64, MMV_SEM_COUNTER, countunits, MMV_INDOM_NULL,
+	"calls to /series/values",
+	"total RESTAPI calls to /series/values");
 
-    mmv_stats_add_metric(data->metrics, "labels.calls", 7,
-	MMV_TYPE_U64, MMV_SEM_COUNTER, nounits, noindom,
-	"total RESTAPI calls to /series/labels", NULL);
+    mmv_stats_add_metric(data->registry, "labels.calls", 7,
+	MMV_TYPE_U64, MMV_SEM_COUNTER, countunits, MMV_INDOM_NULL,
+	"calls to /series/labels",
+	"total RESTAPI calls to /series/labels");
 
-    mmv_stats_add_metric(data->metrics, "labelvalues.calls", 8,
-	MMV_TYPE_U64, MMV_SEM_COUNTER, nounits, noindom,
-	"total RESTAPI calls to /series/labelvalues", NULL);
+    mmv_stats_add_metric(data->registry, "labelvalues.calls", 8,
+	MMV_TYPE_U64, MMV_SEM_COUNTER, countunits, MMV_INDOM_NULL,
+	"calls to /series/labelvalues",
+	"total RESTAPI calls to /series/labelvalues");
 
-    mmv_stats_add_metric(data->metrics, "load.calls", 9,
-	MMV_TYPE_U64, MMV_SEM_COUNTER, nounits, noindom,
-	"total RESTAPI calls to /series/load", NULL);
+    mmv_stats_add_metric(data->registry, "load.calls", 9,
+	MMV_TYPE_U64, MMV_SEM_COUNTER, countunits, MMV_INDOM_NULL,
+	"calls to /series/load",
+	"total RESTAPI calls to /series/load");
 
-    data->metrics_handle = mmv_stats_start(data->metrics);
-}
+    data->map = map = mmv_stats_start(data->registry);
+    metrics = data->metrics;
 
-void
-pmSeriesStatsAdd(pmSeriesModule *module, const char *name, const char *inst, double count)
-{
-    seriesModuleData   *data;
-
-    if (module != NULL && (data = getSeriesModuleData(module)) != NULL)
-	mmv_stats_add(data->metrics_handle, name, inst, count);
-}
-
-void
-pmSeriesStatsSet(pmSeriesModule *module, const char *name, const char *inst, double value)
-{
-    seriesModuleData   *data;
-
-    if (module != NULL && (data = getSeriesModuleData(module)) != NULL)
-	mmv_stats_set(data->metrics_handle, name, inst, value);
+    metrics[SERIES_QUERY_CALLS] = mmv_lookup_value_desc(map,
+						"query.calls", NULL);
+    metrics[SERIES_DESCS_CALLS] = mmv_lookup_value_desc(map,
+						"descs.calls", NULL);
+    metrics[SERIES_INSTANCES_CALLS] = mmv_lookup_value_desc(map,
+						"instances.calls", NULL);
+    metrics[SERIES_SOURCES_CALLS] = mmv_lookup_value_desc(map,
+						"sources.calls", NULL);
+    metrics[SERIES_METRICS_CALLS] = mmv_lookup_value_desc(map,
+						"metrics.calls", NULL);
+    metrics[SERIES_VALUES_CALLS] = mmv_lookup_value_desc(map,
+						"values.calls", NULL);
+    metrics[SERIES_LABELS_CALLS] = mmv_lookup_value_desc(map,
+						"labels.calls", NULL);
+    metrics[SERIES_LABELVALUES_CALLS] = mmv_lookup_value_desc(map,
+						"labelvalues.calls", NULL);
+    metrics[SERIES_LOAD_CALLS] = mmv_lookup_value_desc(map,
+						"load.calls", NULL);
 }
 
 int
 pmSeriesSetup(pmSeriesModule *module, void *arg)
 {
     seriesModuleData	*data = getSeriesModuleData(module);
+    sds			option;
     redisSlotsFlags	flags;
 
     if (data == NULL)
 	return -ENOMEM;
 
-    /* create global EVAL hashes and string map caches */
+    /* create string map caches */
     redisGlobalsInit(data->config);
 
     /* fast path for when Redis has been setup already */
@@ -1867,8 +1681,17 @@ pmSeriesSetup(pmSeriesModule *module, void *arg)
 	module->on_setup(arg);
 	data->shareslots = 1;
     } else {
+	option = pmIniFileLookup(data->config, "redis", "enabled");
+	if (option && strcmp(option, "false") == 0)
+	    return -ENOTSUP;
+
 	/* establish an initial connection to Redis instance(s) */
-	flags = SLOTS_VERSION | SLOTS_SEARCH;
+	flags = SLOTS_VERSION;
+
+	option = pmIniFileLookup(data->config, "pmsearch", "enabled");
+	if (option && strcmp(option, "true") == 0)
+	    flags |= SLOTS_SEARCH;
+
 	data->slots = redisSlotsConnect(
 			data->config, flags, module->on_info,
 			module->on_setup, arg, data->events, arg);
@@ -1886,11 +1709,14 @@ pmSeriesClose(pmSeriesModule *module)
     seriesModuleData	*data = (seriesModuleData *)module->privdata;
 
     if (data) {
-	if (!data->shareslots)
+	if (data->slots && !data->shareslots)
 	    redisSlotsFree(data->slots);
 	memset(data, 0, sizeof(seriesModuleData));
 	free(data);
+	module->privdata = NULL;
     }
+
+    redisGlobalsClose();
 }
 
 discoverModuleData *
@@ -1950,80 +1776,167 @@ void
 pmDiscoverSetupMetrics(pmDiscoverModule *module)
 {
     discoverModuleData	*data = getDiscoverModuleData(module);
+    pmAtomValue		**metrics;
     pmUnits		nounits = MMV_UNITS(0,0,0,0,0,0);
-    pmInDom		noindom = MMV_INDOM_NULL;
+    pmUnits		countunits = MMV_UNITS(0,0,1,0,0,0);
+    pmUnits		secondsunits = MMV_UNITS(0,1,0,0,PM_TIME_SEC,0);
+    void		*map;
 
-    if (data == NULL || data->metrics == NULL)
-    	return; /* no metric registry has been set up */
+    if (data == NULL || data->registry == NULL)
+	return;	/* no metric registry has been set up */
 
-    /*
-     * redis and archive discovery metrics
-     */
-    mmv_stats_add_metric(data->metrics, "discover.monitored", 1,
-	MMV_TYPE_U64, MMV_SEM_DISCRETE, nounits, noindom,
-	"number of directories, sub-directories and archives currently being monitored", NULL);
+    mmv_stats_add_metric(data->registry, "monitored", 1,
+	MMV_TYPE_U64, MMV_SEM_INSTANT, nounits, MMV_INDOM_NULL,
+	"directories and archives currently being monitored",
+	"Number of directories and archives currently being monitored");
 
-    mmv_stats_add_metric(data->metrics, "discover.purged", 2,
-	MMV_TYPE_U64, MMV_SEM_DISCRETE, nounits, noindom,
-	"number of directories, sub-directories and archives purged (no longer being monitored)", NULL);
+    mmv_stats_add_metric(data->registry, "purged", 2,
+	MMV_TYPE_U64, MMV_SEM_INSTANT, nounits, MMV_INDOM_NULL,
+	"directories and archives purged",
+	"Number of directories and archives no longer being monitored");
 
-    mmv_stats_add_metric(data->metrics, "discover.metadata.callbacks", 3,
-	MMV_TYPE_U64, MMV_SEM_COUNTER, nounits, noindom,
-	"total calls to process metadata for all monitored archives", NULL);
+    mmv_stats_add_metric(data->registry, "metadata.callbacks", 3,
+	MMV_TYPE_U64, MMV_SEM_COUNTER, countunits, MMV_INDOM_NULL,
+	"process metadata for monitored archives",
+	"total calls to process metadata for monitored archives");
 
-    mmv_stats_add_metric(data->metrics, "discover.metadata.loops", 4,
-	MMV_TYPE_U64, MMV_SEM_COUNTER, nounits, noindom,
-	"total loops processing metadata for all monitored archives", NULL);
+    mmv_stats_add_metric(data->registry, "metadata.loops", 4,
+	MMV_TYPE_U64, MMV_SEM_COUNTER, countunits, MMV_INDOM_NULL,
+	"processing metadata for monitored archives",
+	"Total loops processing metadata for monitored archives");
 
-    mmv_stats_add_metric(data->metrics, "discover.metadata.decode.desc", 5,
-	MMV_TYPE_U64, MMV_SEM_COUNTER, nounits, noindom,
-	"total desc records decoded processing metadata for all monitored archives", NULL);
+    mmv_stats_add_metric(data->registry, "metadata.decode.desc", 5,
+	MMV_TYPE_U64, MMV_SEM_COUNTER, countunits, MMV_INDOM_NULL,
+	"desc records decoded for monitored archives",
+	"Total metric descriptor records decoded processing metadata for monitored\n"
+	"archives");
 
-    mmv_stats_add_metric(data->metrics, "discover.metadata.decode.indom", 6,
-	MMV_TYPE_U64, MMV_SEM_COUNTER, nounits, noindom,
-	"total indom records decoded processing metadata for all monitored archives", NULL);
+    mmv_stats_add_metric(data->registry, "metadata.decode.indom", 6,
+	MMV_TYPE_U64, MMV_SEM_COUNTER, countunits, MMV_INDOM_NULL,
+	"indom records decoded for all monitored archives",
+	"Total indom records decoded processing metadata for monitored archives");
 
-    mmv_stats_add_metric(data->metrics, "discover.metadata.decode.label", 7,
-	MMV_TYPE_U64, MMV_SEM_COUNTER, nounits, noindom,
-	"total label records decoded processing metadata for all monitored archives", NULL);
+    mmv_stats_add_metric(data->registry, "metadata.decode.label", 7,
+	MMV_TYPE_U64, MMV_SEM_COUNTER, countunits, MMV_INDOM_NULL,
+	"label records decoded for monitored archives",
+	"Total label records decoded processing metadata for monitored archives");
 
-    mmv_stats_add_metric(data->metrics, "discover.metadata.decode.helptext", 8,
-	MMV_TYPE_U64, MMV_SEM_COUNTER, nounits, noindom,
-	"total help text records decoded processing metadata for all monitored archives", NULL);
+    mmv_stats_add_metric(data->registry, "metadata.decode.helptext", 8,
+	MMV_TYPE_U64, MMV_SEM_COUNTER, countunits, MMV_INDOM_NULL,
+	"help text records decoded for all monitored archives",
+	"Total help text records decoded processing metadata for monitored archives");
 
-    mmv_stats_add_metric(data->metrics, "discover.logvol.callbacks", 9,
-	MMV_TYPE_U64, MMV_SEM_COUNTER, nounits, noindom,
-	"total calls to process logvol data for all monitored archives", NULL);
+    mmv_stats_add_metric(data->registry, "logvol.callbacks", 9,
+	MMV_TYPE_U64, MMV_SEM_COUNTER, countunits, MMV_INDOM_NULL,
+	"calls to process logvol data for monitored archives",
+	"Total calls to process log volume data for monitored archives");
 
-    mmv_stats_add_metric(data->metrics, "discover.logvol.loops", 10,
-	MMV_TYPE_U64, MMV_SEM_COUNTER, nounits, noindom,
-	"total loops processing logvol data for all monitored archives", NULL);
+    mmv_stats_add_metric(data->registry, "logvol.loops", 10,
+	MMV_TYPE_U64, MMV_SEM_COUNTER, countunits, MMV_INDOM_NULL,
+	"loops processing logvol data for monitored archives",
+	"Total loops processing logvol data for monitored archives");
 
-    mmv_stats_add_metric(data->metrics, "discover.logvol.change_vol", 11,
-	MMV_TYPE_U64, MMV_SEM_COUNTER, nounits, noindom,
-	"total log vol values callbacks made for all monitored archives", NULL);
+    mmv_stats_add_metric(data->registry, "logvol.change_vol", 11,
+	MMV_TYPE_U64, MMV_SEM_COUNTER, countunits, MMV_INDOM_NULL,
+	"log vol values callbacks made for monitored archives",
+	"Total log volume values callbacks made for monitored archives");
 
-    mmv_stats_add_metric(data->metrics, "discover.logvol.decode.result", 12,
-	MMV_TYPE_U64, MMV_SEM_COUNTER, nounits, noindom,
-	"total result records decoded for all monitored archives", NULL);
+    mmv_stats_add_metric(data->registry, "logvol.decode.result", 12,
+	MMV_TYPE_U64, MMV_SEM_COUNTER, countunits, MMV_INDOM_NULL,
+	"result records decoded for monitored archives",
+	"Total result records decoded for monitored archives");
 
-    mmv_stats_add_metric(data->metrics, "discover.logvol.decode.result_pmids", 13,
-	MMV_TYPE_U64, MMV_SEM_COUNTER, nounits, noindom,
-	"total metric pmids in decoded result records for all monitored archives", NULL);
+    mmv_stats_add_metric(data->registry, "logvol.decode.result_pmids", 13,
+	MMV_TYPE_U64, MMV_SEM_COUNTER, countunits, MMV_INDOM_NULL,
+	"metric IDs in decoded result records for monitored archives",
+	"Total metric identifers in decoded result records for monitored archives");
 
-    mmv_stats_add_metric(data->metrics, "discover.logvol.decode.mark_record", 14,
-	MMV_TYPE_U64, MMV_SEM_COUNTER, nounits, noindom,
-	"total mark record result records decoded for all monitored archives", NULL);
+    mmv_stats_add_metric(data->registry, "logvol.decode.mark_record", 14,
+	MMV_TYPE_U64, MMV_SEM_COUNTER, countunits, MMV_INDOM_NULL,
+	"mark records decoded for monitored archives",
+	"Total mark records in result records decoded for monitored archives");
 
-    mmv_stats_add_metric(data->metrics, "discover.logvol.new_contexts", 15,
-	MMV_TYPE_U64, MMV_SEM_COUNTER, nounits, noindom,
-	"total successful new context calls made for all monitored archives", NULL);
+    mmv_stats_add_metric(data->registry, "logvol.new_contexts", 15,
+	MMV_TYPE_U64, MMV_SEM_COUNTER, countunits, MMV_INDOM_NULL,
+	"successful new context calls made for monitored archives",
+	"Total successful new context calls made for monitored archives");
 
-    mmv_stats_add_metric(data->metrics, "discover.logvol.get_archive_end_failed", 16,
-	MMV_TYPE_U64, MMV_SEM_COUNTER, nounits, noindom,
-	"total failed pmGetArchiveEnd calls after successfully creating a new context for all monitored archives", NULL);
+    mmv_stats_add_metric(data->registry, "logvol.get_archive_end_failed", 16,
+	MMV_TYPE_U64, MMV_SEM_COUNTER, countunits, MMV_INDOM_NULL,
+	"Failed pmGetArchiveEnd calls for all monitored archives",
+	"Total failed pmGetArchiveEnd calls after successfully creating a new context\n"
+        "for all monitored archives");
 
-    data->metrics_handle = mmv_stats_start(data->metrics);
+    mmv_stats_add_metric(data->registry, "changed_callbacks", 17,
+	MMV_TYPE_U64, MMV_SEM_COUNTER, countunits, MMV_INDOM_NULL,
+	"filesystem changed callbacks",
+	"Number of observed filesystem changes to PCP archives");
+
+    mmv_stats_add_metric(data->registry, "throttled_changed_callbacks", 18,
+	MMV_TYPE_U64, MMV_SEM_COUNTER, countunits, MMV_INDOM_NULL,
+	"filesystem changed callbacks ignored due to throttling",
+	"Number of filesystem change callbacks that were ignored due to throttling");
+
+    mmv_stats_add_metric(data->registry, "throttle", 19,
+	MMV_TYPE_U64, MMV_SEM_INSTANT, secondsunits, MMV_INDOM_NULL,
+	"minimum filesystem changed callback throttle time",
+	"Minimum time between filesystem changed callbacks for each monitored archive");
+
+    mmv_stats_add_metric(data->registry, "metadata.partial_reads", 20,
+	MMV_TYPE_U64, MMV_SEM_COUNTER, countunits, MMV_INDOM_NULL,
+	"metadata read returned less data than expected",
+	"Number of times a metadata record read returned less than expected length");
+
+    mmv_stats_add_metric(data->registry, "logvol.decode.result_errors", 21,
+	MMV_TYPE_U64, MMV_SEM_COUNTER, countunits, MMV_INDOM_NULL,
+	"error result records decoded for monitored archives",
+	"Total errors in result records decoded for monitored archives");
+
+    data->map = map = mmv_stats_start(data->registry);
+    metrics = data->metrics;
+
+    metrics[DISCOVER_MONITORED] = mmv_lookup_value_desc(
+				    map, "monitored", NULL);
+    metrics[DISCOVER_PURGED] = mmv_lookup_value_desc(
+				    map, "purged", NULL);
+    metrics[DISCOVER_META_CALLBACKS] = mmv_lookup_value_desc(
+				    map, "metadata.callbacks", NULL);
+    metrics[DISCOVER_META_LOOPS] = mmv_lookup_value_desc(
+				    map, "metadata.loops", NULL);
+    metrics[DISCOVER_DECODE_DESC] = mmv_lookup_value_desc(
+				    map, "metadata.decode.desc", NULL);
+    metrics[DISCOVER_DECODE_INDOM] = mmv_lookup_value_desc(
+				    map, "metadata.decode.indom", NULL);
+    metrics[DISCOVER_DECODE_LABEL] = mmv_lookup_value_desc(
+				    map, "metadata.decode.label", NULL);
+    metrics[DISCOVER_DECODE_HELPTEXT] = mmv_lookup_value_desc(
+				    map, "metadata.decode.helptext", NULL);
+    metrics[DISCOVER_LOGVOL_CALLBACKS] = mmv_lookup_value_desc(
+				    map, "logvol.callbacks", NULL);
+    metrics[DISCOVER_LOGVOL_LOOPS] = mmv_lookup_value_desc(
+				    map, "logvol.loops", NULL);
+    metrics[DISCOVER_LOGVOL_CHANGE_VOL] = mmv_lookup_value_desc(
+				    map, "logvol.change_vol", NULL);
+    metrics[DISCOVER_DECODE_RESULT] = mmv_lookup_value_desc(
+				    map, "logvol.decode.result", NULL);
+    metrics[DISCOVER_DECODE_RESULT_PMIDS] = mmv_lookup_value_desc(
+				    map, "logvol.decode.result_pmids", NULL);
+    metrics[DISCOVER_DECODE_MARK_RECORD] = mmv_lookup_value_desc(
+				    map, "logvol.decode.mark_record", NULL);
+    metrics[DISCOVER_LOGVOL_NEW_CONTEXTS] = mmv_lookup_value_desc(
+				    map, "logvol.new_contexts", NULL);
+    metrics[DISCOVER_ARCHIVE_END_FAILED] = mmv_lookup_value_desc(
+				    map, "logvol.get_archive_end_failed", NULL);
+    metrics[DISCOVER_CHANGED_CALLBACKS] = mmv_lookup_value_desc(
+				    map, "changed_callbacks", NULL);
+    metrics[DISCOVER_THROTTLE_CALLBACKS] = mmv_lookup_value_desc(
+				    map, "throttled_changed_callbacks", NULL);
+    metrics[DISCOVER_THROTTLE] = mmv_lookup_value_desc(
+				    map, "throttle", NULL);
+    metrics[DISCOVER_META_PARTIAL_READS] = mmv_lookup_value_desc(
+				    map, "metadata.partial_reads", NULL);
+    metrics[DISCOVER_DECODE_RESULT_ERRORS] = mmv_lookup_value_desc(
+				    map, "logvol.decode.result_errors", NULL);
 }
 
 int
@@ -2032,7 +1945,7 @@ pmDiscoverSetMetricRegistry(pmDiscoverModule *module, mmv_registry_t *registry)
     discoverModuleData	*data = getDiscoverModuleData(module);
 
     if (data) {
-	data->metrics = registry;
+	data->registry = registry;
 	return 0;
     }
     return -ENOMEM;
@@ -2056,9 +1969,13 @@ pmDiscoverSetup(pmDiscoverModule *module, pmDiscoverCallBacks *cbs, void *arg)
 
     /* double-check that we are supposed to be in here */
     if ((option = pmIniFileLookup(config, "discover", "enabled"))) {
-	if (strcasecmp(option, "false") == 0)
+	if (strcmp(option, "false") == 0)
 	    return 0;
     }
+
+    /* see if an alternate archive directory is sought */
+    if ((option = pmIniFileLookup(config, "discover", "path")))
+	logdir = option;
 
     /* prepare for optional metric and indom exclusion */
     if ((option = pmIniFileLookup(config, "discover", "exclude.metrics"))) {
@@ -2089,11 +2006,8 @@ pmDiscoverSetup(pmDiscoverModule *module, pmDiscoverCallBacks *cbs, void *arg)
 	}
     }
 
-    /* create global EVAL hashes and string map caches */
-    redisSearchInit(data->config);
-    redisSeriesInit(data->config);
-    redisScriptsInit();
-    redisMapsInit();
+    /* create global string map caches */
+    redisGlobalsInit(data->config);
 
     if (!logdir)
 	logdir = fallback;
@@ -2118,7 +2032,7 @@ pmDiscoverClose(pmDiscoverModule *module)
 
     if (discover) {
 	pmDiscoverUnregister(discover->handle);
-	if (!discover->shareslots)
+	if (discover->slots && !discover->shareslots)
 	    redisSlotsFree(discover->slots);
 	for (i = 0; i < discover->exclude_names; i++)
 	    sdsfree(discover->patterns[i]);
@@ -2131,4 +2045,6 @@ pmDiscoverClose(pmDiscoverModule *module)
 	memset(discover, 0, sizeof(*discover));
 	free(discover);
     }
+
+    redisGlobalsClose();
 }

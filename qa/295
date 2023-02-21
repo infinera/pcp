@@ -27,6 +27,10 @@ echo "pmproxy_was_running=$pmproxy_was_running" >>$here/$seq.full
 
 _cleanup()
 {
+    # kill off the pmproxy we started
+    #
+    $sudo $signal -a pmproxy >>$here/$seq.full 2>&1
+
     if $pmproxy_was_running
     then
 	echo "Restart pmproxy ..." >>$here/$seq.full
@@ -51,8 +55,8 @@ _filter_pmproxy()
 
 _check()
 {
-    connects=`egrep 'AcceptNewClient|accept new client' $tmp.log | wc -l`
-    disconnects=`egrep 'DeleteClient|connection closed' $tmp.log | wc -l`
+    connects=`grep -E 'AcceptNewClient|accept new client' $tmp.log | wc -l`
+    disconnects=`grep -E 'DeleteClient|connection closed' $tmp.log | wc -l`
     difference=`expr $connects - $disconnects`
     echo "N connects"
     echo "N-$difference disconnects"
@@ -61,8 +65,26 @@ _check()
     echo "--- end $tmp.log ---" >>$here/$seq.full
 }
 
-_service pmproxy stop >/dev/null 2>&1
-$sudo $signal -a pmproxy >/dev/null 2>&1
+_service pmproxy stop >>$here/$seq.full 2>&1
+if $pmproxy_was_running
+then
+    i=0
+    while [ $i -lt 10 ]
+    do
+	if [ ! -f $PCP_RUN_DIR/pmproxy.pid ]
+	then
+	    break
+	fi
+	sleep 1
+	i=`expr $i + 1`
+    done
+    if [ $i -ge 10 ]
+    then
+	echo "Warning: failed to kill off pmproxy"
+	ls -l $PCP_RUN_DIR/pmproxy.pid
+	cat $PCP_RUN_DIR/pmproxy.pid
+    fi
+fi
 
 mkdir -p $tmp.rundir
 export PCP_RUN_DIR=$tmp.rundir

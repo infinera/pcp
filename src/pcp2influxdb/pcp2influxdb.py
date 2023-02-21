@@ -1,6 +1,6 @@
 #!/usr/bin/env pmpython
 #
-# Copyright (C) 2015-2019 Marko Myllynen <myllynen@redhat.com>
+# Copyright (C) 2015-2021 Marko Myllynen <myllynen@redhat.com>
 # Copyright (C) 2014-2018 Red Hat.
 #
 # This program is free software; you can redistribute it and/or modify it
@@ -18,7 +18,7 @@
 # pylint: disable=too-many-boolean-expressions, too-many-statements
 # pylint: disable=too-many-instance-attributes, too-many-locals
 # pylint: disable=too-many-branches, too-many-nested-blocks
-# pylint: disable=broad-except
+# pylint: disable=broad-except,consider-using-dict-items
 
 """ PCP to InfluxDB Bridge """
 
@@ -69,7 +69,7 @@ class Metric(object):
 
     def __init__(self, name):
         self.name = self.sanitize_name(name)
-        self.fields = dict()
+        self.fields = {}
         self.tags = None
         self.ts = None
 
@@ -169,6 +169,14 @@ class PCP2InfluxDB(object):
                      'speclocal', 'instances', 'ignore_incompat', 'ignore_unknown',
                      'omit_flat')
 
+        # Ignored for pmrep(1) compatibility
+        self.keys_ignore = (
+                     'timestamp', 'unitinfo', 'colxrow', 'separate_header', 'fixed_header',
+                     'delay', 'width', 'delimiter', 'extcsv', 'width_force',
+                     'extheader', 'repeat_header', 'timefmt', 'interpol',
+                     'dynamic_header', 'overall_rank', 'overall_rank_alt', 'sort_metric',
+                     'instinfo', 'include_labels', 'include_texts')
+
         # The order of preference for options (as present):
         # 1 - command line options
         # 2 - options from configuration file(s)
@@ -227,7 +235,7 @@ class PCP2InfluxDB(object):
         self.pmfg_ts = None
 
         # Read configuration and prepare to connect
-        self.config = self.pmconfig.set_config_file(DEFAULT_CONFIG)
+        self.config = self.pmconfig.set_config_path(DEFAULT_CONFIG)
         self.pmconfig.read_options()
         self.pmconfig.read_cmd_line()
         self.pmconfig.prepare_metrics()
@@ -551,8 +559,8 @@ class PCP2InfluxDB(object):
                 sys.stderr.write(msg)
         except ValueError:
             sys.stderr.write("Can't send request that has no metrics.\n")
-        except requests.exceptions.ConnectionError as error:
-            sys.stderr.write("Can't connect to InfluxDB server %s: %s, continuing.\n" % (self.influx_server, str(error)))
+        except requests.exceptions.ConnectionError as post_error:
+            sys.stderr.write("Can't connect to InfluxDB server %s: %s, continuing.\n" % (self.influx_server, str(post_error)))
 
     def finalize(self):
         """ Finalize and clean up """

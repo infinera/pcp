@@ -1,5 +1,5 @@
 #
-# Copyright (c) 2018,2020 Red Hat.
+# Copyright (c) 2018,2020-2021 Red Hat.
 #
 # This program is free software; you can redistribute it and/or modify it
 # under the terms of the GNU General Public License as published by the
@@ -21,18 +21,24 @@ CMDTARGET	= pmda$(IAM)
 LIBTARGET	= pmda_$(IAM).$(DSOSUFFIX)
 PMDAINIT	= $(IAM)_init
 
-CFILES		= varlink.c context.c pmda.c
+PMDAADMDIR	= $(PCP_PMDASADM_DIR)/$(IAM)
+PMDATMPDIR	= $(PCP_PMDAS_DIR)/$(IAM)
+
+LLDLIBS		= $(PCP_WEBLIB)
+
+JSONSL_HFILES	= $(addprefix deps/jsonsl/, jsonsl.h)
+JSONSL_CFILES	= $(addprefix deps/jsonsl/, jsonsl.c)
+JSONSL_XFILES	= $(JSONSL_HFILES) $(JSONSL_CFILES)
+
+CFILES		= $(JSONSL_CFILES) podman.c pmda.c
+HFILES		= $(JSONSL_HFILES) podman.h
+
+LCFLAGS		= -I$(TOPDIR)/src/libpcp_web/src -Ideps
 
 SCRIPTS		= Install Remove
 VERSION_SCRIPT	= exports
 HELPTARGETS	= help.dir help.pag
-LDIRT		= $(HELPTARGETS) domain.h $(VERSION_SCRIPT)
-
-LLDLIBS		= $(PCP_PMDALIB) $(LIB_FOR_LIBVARLINK)
-LCFLAGS		= $(INVISIBILITY)
-
-PMDAADMDIR	= $(PCP_PMDASADM_DIR)/$(IAM)
-PMDATMPDIR	= $(PCP_PMDAS_DIR)/$(IAM)
+LDIRT		= $(HELPTARGETS) domain.h $(VERSION_SCRIPT) $(JSONSL_XFILES)
 
 MAN_SECTION	= 1
 MAN_PAGES	= pmda$(IAM).$(MAN_SECTION)
@@ -42,8 +48,8 @@ default:	build-me
 
 include $(BUILDRULES)
 
-ifeq "$(PMDA_PODMAN)" "true"
-build-me: $(LIBTARGET) $(CMDTARGET) $(HELPTARGETS)
+ifeq "$(TARGET_OS)" "linux"
+build-me: $(JSONSL_XFILES) $(LIBTARGET) $(CMDTARGET) $(HELPTARGETS)
 
 install: default
 	$(INSTALL) -m 755 -d $(PMDAADMDIR)
@@ -56,6 +62,10 @@ else
 build-me:
 install:
 endif
+
+$(JSONSL_XFILES):
+	mkdir -p deps/jsonsl
+	$(LN_S) -f $(realpath $(TOPDIR))/vendor/github.com/mnunberg/$(@:deps/%=%) $@
 
 default_pcp : default
 
@@ -73,6 +83,7 @@ domain.h: ../../pmns/stdpmid
 $(OBJECTS): domain.h
 pmda.o: $(VERSION_SCRIPT)
 pmda.o:	$(TOPDIR)/src/include/pcp/libpcp.h
+podman.o: $(JSONSL_HFILES)
 
 check:: $(CFILES) $(HFILES)
 	$(CLINT) $^

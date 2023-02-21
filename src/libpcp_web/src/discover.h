@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2018-2020 Red Hat.
+ * Copyright (c) 2018-2022 Red Hat.
  *
  * This library is free software; you can redistribute it and/or modify it
  * under the terms of the GNU Lesser General Public License as published
@@ -60,8 +60,8 @@ typedef enum pmDiscoverFlags {
     PM_DISCOVER_FLAGS_DATAVOL			= (1 << 5), /* archive data volume */
     PM_DISCOVER_FLAGS_INDEX			= (1 << 6), /* archive index file */
     PM_DISCOVER_FLAGS_META			= (1 << 7), /* archive metadata */
-    PM_DISCOVER_FLAGS_DATAVOL_READY		= (1 << 9), /* flag: datavol data available */
-    PM_DISCOVER_FLAGS_META_IN_PROGRESS		= (1 << 8), /* flag: metadata read in progress */
+    PM_DISCOVER_FLAGS_DATAVOL_READY		= (1 << 8), /* flag: datavol data available */
+    PM_DISCOVER_FLAGS_META_IN_PROGRESS		= (1 << 9), /* flag: metadata read in progress */
 
     PM_DISCOVER_FLAGS_ALL			= ((unsigned int)~PM_DISCOVER_FLAGS_NONE)
 } pmDiscoverFlags;
@@ -78,12 +78,13 @@ typedef struct pmDiscover {
     pmDiscoverContext		context;	/* metadata for metric source */
     pmDiscoverModule		*module;	/* global state from caller */
     pmDiscoverFlags		flags;		/* state for discovery process */
-    pmTimespec			timestamp;	
+    __pmTimestamp		timestamp;	
     int				ctx;		/* PMAPI context handle */
     int				fd;		/* meta file descriptor */
 #ifdef HAVE_LIBUV
     uv_fs_event_t		*event_handle;	/* uv fs_notify event handle */ 
 #endif
+    time_t			lastcb;		/* time last callback processed */
     struct stat			statbuf;	/* stat buffer */
     void			*baton;		/* private internal lib data */
     void			*data;		/* opaque user data pointer */
@@ -97,7 +98,7 @@ extern void pmSeriesDiscoverLabels(pmDiscoverEvent *,
 extern void pmSeriesDiscoverMetric(pmDiscoverEvent *,
 				pmDesc *, int, char **, void *);
 extern void pmSeriesDiscoverValues(pmDiscoverEvent *,
-				pmResult *, void *);
+				pmHighResResult *, void *);
 extern void pmSeriesDiscoverInDom(pmDiscoverEvent *,
 				pmInResult *, void *);
 extern void pmSeriesDiscoverText(pmDiscoverEvent *,
@@ -110,22 +111,52 @@ extern void pmSearchDiscoverInDom(pmDiscoverEvent *,
 extern void pmSearchDiscoverText(pmDiscoverEvent *,
 				int, int, char *, void *);
 
+enum {
+    DISCOVER_MONITORED,
+    DISCOVER_PURGED,
+    DISCOVER_META_CALLBACKS,
+    DISCOVER_META_LOOPS,
+    DISCOVER_DECODE_DESC,
+    DISCOVER_DECODE_INDOM,
+    DISCOVER_DECODE_LABEL,
+    DISCOVER_DECODE_HELPTEXT,
+    DISCOVER_LOGVOL_CALLBACKS,
+    DISCOVER_LOGVOL_LOOPS,
+    DISCOVER_LOGVOL_CHANGE_VOL,
+    DISCOVER_DECODE_RESULT,
+    DISCOVER_DECODE_RESULT_PMIDS,
+    DISCOVER_DECODE_MARK_RECORD,
+    DISCOVER_LOGVOL_NEW_CONTEXTS,
+    DISCOVER_ARCHIVE_END_FAILED,
+    DISCOVER_CHANGED_CALLBACKS,
+    DISCOVER_THROTTLE_CALLBACKS,
+    DISCOVER_THROTTLE,
+    DISCOVER_META_PARTIAL_READS,
+    DISCOVER_DECODE_RESULT_ERRORS,
+    NUM_DISCOVER_METRIC
+};
+
 /*
  * Module internals data structure
  */
 typedef struct discoverModuleData {
     unsigned int		handle;		/* callbacks context handle */
     unsigned int		shareslots;	/* boolean, sharing 'slots' */
-    mmv_registry_t		*metrics;	/* registry of metrics */
-    void			*metrics_handle;
+
+    mmv_registry_t		*registry;	/* metrics */
+    pmAtomValue			*metrics[NUM_DISCOVER_METRIC];
+    void			*map;
+
     struct dict			*config;	/* configuration dict */
     uv_loop_t			*events;	/* event library loop */
     redisSlots			*slots;		/* server slots data */
+
     unsigned int		exclude_names;	/* exclude metric names */
     sds				*patterns;	/* metric name patterns */
     struct dict			*pmids;		/* dict of excluded PMIDs */
     unsigned int		exclude_indoms;	/* exclude instance domains */
     struct dict			*indoms;	/* dict of excluded InDoms */
+
     void			*data;		/* user-supplied pointer */
 } discoverModuleData;
 

@@ -2,10 +2,11 @@ QA output created by 242
 sample.long.hundred ...
 Log for pmlogger on HOST started DATE
 
+[DATE] pmlogger(PID) Info: Start
 Config parsed
 Starting logger for host "HOST"
 Archive basename: ARCHIVE
-pmlogger: End of run time, exiting
+[DATE] pmlogger(PID) Info: pmlogger: End of run time, exiting
 
 Log finished DATE
 event.flags
@@ -20,10 +21,11 @@ sample.long.hundred
 kernel.all.load [1 minute] ...
 Log for pmlogger on HOST started DATE
 
+[DATE] pmlogger(PID) Info: Start
 Config parsed
 Starting logger for host "HOST"
 Archive basename: ARCHIVE
-pmlogger: End of run time, exiting
+[DATE] pmlogger(PID) Info: pmlogger: End of run time, exiting
 
 Log finished DATE
 event.flags
@@ -38,10 +40,11 @@ pmcd.seqnum
 kernel.all.load ...
 Log for pmlogger on HOST started DATE
 
+[DATE] pmlogger(PID) Info: Start
 Config parsed
 Starting logger for host "HOST"
 Archive basename: ARCHIVE
-pmlogger: End of run time, exiting
+[DATE] pmlogger(PID) Info: pmlogger: End of run time, exiting
 
 Log finished DATE
 event.flags

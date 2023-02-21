@@ -1,6 +1,6 @@
 '\"macro stdmacro
 .\"
-.\" Copyright (c) 2018-2020 Red Hat.
+.\" Copyright (c) 2018-2022 Red Hat.
 .\"
 .\" This program is free software; you can redistribute it and/or modify it
 .\" under the terms of the GNU General Public License as published by the
@@ -34,6 +34,7 @@
 [\f3\-\-integer\f1]
 [\f3\-\-nocolor\f1]
 [\f3\-\-noheaders\f1]
+[\f3\-\-nomissed\f1]
 [\f3\-\-noupdate\f1]
 [\f3\-\-list\f1]
 [\f3\-\-pidfile\f1 \f2pid-file\f1]
@@ -100,9 +101,9 @@ configuration files in
 format.
 This new style of plugin is either built-in (time-related reporting
 only), or sourced from the system-wide location (\c
-.BR $PCP_ETC_DIR/dstat )
+.BR $PCP_SYSCONF_DIR/dstat )
 and/or sourced from an individual users set of personal plugins (\c
-.BR $HOME/pcp/dstat ).
+.BR $HOME/.pcp/dstat ).
 .PP
 The list of all available plugins can be seen using the \fB\-\-list\fR
 dstat command line option.
@@ -335,48 +336,45 @@ show remote procedure call (RPC) client calls stats
 .TP
 \fB\-\-rpcd\fR
 show remote procedure call (RPC) server calls stats
-.\" .TP
-.\" \fB\-\-top\-bio\fR
-.\" show most expensive block I/O process
-.\" .TP
-.\" \fB\-\-top\-bio\-adv\fR
-.\" show most expensive block I/O process (incl\&. PID and other stats)
-.\" .TP
-.\" \fB\-\-top\-childwait\fR
-.\" show process waiting for child the most
-.\" .TP
-.\" \fB\-\-top\-cpu\fR
-.\" show most expensive CPU process
-.\" .TP
-.\" \fB\-\-top\-cpu\-adv\fR
-.\" show most expensive CPU process (incl\&. PID and other stats)
-.\" .TP
-.\" \fB\-\-top\-cputime\fR
-.\" show process using the most CPU time (in milliseconds)
-.\" .TP
-.\" \fB\-\-top\-cputime\-avg\fR
-.\" show process with the highest average timeslice (in milliseconds)
-.\" .TP
-.\" \fB\-\-top\-int
-.\" show most frequent interrupt\fR
-.\" .TP
-.\" \fB\-\-top\-io
-.\" show most expensive I/O process\fR
-.\" .TP
-.\" \fB\-\-top\-io\-adv\fR
-.\" show most expensive I/O process (incl\&. PID and other stats)
-.\" .TP
-.\" \fB\-\-top\-latency\fR
-.\" show process with highest total latency (in milliseconds)
-.\" .TP
-.\" \fB\-\-top\-latency\-avg\fR
-.\" show process with the highest average latency (in milliseconds)
-.\" .TP
-.\" \fB\-\-top\-mem\fR
-.\" show process using the most memory
-.\" .TP
-.\" \fB\-\-top\-oom\fR
-.\" show process that will be killed by the out-of-memory (OOM) killer the first
+.TP
+\fB\-\-top\-bio\fR
+show most expensive block I/O process
+.TP
+\fB\-\-top\-bio\-adv\fR
+show most expensive block I/O process (incl\&. PID and other stats)
+.TP
+\fB\-\-top\-childwait\fR
+show process waiting for child the most
+.TP
+\fB\-\-top\-cpu\fR
+show most expensive CPU process
+.TP
+\fB\-\-top\-cpu\-adv\fR
+show most expensive CPU process (incl\&. PID and other stats)
+.TP
+\fB\-\-top\-cputime\fR
+show process using the most CPU time (in milliseconds)
+.TP
+\fB\-\-top\-cputime\-avg\fR
+show process with the highest average timeslice (in milliseconds)
+.TP
+\fB\-\-top\-io
+show most expensive I/O process\fR
+.TP
+\fB\-\-top\-io\-adv\fR
+show most expensive I/O process (incl\&. PID and other stats)
+.TP
+\fB\-\-top\-latency\fR
+show process with highest total latency (in milliseconds)
+.TP
+\fB\-\-top\-latency\-avg\fR
+show process with the highest average latency (in milliseconds)
+.TP
+\fB\-\-top\-mem\fR
+show process using the most memory
+.TP
+\fB\-\-top\-oom\fR
+show process that will be killed by the out-of-memory (OOM) killer the first
 .TP
 \fB\-f\fR, \fB\-\-full\fR
 expand \fB\-C\fR, \fB\-D\fR, \fB\-I\fR, \fB\-N\fR and \fB\-S\fR discovery lists
@@ -404,6 +402,9 @@ disable colors
 \fB\-\-noheaders\fR
 disable repetitive headers
 .TP
+\fB\-\-nomissed\fR
+disable missed ticks warnings for intermediate samples.
+.TP
 \fB\-\-noupdate\fR
 disable intermediate updates when \fIdelay\fR greater than 1.
 .TP
@@ -418,6 +419,9 @@ Some
 configuration files require the installation of optional
 Performance Metric Domain Agents, above and beyond the
 default installed set.
+.TP 5
+\fB\-\-battery\fR
+remaining battery charge in percentage (needs the Denki PMDA)
 .TP 5
 \fB\-\-gpfs\fR
 GPFS read/write I/O (needs the GPFS PMDA)
@@ -438,7 +442,7 @@ show innodb operations counters (needs the MySQL PMDA)
 show lustre I/O throughput (needs the Lustre PMDA)
 .TP
 \fB\-\-memcache\-hits\fR
-show the number of hits and misses from memcache
+show the number of hits and misses from memcache (needs the Memcached PMDA)
 .TP
 \fB\-\-mysql5\-cmds\fR
 show the MySQL5 command stats (needs the MySQL PMDA)
@@ -469,6 +473,15 @@ show Redis stats (needs the Redis PMDA)
 .TP
 \fB\-\-sendmail\fR
 show sendmail queue size (needs the Sendmail PMDA)
+.TP
+\fB\-\-zfs\-arc\fR
+show ZFS arc stats (needs the ZFS PMDA)
+.TP
+\fB\-\-zfs\-l2arc\fR
+show ZFS l2arc stats (needs the ZFS PMDA)
+.TP
+\fB\-\-zfs\-zil\fR
+show ZFS zil stats (needs the ZFS PMDA)
 .SH HISTORICAL METRICS PLUGINS
 Anyone can create additional, custom
 .B pcp-dstat
@@ -485,9 +498,6 @@ Please contact
 .I <pcp@groups\&.io>
 if you need or implement any of these, and we'll work with
 you to get them included.
-.TP 5
-\fB\-\-battery\fR
-battery in percentage (needs an ACPI PMDA)
 .TP
 \fB\-\-battery\-remain\fR
 battery remaining in hours, minutes (needs an ACPI PMDA)
@@ -546,15 +556,6 @@ show OpenVZ user beancounters (needs an OpenVZ PMDA)
 .TP
 \fB\-\-wifi\fR
 wireless link quality and signal to noise ratio (needs Linux PMDA metrics)
-.TP
-\fB\-\-zfs\-arc\fR
-show ZFS arc stats (needs a Linux ZFS PMDA)
-.TP
-\fB\-\-zfs\-l2arc\fR
-show ZFS l2arc stats (needs a Linux ZFS PMDA)
-.TP
-\fB\-\-zfs\-zil\fR
-show ZFS zil stats (needs a Linux ZFS PMDA)
 .SH INTERMEDIATE UPDATES
 When invoking
 .B pcp-dstat
@@ -608,7 +609,7 @@ $ pcp \-\-host www.acme.com dstat \-\-time \-\-cpu\-adv \-\-sys 1 10
 .I \f(CW$HOME\fP/\&.pcp/dstat/
 private per-user configuration files
 .TP
-.I \f(CW$PCP_SYSCONF_DIR\fP/pcp/dstat/
+.I \f(CW$PCP_SYSCONF_DIR\fP/dstat/
 system-wide configuration files
 .SH ENVIRONMENT
 Internal plugins behaviour can be changed through environment variables.

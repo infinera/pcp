@@ -1,6 +1,6 @@
 """Wrapper module for libpcp_import - Performace Co-Pilot Log Import API
 #
-# Copyright (C) 2012-2020 Red Hat.
+# Copyright (C) 2012-2022 Red Hat.
 #
 # This file is part of the "pcp" module, the python interfaces for the
 # Performance Co-Pilot toolkit.
@@ -50,11 +50,11 @@
         del log
 """
 
-from pcp.pmapi import pmID, pmInDom, pmUnits, pmResult
+from pcp.pmapi import pmID, pmInDom, pmUnits, pmHighResResult, pmResult
 from cpmi import pmiErrSymDict, PMI_MAXERRMSGLEN
 
 import ctypes
-from ctypes import cast, c_int, c_uint, c_char_p, POINTER
+from ctypes import cast, c_int, c_uint, c_longlong, c_char_p, POINTER
 
 # Performance Co-Pilot PMI library (C)
 LIBPCP_IMPORT = ctypes.CDLL(ctypes.util.find_library("pcp_import"))
@@ -66,18 +66,18 @@ LIBPCP_IMPORT.pmiDump.restype = None
 LIBPCP_IMPORT.pmiDump.argtypes = None
 
 LIBPCP_IMPORT.pmiID.restype = pmID
-LIBPCP_IMPORT.pmiID.argtypes = [ctypes.c_int, ctypes.c_int, ctypes.c_int]
+LIBPCP_IMPORT.pmiID.argtypes = [c_int, c_int, c_int]
 
 LIBPCP_IMPORT.pmiCluster.restype = pmID
-LIBPCP_IMPORT.pmiCluster.argtypes = [ctypes.c_int, ctypes.c_int]
+LIBPCP_IMPORT.pmiCluster.argtypes = [c_int, c_int]
 
 LIBPCP_IMPORT.pmiInDom.restype = pmInDom
-LIBPCP_IMPORT.pmiInDom.argtypes = [ctypes.c_int, ctypes.c_int]
+LIBPCP_IMPORT.pmiInDom.argtypes = [c_int, c_int]
 
 LIBPCP_IMPORT.pmiUnits.restype = pmUnits
 LIBPCP_IMPORT.pmiUnits.argtypes = [
-        ctypes.c_int, ctypes.c_int, ctypes.c_int,
-        ctypes.c_int, ctypes.c_int, ctypes.c_int]
+        c_int, c_int, c_int,
+        c_int, c_int, c_int]
 
 LIBPCP_IMPORT.pmiErrStr_r.restype = c_char_p
 LIBPCP_IMPORT.pmiErrStr_r.argtypes = [c_int, c_char_p, c_int]
@@ -97,9 +97,12 @@ LIBPCP_IMPORT.pmiSetHostname.argtypes = [c_char_p]
 LIBPCP_IMPORT.pmiSetTimezone.restype = c_int
 LIBPCP_IMPORT.pmiSetTimezone.argtypes = [c_char_p]
 
+LIBPCP_IMPORT.pmiSetVersion.restype = c_int
+LIBPCP_IMPORT.pmiSetVersion.argtypes = [c_int]
+
 LIBPCP_IMPORT.pmiAddMetric.restype = c_int
 LIBPCP_IMPORT.pmiAddMetric.argtypes = [
-        c_char_p, pmID, c_int, pmInDom, c_int, c_uint]
+        c_char_p, pmID, c_int, pmInDom, c_int, pmUnits]
 
 LIBPCP_IMPORT.pmiAddInstance.restype = c_int
 LIBPCP_IMPORT.pmiAddInstance.argtypes = [pmInDom, c_char_p, c_int]
@@ -113,8 +116,14 @@ LIBPCP_IMPORT.pmiGetHandle.argtypes = [c_char_p, c_char_p]
 LIBPCP_IMPORT.pmiPutValueHandle.restype = c_int
 LIBPCP_IMPORT.pmiPutValueHandle.argtypes = [c_int, c_char_p]
 
-LIBPCP_IMPORT.pmiWrite.restype = c_int
-LIBPCP_IMPORT.pmiWrite.argtypes = [c_int, c_int]
+LIBPCP_IMPORT.pmiWrite2.restype = c_int
+LIBPCP_IMPORT.pmiWrite2.argtypes = [c_longlong, c_int]
+
+LIBPCP_IMPORT.pmiHighResWrite.restype = c_int
+LIBPCP_IMPORT.pmiHighResWrite.argtypes = [c_longlong, c_int]
+
+LIBPCP_IMPORT.pmiPutHighResResult.restype = c_int
+LIBPCP_IMPORT.pmiPutHighResResult.argtypes = [POINTER(pmHighResResult)]
 
 LIBPCP_IMPORT.pmiPutResult.restype = c_int
 LIBPCP_IMPORT.pmiPutResult.argtypes = [POINTER(pmResult)]
@@ -230,6 +239,19 @@ class pmiLogImport(object):
             raise pmiErr(status)
         return status
 
+    def pmiSetVersion(self, version):
+        """PMI - set the output archive version (2 or 3)
+        """
+        status = LIBPCP_IMPORT.pmiUseContext(self._ctx)
+        if status < 0:
+            raise pmiErr(status)
+        if not isinstance(version, int):
+            version = 2
+        status = LIBPCP_IMPORT.pmiSetVersion(version)
+        if status < 0:
+            raise pmiErr(status)
+        return status
+
     @staticmethod
     def pmiID(domain, cluster, item):
         """PMI - construct a pmID data structure (helper routine) """
@@ -328,12 +350,22 @@ class pmiLogImport(object):
             raise pmiErr(status)
         return status
 
+    def pmiHighResWrite(self, sec, nsec):
+        """PMI - flush data to a Log Import archive """
+        status = LIBPCP_IMPORT.pmiUseContext(self._ctx)
+        if status < 0:
+            raise pmiErr(status)
+        status = LIBPCP_IMPORT.pmiHighResWrite(sec, nsec)
+        if status < 0:
+            raise pmiErr(status)
+        return status
+
     def pmiWrite(self, sec, usec):
         """PMI - flush data to a Log Import archive """
         status = LIBPCP_IMPORT.pmiUseContext(self._ctx)
         if status < 0:
             raise pmiErr(status)
-        status = LIBPCP_IMPORT.pmiWrite(sec, usec)
+        status = LIBPCP_IMPORT.pmiWrite2(sec, usec)
         if status < 0:
             raise pmiErr(status)
         return status
@@ -354,6 +386,16 @@ class pmiLogImport(object):
         if status < 0:
             raise pmiErr(status)
         status = LIBPCP_IMPORT.pmiPutResult(cast(result, POINTER(pmResult)))
+        if status < 0:
+            raise pmiErr(status)
+        return status
+
+    def put_highres_result(self, result):
+        """PMI - add a data record to a Log Import archive """
+        status = LIBPCP_IMPORT.pmiUseContext(self._ctx)
+        if status < 0:
+            raise pmiErr(status)
+        status = LIBPCP_IMPORT.pmiPutHighResResult(cast(result, POINTER(pmHighResResult)))
         if status < 0:
             raise pmiErr(status)
         return status

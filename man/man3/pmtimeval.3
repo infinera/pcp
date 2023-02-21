@@ -1,5 +1,6 @@
 '\"macro stdmacro
 .\"
+.\" Copyright (c) 2022 Red Hat.  All Rights Reserved.
 .\" Copyright (c) 2017 Ken McDonell.  All Rights Reserved.
 .\"
 .\" This program is free software; you can redistribute it and/or modify it
@@ -22,8 +23,7 @@
 \f3pmtimevalSub\f1,
 \f3pmtimevalToReal\f1,
 \f3pmtimevalFromReal\f1,
-\f3pmPrintStamp\f1,
-\f3pmPrintHighResStamp\f1 \- helper routines for time stored as a struct timeval
+\f3pmPrintStamp\f1 \- helper routines for time stored as a struct timeval
 .SH "C SYNOPSIS"
 .ft 3
 #include <pcp/pmapi.h>
@@ -43,8 +43,6 @@ double pmtimevalToReal(const struct timeval *\fIval\fP);
 void pmtimevalFromReal(double \fIsecs\fP, struct timeval *\fIval\fP);
 .br
 void pmPrintStamp(FILE *\fIf\fP, const struct timeval *\fItp\fP);
-.br
-void pmPrintHighResStamp(FILE *\fIf\fP, const struct timespec *\fItp\fP);
 .sp
 cc ... \-lpcp
 .ft 1
@@ -96,12 +94,14 @@ on the stream
 in the local time (as returned by
 .BR pmLocaltime (3))
 in the format HH:MM:SS.XXX.
-.B pmPrintHighResStamp
-performs a similar service, but for a struct timespec and reports
-the timestamp to nanosecond precision.
+.SH NOTES
+For variants of these interfaces using nanosecond precision
+and the timespec structure, refer to
+.BR pmtimespecNow (3).
 .SH SEE ALSO
 .BR gettimeofday (2),
 .BR time (2),
-.BR PMAPI (3)
+.BR PMAPI (3),
+.BR pmLocaltime (3)
 and
-.BR pmLocaltime (3).
+.BR pmtimespecNow (3).

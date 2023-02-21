@@ -1,12 +1,12 @@
 #
-# Copyright (c) 2012-2020 Red Hat.
+# Copyright (c) 2012-2022 Red Hat.
 # Copyright (c) 2000,2003 Silicon Graphics, Inc.  All Rights Reserved.
-# 
+#
 # This program is free software; you can redistribute it and/or modify it
 # under the terms of the GNU General Public License as published by the
 # Free Software Foundation; either version 2 of the License, or (at your
 # option) any later version.
-# 
+#
 # This program is distributed in the hope that it will be useful, but
 # WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY
 # or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License
@@ -35,7 +35,7 @@ LDIRT = config.cache config.status config.log files.rpm \
 	perl-pcp*.list* python-pcp*.list* python3-pcp*.list*
 LDIRDIRT = pcp-[0-9]*.[0-9]*.[0-9]*  pcp-*-[0-9]*.[0-9]*.[0-9]*
 
-SUBDIRS = src
+SUBDIRS = vendor src
 ifneq ($(TARGET_OS),mingw)
 SUBDIRS += qa
 endif
@@ -76,9 +76,6 @@ ifneq "$(findstring $(TARGET_OS),darwin mingw)" ""
 	$(INSTALL) -m 755 -d $(PCP_MAN_DIR)/man3
 	$(INSTALL) -m 755 -d $(PCP_MAN_DIR)/man5
 endif
-ifneq ($(TARGET_OS),mingw)
-	$(INSTALL) -m 1777 -d $(PCP_TMPFILE_DIR)
-endif
 	$(INSTALL) -m 775 -o $(PCP_USER) -g $(PCP_GROUP) -d $(PCP_TMP_DIR)
 ifeq (, $(filter debian suse, $(PACKAGE_DISTRIBUTION)))
 	# PCP_RUN_DIR usually -> /var/run which may be a temporary filesystem
@@ -106,7 +103,6 @@ endif
 	$(INSTALL) -m 755 -d $(PCP_VAR_DIR)/config/pmlogconf
 	$(INSTALL) -m 775 -o $(PCP_USER) -g $(PCP_GROUP) -d $(PCP_VAR_DIR)/config/pmda
 	$(INSTALL) -m 775 -o $(PCP_USER) -g $(PCP_GROUP) -d $(PCP_LOG_DIR)
-	$(INSTALL) -m 775 -o $(PCP_USER) -g $(PCP_GROUP) -d $(PCP_SECURE_DB_PATH)
 	$(INSTALL) -m 755 -d $(PCP_PMDAS_DIR)
 	$(INSTALL) -m 755 -d $(PCP_DOC_DIR)
 	$(INSTALL) -m 755 -d $(PCP_DEMOS_DIR)

@@ -110,7 +110,11 @@ duptextstr(char *s, int strip_quotes)
 
 <glob>"hostname"	{ BEGIN(host); return TOK_HOSTNAME; }
 <glob>"time"		{ return TOK_TIME; }
-<glob>"tz"		{ return TOK_TZ; }
+<glob>"tz"		{ /* for backwards compatibility */ return TOK_TIMEZONE; }
+<glob>"timezone"	{ return TOK_TIMEZONE; }
+<glob>"zoneinfo"	{ return TOK_ZONEINFO; }
+<glob>"features"	{ return TOK_FEATURES; }
+<glob>"bits"		{ return TOK_BITS; }
 	/* Hostname */
 <host>[A-Za-z0-9][A-Za-z0-9.-]*	{ yylval.str = dupstr(yytext, 0); BEGIN(glob); return TOK_HNAME; }
 
@@ -269,6 +273,8 @@ duptextstr(char *s, int strip_quotes)
 "-"			{ return TOK_MINUS; }
 ":"			{ return TOK_COLON; }
 ","			{ return TOK_COMMA; }
+"("			{ return TOK_LPAREN; }
+")"			{ return TOK_RPAREN; }
 
 \n			{ lineno++; }
 .			{ 

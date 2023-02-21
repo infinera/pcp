@@ -1,6 +1,7 @@
 #! /bin/sh
 # PCP QA Test No. 156
 # check out sample PMDA
+# - see qa/1339 for the Internet socket connection cases
 #
 # Copyright (c) 1995-2002 Silicon Graphics, Inc.  All Rights Reserved.
 #
@@ -16,7 +17,7 @@ echo "QA output created by $seq"
 _filter()
 {
     _filter_pmda_install | \
-    sed -e 's/ 13[0-9][0-9] values/ 1300+ values/' \
+    sed -e 's/ 1[34][0-9][0-9] values/ 1300+ values/' \
 	-e 's/ 1[0-9] warnings/ 10+ warnings/' \
 	-e 's/ 1[0-9][0-9] metrics/ 100+ metrics/' \
 	-e "s;$tmp;TMP;" \
@@ -94,49 +95,6 @@ _filter <$tmp.out
 pminfo -v sample || echo "... failed!"
 _snag_log
 echo pipe | $sudo ./Install -e >$tmp.out 2>&1
-_filter <$tmp.out
-pminfo -v sample || echo "... failed!"
-_snag_log
-
-echo | tee -a $here/$seq.full
-echo "=== socket Internet agent ===" | tee -a $here/$seq.full
-
-# pick two tcp ports that are not in use
-#
-port1=`_find_free_port 5670`
-if [ -z "$port1" ]
-then
-    echo "Arrgh ... port1: no free TCP port in the range 5670 ... "
-    exit
-fi
-echo "port1=$port1" >>$here/$seq.full
-if which netstat >/dev/null 2>&1
-then
-    netstat -a | grep $port1 >>$here/$seq.full
-fi
-try=`expr $port1 + 1`
-port2=`_find_free_port $try`
-if [ -z "$port2" ]
-then
-    echo "Arrgh ... port2: no free TCP port in the range $try ... "
-    exit
-fi
-echo "port2=$port2" >>$here/$seq.full
-if which netstat >/dev/null 2>&1
-then
-    netstat -a | grep $port2 >>$here/$seq.full
-fi
-
-echo 'socket
-Internet
-'$port1 | $sudo ./Install -e >$tmp.out 2>&1
-_filter <$tmp.out
-pminfo -v sample || echo "... failed!"
-_snag_log
-
-echo 'socket
-Internet
-'$port2 | $sudo ./Install -e >$tmp.out 2>&1
 _filter <$tmp.out
 pminfo -v sample || echo "... failed!"
 _snag_log

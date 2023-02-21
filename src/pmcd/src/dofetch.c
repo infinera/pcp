@@ -1,12 +1,12 @@
 /*
- * Copyright (c) 2012-2019 Red Hat.
+ * Copyright (c) 2012-2019,2021-2022 Red Hat.
  * Copyright (c) 1995 Silicon Graphics, Inc.  All Rights Reserved.
- * 
+ *
  * This program is free software; you can redistribute it and/or modify it
  * under the terms of the GNU General Public License as published by the
  * Free Software Foundation; either version 2 of the License, or (at your
  * option) any later version.
- * 
+ *
  * This program is distributed in the hope that it will be useful, but
  * WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY
  * or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License
@@ -39,10 +39,10 @@ static DomPmidList *
 SplitPmidList(int nPmids, pmID *pmidList)
 {
     int			i, j;
-    static int		*resIndex = NULL;	/* resIndex[k] = index of agent[k]'s list in result */
-    static int		nDoms = 0;	/* No. of entries in two tables above */
+    static int		*resIndex;	/* resIndex[k] = index of agent[k]'s list in result */
+    static int		nDoms;	/* No. of entries in two tables above */
     int			nGood;
-    static int		currentSize = 0;
+    static int		currentSize;
     int			resultSize;
     static DomPmidList	*result;
     pmID		*resultPmids;
@@ -65,6 +65,7 @@ SplitPmidList(int nPmids, pmID *pmidList)
 	aFreq = (int *)malloc((nAgents + 1) * sizeof(int));
 	if (resIndex == NULL || aFreq == NULL) {
 	    pmNoMem("SplitPmidList.resIndex", 2 * (nAgents + 1) * sizeof(int), PM_FATAL_ERR);
+	    /* NOTREACHED */
 	}
     }
 
@@ -120,6 +121,7 @@ doit:
 	result = (DomPmidList *)malloc(resultSize);
 	if (result == NULL) {
 	    pmNoMem("SplitPmidList.result", resultSize, PM_FATAL_ERR);
+	    /* NOTREACHED */
 	}
 	currentSize = resultSize;
     }
@@ -171,6 +173,10 @@ MakeBadResult(int npmids, pmID *list, int sts)
     pmValueSet *vSet;
     pmResult   *result;
 
+    /*
+     * Note: do not convert to __pmResult, the pmcd-pmda interfaces and
+     * 	 and pmcd internally will continue to use pmResult
+     */
     need = (int)sizeof(pmResult) +
 	(npmids - 1) * (int)sizeof(pmValueSet *);
 	/* npmids - 1 because there is already 1 pmValueSet* in a pmResult */
@@ -185,6 +191,7 @@ MakeBadResult(int npmids, pmID *list, int sts)
 	vSet = (pmValueSet *)malloc(sizeof(pmValueSet));
 	if (vSet == NULL) {
 	    pmNoMem("MakeBadResult.vSet", sizeof(pmValueSet), PM_FATAL_ERR);
+	    /* NOTREACHED */
 	}
 	result->vset[i] = vSet;
 	vSet->pmid = list[i];
@@ -202,7 +209,6 @@ SendFetch(DomPmidList *dpList, AgentInfo *aPtr, ClientInfo *cPtr, int ctxnum)
     pmProfile		defprofile = {PM_PROFILE_INCLUDE, 0, NULL};
     pmResult		*result = NULL;
     int			sts = 0;
-    static pmTimeval	when = {0, 0};	/* Agents never see archive requests */
     int			bad = 0;
     int			i;
 
@@ -299,7 +305,7 @@ SendFetch(DomPmidList *dpList, AgentInfo *aPtr, ClientInfo *cPtr, int ctxnum)
 	    else if (aPtr->status.notReady == 0) {
 		/* agent is ready for PDUs */
 		pmcd_trace(TR_XMIT_PDU, aPtr->inFd, PDU_FETCH, dpList->listSize);
-		if ((sts = __pmSendFetch(aPtr->inFd, cPtr - client, ctxnum, &when,
+		if ((sts = __pmSendFetch(aPtr->inFd, cPtr - client, ctxnum, 
 				   dpList->listSize, dpList->list)) < 0)
 		    pmcd_trace(TR_XMIT_ERR, aPtr->inFd, PDU_FETCH, sts);
 	    }
@@ -347,30 +353,35 @@ SendFetch(DomPmidList *dpList, AgentInfo *aPtr, ClientInfo *cPtr, int ctxnum)
  * Extract the flags that indicate those state changes here.
  */
 static int
-ExtractState(pmResult *result)
+ExtractState(void *timestamp)
 {
     unsigned char	byte;
 
-    memcpy(&byte, &result->timestamp, sizeof(unsigned char));
+    memcpy(&byte, timestamp, sizeof(unsigned char));
     return (int)byte;
 }
 
-int
-DoFetch(ClientInfo *cip, __pmPDU* pb)
+/*
+ * Handle both the original and high resolution fetch PDU requests.
+ * The input handling and PMDA interactions are the same, difference
+ * is in the output result - new uses pmHighResResult (timespec),
+ * original uses pmResult (timeval).
+ */
+static int
+HandleFetch(ClientInfo *cip, __pmPDU* pb, int pdutype)
 {
     int			i, j;
     int 		sts;
     int			ctxnum;
     unsigned int	changes = 0;
-    pmTimeval		when;
     int			nPmids;
     pmID		*pmidList;
-    static pmResult	*endResult = NULL;
-    static int		maxnpmids = 0;	/* sizes endResult */
+    static __pmResult	*endResult = NULL;
+    static int		maxnpmids;	/* sizes endResult */
     DomPmidList		*dList;		/* NOTE: NOT indexed by agent index */
-    static int		nDoms = 0;
-    static pmResult	**results = NULL;
-    static int		*resIndex = NULL;
+    static int		nDoms;
+    static pmResult	**results;	/* array of replies from PMDAs */
+    static int		*resIndex;
     __pmFdSet		waitFds;
     __pmFdSet		readyFds;
     int			nWait;
@@ -389,12 +400,14 @@ DoFetch(ClientInfo *cip, __pmPDU* pb)
 	resIndex = (int *)malloc((nAgents + 1) * sizeof(int));
 	if (results == NULL || resIndex == NULL) {
 	    pmNoMem("DoFetch.results", (nAgents + 1) * sizeof (pmResult *) + (nAgents + 1) * sizeof(int), PM_FATAL_ERR);
+	    /* NOTREACHED */
 	}
 	nDoms = nAgents;
     }
     memset(results, 0, (nAgents + 1) * sizeof(results[0]));
 
-    sts = __pmDecodeFetch(pb, &ctxnum, &when, &nPmids, &pmidList);
+    /* Both PDUs decode the same way, use variant without retired timestamp */
+    sts = __pmDecodeHighResFetch(pb, &ctxnum, &nPmids, &pmidList);
     if (sts < 0)
 	return sts;
 
@@ -416,12 +429,13 @@ DoFetch(ClientInfo *cip, __pmPDU* pb)
     }
 
     if (nPmids > maxnpmids) {
-	int		need;
-	if (endResult != NULL)
-	    free(endResult);
-	need = (int)sizeof(pmResult) + (nPmids - 1) * (int)sizeof(pmValueSet *);
-	if ((endResult = (pmResult *)malloc(need)) == NULL) {
-	    pmNoMem("DoFetch.endResult", need, PM_FATAL_ERR);
+	if (endResult != NULL) {
+	    endResult->numpmid = 0;	/* don't free vset's */
+	    __pmFreeResult(endResult);
+	}
+	if ((endResult = __pmAllocResult(nPmids)) == NULL) {
+	    pmNoMem("DoFetch.endResult", sizeof(__pmResult) + (nPmids - 1) * sizeof(pmValueSet *), PM_FATAL_ERR);
+	    /* NOTREACHED */
 	}
 	maxnpmids = nPmids;
     }
@@ -448,7 +462,7 @@ DoFetch(ClientInfo *cip, __pmPDU* pb)
 		maxFd = fd;
 	    nWait++;
 	} else {
-	    changes |= ExtractState(results[j]);
+	    changes |= ExtractState(&results[j]->timestamp);
 	}
     }
     /* Construct pmResult for bad-pmID list */
@@ -509,14 +523,17 @@ DoFetch(ClientInfo *cip, __pmPDU* pb)
 	    if (sts > 0)
 		pmcd_trace(TR_RECV_PDU, ap->outFd, sts, (int)((__psint_t)pb & 0xffffffff));
 	    if (sts == PDU_RESULT) {
-		if ((sts = __pmDecodeResult(pb, &results[i])) >= 0) {
+		__pmResult *rp;
+		if ((sts = __pmDecodeResult(pb, &rp)) >= 0) {
+		    results[i] = __pmOffsetResult(rp);
 		    if (results[i]->numpmid == aFreq[i]) {
-			changes |= ExtractState(results[i]);
+			changes |= ExtractState(&rp->timestamp);
 		    } else {
 			if (pmDebugOptions.appl0)
 			    pmNotifyErr(LOG_ERR, "DoFetch: \"%s\" agent given %d pmIDs, returned %d\n",
 					 ap->pmDomainLabel, aFreq[i], results[i]->numpmid);
-			pmFreeResult(results[i]);
+			__pmFreeResult(rp);
+			results[i] = NULL;
 			sts = PM_ERR_IPC;
 		    }
 		}
@@ -549,7 +566,6 @@ DoFetch(ClientInfo *cip, __pmPDU* pb)
 		if (sts == PM_ERR_PMDANOTREADY) {
 		    /* the agent is indicating it can't handle PDUs for now */
 		    int k;
-		    extern int CheckError(AgentInfo *ap, int sts);
 
 		    for (k = 0; k < dList[j].listSize; k++)
 			results[i]->vset[k]->numval = PM_ERR_AGAIN;
@@ -570,19 +586,20 @@ DoFetch(ClientInfo *cip, __pmPDU* pb)
 	MarkStateChanges(changes);
 
     endResult->numpmid = nPmids;
-    pmtimevalNow(&endResult->timestamp);
+    __pmGetTimestamp(&endResult->timestamp);
+
     /* The order of the pmIDs in the per-domain results is the same as in the
      * original request, but on a per-domain basis.  resIndex is an array of
      * indices (one per agent) of the next metric to be retrieved from each
-     * per-domain result's vset.
+     * per-domain result value set.
      */
     memset(resIndex, 0, (nAgents + 1) * sizeof(resIndex[0]));
-
     for (i = 0; i < nPmids; i++) {
 	j = mapdom[((__pmID_int *)&pmidList[i])->domain];
 	endResult->vset[i] = results[j]->vset[resIndex[j]++];
     }
-    pmcd_trace(TR_XMIT_PDU, cip->fd, PDU_RESULT, endResult->numpmid);
+
+    pmcd_trace(TR_XMIT_PDU, cip->fd, pdutype, nPmids);
 
     sts = 0;
     if (cip->status.changes) {
@@ -593,10 +610,12 @@ DoFetch(ClientInfo *cip, __pmPDU* pb)
 	cip->status.changes = 0;
     }
     if (sts == 0)
-	sts = __pmSendResult(cip->fd, FROM_ANON, endResult);
+	sts = (pdutype == PDU_HIGHRES_FETCH) ?
+		__pmSendHighResResult(cip->fd, FROM_ANON, endResult) :
+		__pmSendResult(cip->fd, FROM_ANON, endResult);
 
     if (sts < 0) {
-	pmcd_trace(TR_XMIT_ERR, cip->fd, PDU_RESULT, sts);
+	pmcd_trace(TR_XMIT_ERR, cip->fd, pdutype, sts);
 	CleanupClient(cip, sts);
     }
 
@@ -622,4 +641,16 @@ DoFetch(ClientInfo *cip, __pmPDU* pb)
 	pmFreeResult(results[nAgents]);
     __pmUnpinPDUBuf(pmidList);
     return 0;
+}
+
+int
+DoFetch(ClientInfo *cip, __pmPDU *pb)
+{
+    return HandleFetch(cip, pb, PDU_FETCH);
+}
+
+int
+DoHighResFetch(ClientInfo *cip, __pmPDU *pb)
+{
+    return HandleFetch(cip, pb, PDU_HIGHRES_FETCH);
 }

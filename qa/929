@@ -35,6 +35,10 @@ _filter()
     #
     # and do the usual config/pid filtering
     #
+    # in case /var/tmp is a symlink to /tmp, then the diagnostics sometimes
+    # use /tmp and sometimes use /var/tmp ... handle both in the filter
+    #
+    #
     sed \
 	-e '/date-and-timestamp/d' \
 	-e '/^Roll .*\/NOTICES/d' \
@@ -42,6 +46,7 @@ _filter()
 	-e '/^+ mv .*NOTICES/d' \
 	-e '/^+ touch .*NOTICES/d' \
 	-e "s,$tmp,TMP,g" \
+	-e "s,/tmp/$seq-$$,TMP,g" \
 	-e "s,/privateTMP,TMP,g" \
 	-e "s,$PCP_TMP_DIR,PCP_TMP_DIR,g" \
 	-e "s/$PAST/PAST/g" \
@@ -83,12 +88,12 @@ do
 done
 
 # real QA test starts here
-$sudo $PCP_BINADM_DIR/pmlogger_daily -x never -V -N -c $tmp.control \
+$sudo $PCP_BINADM_DIR/pmlogger_daily -D -x never -V -N -c $tmp.control \
 2>&1 | _filter
 
 echo
 echo "--- -M case ---"
-$sudo $PCP_BINADM_DIR/pmlogger_daily -x never -M -VN -c $tmp.control \
+$sudo $PCP_BINADM_DIR/pmlogger_daily -D -x never -M -VN -c $tmp.control \
 2>&1 | _filter
 
 # success, all done

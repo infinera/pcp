@@ -18,14 +18,14 @@
 
 #include "localconfig.h"
 
-static pmResult	*_store;
-static pmDesc	_desc;
-static int	_numinst;
-static int	*_instlist;
-static char	**_inamelist;
-static int	_text;
-static int	_indom_text;
-static int	ctlport;
+static __pmResult	*_store;
+static pmDesc		_desc;
+static int		_numinst;
+static int		*_instlist;
+static char		**_inamelist;
+static int		_text;
+static int		_indom_text;
+static int		ctlport;
 
 static void
 _ConnectLogger(void)
@@ -34,8 +34,19 @@ _ConnectLogger(void)
     int		pid = PM_LOG_PRIMARY_PID;
     int		port = PM_LOG_NO_PORT;
     int		sts;
+    int		i;
 
-    if ((n = __pmConnectLogger("localhost", &pid, &port)) < 0) {
+    /*
+     * be prepared to try 10 times here ... pmlogger's  pmlc port maybe busy
+     */
+    for (i = 0; i < 10; i++) {
+	struct timespec delay = { 0, 100000000 };	/* 0.1 sec */
+	n = __pmConnectLogger("localhost", &pid, &port);
+	if (n >= 0)
+	    break;
+	(void)nanosleep(&delay, NULL);
+    }
+    if (n < 0) {
 	printf("Cannot connect to primary pmlogger on \"localhost\": %s\n", pmErrStr(n));
 	exit(1);
     }
@@ -120,7 +131,8 @@ exer(int numpmid, pmID *pmidlist, int xpecterr)
     int		err = 0;
     pmDesc	desc;
     char	*buf;
-    pmResult	*resp, *lresp;
+    pmResult	*resp;
+    __pmResult	*lresp;
 
     for (i = 0; i < 4; i++) {
 	if (!xpecterr)
@@ -204,7 +216,7 @@ exer(int numpmid, pmID *pmidlist, int xpecterr)
 	    pmFreeResult(resp);
 	}
 
-	if ((n = pmStore(_store)) < 0) {
+	if ((n = pmStore(__pmOffsetResult(_store))) < 0) {
 	    fprintf(stderr, "pmStore: %s", pmErrStr(n));
 	    if (xpecterr)
 		fprintf(stderr, " -- error expected\n");
@@ -226,7 +238,7 @@ exer(int numpmid, pmID *pmidlist, int xpecterr)
 	    }
 	}
 	else {
-	    pmFreeResult(lresp);
+	    __pmFreeResult(lresp);
 	}
 
     }
@@ -327,7 +339,7 @@ Options:\n\
 	}
 	exit(1);
     }
-    if ((n = pmFetch(1, pmidlist, &_store)) < 0) {
+    if ((n = __pmFetch(NULL, 1, pmidlist, &_store)) < 0) {
 	fprintf(stderr, "initial pmFetch failed: %s\n", pmErrStr(n));
 	exit(1);
     }

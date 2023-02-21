@@ -1,6 +1,6 @@
 #! /bin/sh
 #
-# Copyright (c) 2013-2016,2018,2020 Red Hat.
+# Copyright (c) 2013-2016,2018,2020-2022 Red Hat.
 # Copyright (c) 1995-2000,2003 Silicon Graphics, Inc.  All Rights Reserved.
 #
 # This program is free software; you can redistribute it and/or modify it
@@ -24,6 +24,8 @@
 PMLOGGER="$PCP_BINADM_DIR/pmlogger"
 PMLOGCONF="$PCP_BINADM_DIR/pmlogconf"
 PMLOGGERENVS="$PCP_SYSCONFIG_DIR/pmlogger"
+PMLOGGERFARMENVS="$PCP_SYSCONFIG_DIR/pmlogger_farm"
+PMLOGGERZEROCONFENVS="$PCP_SHARE_DIR/zeroconf/pmlogger"
 
 # error messages should go to stderr, not the GUI notifiers
 #
@@ -105,15 +107,18 @@ SHOWME=false
 MV=mv
 CP=cp
 LN=ln
+RM=rm
 KILL=pmsignal
 TERSE=false
 VERBOSE=false
 VERY_VERBOSE=false
+VERY_VERY_VERBOSE=false
 CHECK_RUNLEVEL=false
 START_PMLOGGER=true
 STOP_PMLOGGER=false
 QUICKSTART=false
 SKIP_PRIMARY=false
+ONLY_PRIMARY=false
 
 echo > $tmp/usage
 cat >> $tmp/usage << EOF
@@ -123,6 +128,7 @@ Options:
   -C                      query system service runlevel information
   -N,--showme             perform a dry run, showing what would be done
   -p,--skip-primary       do not start or stop the primary pmlogger instance
+  -P,--only-primary       only start or stop the primary pmlogger, no others
   -q,--quick              quick start, no compression
   -s,--stop               stop pmlogger processes instead of starting them
   -T,--terse              produce a terser form of output
@@ -162,6 +168,8 @@ do
 		;;
 	-p)	SKIP_PRIMARY=true
 		;;
+	-P)	ONLY_PRIMARY=true
+		;;
 	-q)	QUICKSTART=true
 		;;
 	-s)	START_PMLOGGER=false
@@ -169,7 +177,10 @@ do
 		;;
 	-T)	TERSE=true
 		;;
-	-V)	if $VERBOSE
+	-V)	if $VERY_VERBOSE
+		then
+		    VERY_VERY_VERBOSE=true
+		elif $VERBOSE
 		then
 		    VERY_VERBOSE=true
 		else
@@ -251,14 +262,14 @@ then
     fi
 fi
 
-# if SaveLogs exists in the $PCP_LOG_DIR/pmlogger directory then save
-# $MYPROGLOG there as well with a unique name that contains the date and time
-# when we're run
+# if SaveLogs exists in the $PCP_LOG_DIR/pmlogger directory and is writeable
+# then save $MYPROGLOG there as well with a unique name that contains the date
+# and time when we're run ... skip if -N (showme)
 #
-if [ -d $PCP_LOG_DIR/pmlogger/SaveLogs ]
+if [ -d $PCP_LOG_DIR/pmlogger/SaveLogs -a -w $PCP_LOG_DIR/pmlogger/SaveLogs ]
 then
-    now="`date '+%Y%m%d.%H.%M.%S'`"
-    link=`echo $MYPROGLOG | sed -e "s/$prog/SaveLogs\/$prog.$now/"`
+    now="`date '+%Y%m%d.%H:%M:%S.%N'`"
+    link=`echo $MYPROGLOG | sed -e "s@.*$prog@$PCP_LOG_DIR/pmlogger/SaveLogs/$now-$prog@"`
     if [ ! -f "$link" ]
     then
 	if $SHOWME
@@ -266,6 +277,24 @@ then
 	    echo "+ ln $MYPROGLOG $link"
 	else
 	    ln $MYPROGLOG $link
+	    if [ -w $link ]
+	    then
+		echo "--- Added by $prog when SaveLogs dir found ---" >>$link
+		echo "Start: `date '+%F %T.%N'`" >>$link
+		echo "Args: $ARGS" >>$link
+		if which pstree >/dev/null 2>&1
+		then
+		    if pstree -spa $$ >$tmp/tmp 2>&1
+		    then
+			echo "Called from:" >>$link
+			cat $tmp/tmp >>$link
+		    else
+			# pstree not functional for us ... -s not supported
+			# in older versions
+			:
+		    fi
+		fi
+	    fi
 	fi
     fi
 fi
@@ -375,34 +404,45 @@ _configure_pmlogger()
             # to keep running pmlogconf here to discover there are
 	    # "No changes".
 	    #
-	    [ "$PMLOGGER_CHECK_SKIP_LOGCONF" = yes ] && skip=1
+	    if [ "$PMLOGGER_CHECK_SKIP_LOGCONF" = yes ]
+	    then
+		$VERBOSE && echo "PMLOGGER_CHECK_SKIP_LOGCONF=$PMLOGGER_CHECK_SKIP_LOGCONF: skip: \"$configfile\" reconfigure"
+		skip=1
+	    fi
 	fi
 	if [ $magic -eq 0 -a $owned -eq 0 -a $skip = 0 ]
 	then
 	    # pmlogconf file that we own, see if re-generation is needed
-	    cp "$configfile" "$tmpconfig"
-	    if $PMLOGCONF -r -c -q -h $hostname "$tmpconfig" </dev/null >$tmp/diag 2>&1
+	    eval $CP "$configfile" "$tmpconfig"
+	    if $SHOWME
 	    then
-		if grep 'No changes' $tmp/diag >/dev/null 2>&1
-		then
-		    :
-		elif [ -w "$configfile" ]
-		then
-		    $VERBOSE && echo "Reconfigured: \"$configfile\" (pmlogconf)"
-		    chown $PCP_USER:$PCP_GROUP "$tmpconfig" >/dev/null 2>&1
-		    eval $MV "$tmpconfig" "$configfile"
-		else
-		    _warning "no write access to pmlogconf file \"$configfile\", skip reconfiguration"
-		    ls -l "$configfile"
-		fi
+		echo + $PMLOGCONF -r -c -q -h $hostname "$tmpconfig"
 	    else
-		_warning "pmlogconf failed to reconfigure \"$configfile\""
-		sed -e "s;$tmpconfig;$configfile;g" $tmp/diag
-		echo "=== start pmlogconf file ==="
-		cat "$tmpconfig"
-		echo "=== end pmlogconf file ==="
+		if $PMLOGCONF -r -c -q -h $hostname "$tmpconfig" </dev/null >$tmp/diag 2>&1
+		then
+		    if grep 'No changes' $tmp/diag >/dev/null 2>&1
+		    then
+			$VERBOSE && echo "No change: \"$configfile\" (pmlogconf)"
+		    elif [ -w "$configfile" ]
+		    then
+			$VERBOSE && echo "Reconfigured: \"$configfile\" (pmlogconf)"
+			chown $PCP_USER:$PCP_GROUP "$tmpconfig" >/dev/null 2>&1
+			eval $MV "$tmpconfig" "$configfile"
+		    else
+			_warning "no write access to pmlogconf file \"$configfile\", skip reconfiguration"
+			ls -l "$configfile"
+		    fi
+		else
+		    _warning "pmlogconf failed to reconfigure \"$configfile\""
+		    sed -e "s;$tmpconfig;$configfile;g" $tmp/diag
+		    echo "=== start pmlogconf file ==="
+		    cat "$tmpconfig"
+		    echo "=== end pmlogconf file ==="
+		fi
 	    fi
 	    rm -f "$tmpconfig"
+	else
+	    $VERBOSE && echo "No reconfigure: magic=$magic auto-generated=$owned skip=$skip: \"$configfile\" (pmlogconf)"
 	fi
     elif [ ! -e "$configfile" ]
     then
@@ -418,8 +458,11 @@ _configure_pmlogger()
 	    cat "$configfile"
 	    echo "=== end pmlogconf file ==="
 	else
+	    $VERBOSE && echo "Created: \"$configfile\" (pmlogconf)"
 	    chown $PCP_USER:$PCP_GROUP "$configfile" >/dev/null 2>&1
 	fi
+    else
+	$VERBOSE && echo "Botched: \"$configfile\" (pmlogconf)"
     fi
 }
 
@@ -528,7 +571,10 @@ _check_logger()
     x=5
     [ ! -z "$PMCD_REQUEST_TIMEOUT" ] && x=$PMCD_REQUEST_TIMEOUT
 
-    [ -z "$PMLOGGER_REQUEST_TIMEOUT" ] && export PMLOGGER_REQUEST_TIMEOUT=2
+    # max delay (secs) before timing out our pmlc request ... if this
+    # pmlogger is just started, we may need to be a little patient
+    #
+    [ -z "$PMLOGGER_REQUEST_TIMEOUT" ] && export PMLOGGER_REQUEST_TIMEOUT=10
 
     # wait for maximum time of a connection and 20 requests
     #
@@ -541,12 +587,21 @@ _check_logger()
 	    # then we know pmlogger has started ... if not just sleep and
 	    # try again
 	    #
-	    if echo "connect $1" | pmlc 2>&1 | grep "Unable to connect" >/dev/null
+	    # may need to wait for pmlogger to get going ... logic here
+	    # is based on _wait_for_pmlogger() in qa/common.check
+	    #
+	    if pmlc "$1" </dev/null 2>&1 | tee $tmp/tmp \
+		    | grep "^Connected to .*pmlogger" >/dev/null
 	    then
-		:
-	    else
+		# pmlogger socket has been set up ...
 		$VERBOSE && echo " done"
 		return 0
+	    else
+		if $VERY_VERY_VERBOSE
+		then
+		    echo "delay=$delay pid=$1 pmlc not connecting yet"
+		    cat $tmp/tmp
+		fi
 	    fi
 
 	    _plist=`_get_pids_by_name pmlogger`
@@ -714,12 +769,21 @@ s/^\([A-Za-z][A-Za-z0-9_]*\)=/export \1; \1=/p
 	    continue
 	fi
 
-	# if -s/--skip-primary on the command line, do not process
+	# if -p/--skip-primary on the command line, do not process
 	# a control file line for the primary pmlogger
 	#
 	if $SKIP_PRIMARY && [ $primary = y ]
 	then
-	    $VERY_VERBOSE && echo "Skip, -s/--skip-primary on command line"
+	    $VERY_VERBOSE && echo "Skip, -p/--skip-primary on command line"
+	    continue
+	fi
+
+	# if -P/--only-primary on the command line, only process
+	# the control file line for the primary pmlogger
+	#
+	if $ONLY_PRIMARY && [ $primary != y ]
+	then
+	    $VERY_VERBOSE && echo "Skip non-primary, -P/--only-primary on command line"
 	    continue
 	fi
 
@@ -879,8 +943,10 @@ s/^\([A-Za-z][A-Za-z0-9_]*\)=/export \1; \1=/p
 		elif _get_pids_by_name pmlogger | grep "^$pid\$" >/dev/null
 		then
 		    $VERY_VERBOSE && echo "primary pmlogger process $pid identified, OK"
+		    $VERY_VERY_VERBOSE && $PCP_PS_PROG $PCP_PS_ALL_FLAGS | grep -E '[P]ID|[p]mlogger '
 		else
 		    $VERY_VERBOSE && echo "primary pmlogger process $pid not running"
+		    $VERY_VERY_VERBOSE && $PCP_PS_PROG $PCP_PS_ALL_FLAGS | grep -E '[P]ID|[p]mlogger '
 		    pid=''
 		fi
 	    else
@@ -915,9 +981,11 @@ END				{ print m }'`
 		    if _get_pids_by_name pmlogger | grep "^$pid\$" >/dev/null
 		    then
 			$VERY_VERBOSE && echo "pmlogger process $pid identified, OK"
+			$VERY_VERY_VERBOSE && $PCP_PS_PROG $PCP_PS_ALL_FLAGS | grep -E '[P]ID|[p]mlogger '
 			break
 		    fi
 		    $VERY_VERBOSE && echo "pmlogger process $pid not running, skip"
+		    $VERY_VERY_VERBOSE && $PCP_PS_PROG $PCP_PS_ALL_FLAGS | grep -E '[P]ID|[p]mlogger '
 		    pid=''
 		else
 		    $VERY_VERBOSE && echo "different directory, skip"
@@ -929,7 +997,8 @@ END				{ print m }'`
 	then
 	    if [ "X$primary" = Xy ]
 	    then
-		envs=`grep ^PMLOGGER "$PMLOGGERENVS" 2>/dev/null`
+		# User configuration takes precedence over pcp-zeroconf
+		envs=`grep -h ^PMLOGGER "$PMLOGGERZEROCONFENVS" "$PMLOGGERENVS" 2>/dev/null`
 		args="-P $args"
 		iam=" primary"
 		# clean up port-map, just in case
@@ -948,8 +1017,8 @@ END				{ print m }'`
 		    continue
 		fi
 	    else
+		envs=`grep -h ^PMLOGGER "$PMLOGGERFARMENVS" 2>/dev/null`
 		args="-h $host $args"
-		envs=""
 		iam=""
 	    fi
 
@@ -1011,7 +1080,6 @@ END				{ print m }'`
 	    fi
 
 	    # Notify service manager (if any) for the primary logger ONLY.
-	    # TODO if no primary, notify for the first logger.
 	    [ "$primary" = y ] && args="-N $args"
 
 	    args="$args -m pmlogger_check"

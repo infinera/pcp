@@ -34,6 +34,8 @@ DEFLATE = small.0.xz small.meta small.index \
 	  20180606.0.xz 20180606.meta.xz 20180606.index \
 	  pcp-atop.0.xz pcp-atop.meta pcp-atop.index \
 	  pcp-atop-boot.0.xz pcp-atop-boot.meta pcp-atop-boot.index \
+	  pcp-atop-nvidia.0.xz pcp-atop-nvidia.meta.xz pcp-atop-nvidia.index \
+	  pcp-atop-threads.0.xz pcp-atop-threads.meta.xz pcp-atop-threads.index \
 	  pcp-dstat.0.xz pcp-dstat.meta pcp-dstat.index \
 	  pcp-free-tera.0.xz pcp-free-tera.meta.xz pcp-free-tera.index \
 	  pcp-hotatop.0.xz pcp-hotatop.meta pcp-hotatop.index \
@@ -53,16 +55,19 @@ DEFLATE = small.0.xz small.meta small.index \
 	  20180416.10.00.1.xz 20180416.10.00.2.xz 20180416.10.00.3.xz \
 	  20190628.04.03.0.xz 20190628.04.03.1.xz 20190628.04.03.meta.xz \
 	  20190628.04.03.index 20201109.0.xz 20201109.index 20201109.meta.xz \
-	  20190628.06.31.0.xz 20190628.06.31.meta.xz 20190628.06.31.index
+	  20190628.06.31.0.xz 20190628.06.31.meta.xz 20190628.06.31.index \
+	  pcp-ss.0.xz pcp-ss.meta.xz pcp-ss.index \
+	  pcp-ps.0.xz pcp-ps.meta.xz pcp-ps.index
 
 SCRIPTS = mk.diff mk.gap mk.mysql mk.schizo mk.foo+ \
 	  mk.dynmetric mk.instant mk.dyninsts \
-	  mk.mirage mk.mirage-3 mk.proc mk.free \
+	  mk.mirage mk.mirage-3 mk.proc mk.free mk.ps\
 	  mk.numa mk.rewrite mk.eventrec mk.interpmark mk.multihost \
-	  mk.sample_expr mk.tzchange mk.arch-all mk.atop mk.hotatop \
+	  mk.sample_expr mk.tzchange mk.arch-all \
+	  mk.atop mk.hotatop mk.atop-boot mk.atop-nvidia mk.atop-threads \
 	  mk.log-derived mk.vmstat mk.rep mk.procsched \
 	  mk.ipcs mk.value-test mk.rank-pred mk.cputime \
-	  mk.sample-labels
+	  mk.sample-labels mk.pmproxy mk.mmv.help
 
 CONFIGS = config.verify config.shping YWhcCi.toium.config \
 	  kenj-pc-2.config reduce.config uwrap.config wrap.config \
@@ -145,4 +150,24 @@ pcp-mpstat2.0:
 		> tmp/config
 	pmlogextract -c tmp/config pcp-mpstat pcp-mpstat2
 	rm -rf tmp
+
+# variant of the mpstat2 archive with log-once summary metrics
+# 
+pcp-mpstat3.0: pcp-mpstat2.0
+	rm -rf tmp
+	mkdir tmp
+	pminfo -a pcp-mpstat2 \
+		| sed \
+			-e '/^kernel.uname./d' \
+			-e '/^hinv.ncpu/d' \
+		> tmp/config-body
+	pminfo -a pcp-mpstat2 \
+		| grep -E '^kernel.uname.|^hinv.ncpu' \
+		> tmp/config-head
+	pmlogextract -c tmp/config-head -s 1 pcp-mpstat2 pcp-mpstat3-head
+	pmlogextract -c tmp/config-body pcp-mpstat2 pcp-mpstat3-body
+	pmlogextract pcp-mpstat3-head pcp-mpstat3-body pcp-mpstat3
+	mv pcp-mpstat3.0 tmp
+	../src/stripmark tmp/pcp-mpstat3.0 pcp-mpstat3.0
+	rm -rf tmp pcp-mpstat3-head.* pcp-mpstat3-body.*
 

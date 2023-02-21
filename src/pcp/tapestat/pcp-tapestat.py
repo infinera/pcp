@@ -1,9 +1,10 @@
 #!/usr/bin/env pmpython
+#
 # Copyright (C) 2014-2016,2020 Red Hat.
 #
 # This program is free software; you can redistribute it and/or modify it
 # under the terms of the GNU General Public License as published by the
-# tapestat Software Foundation; either version 2 of the License, or (at your
+# Free Software Foundation; either version 2 of the License, or (at your
 # option) any later version.
 #
 # This program is distributed in the hope that it will be useful, but
@@ -56,11 +57,9 @@ def aggregate(method, aggr_value, value):
     elif method == 'avg':
         aggr_value += value
     elif method == 'min':
-        if aggr_value > value:
-            aggr_value = value
+        aggr_value = min(aggr_value, value)
     elif method == 'max':
-        if aggr_value < value:
-            aggr_value = value
+        aggr_value = max(aggr_value, value)
     else:
         raise pmapi.pmUsageErr
     return aggr_value
@@ -132,7 +131,6 @@ class TapestatReport(pmcc.MetricGroupPrinter):
 
         if precision == 1:
             utilspace=precision+5
-            avgrqszspace=precision+7
             awaitspace=precision+6
             rrqmspace=precision+5
             wrqmspace=precision+5
@@ -140,30 +138,20 @@ class TapestatReport(pmcc.MetricGroupPrinter):
             headfmtquspace=precision+7
         elif precision == 0:
             utilspace=precision+5
-            avgrqszspace=precision+8
             awaitspace=precision+7
             rrqmspace=precision+6
             wrqmspace=precision+6
-            headfmtavgspace=avgrqszspace
+            headfmtavgspace=precision+8
             headfmtquspace=precision+8
         else:
             utilspace=precision+5
-            avgrqszspace=precision+6
             awaitspace=precision+5
             rrqmspace=precision+5
             wrqmspace=precision+5
-            headfmtavgspace=avgrqszspace
+            headfmtavgspace=precision+6
             headfmtquspace=precision+6
 
-        if "t" in TapestatOptions.xflag:
-            headfmt = "%-24s %-12s  %*s %*s %*s %*s %*s %*s %*s %*s %*s"
-            valfmt = "%-24s %-12s %*.*f %*.*f %*d %*d %*.*f %*.*f %*.*f %*.*f %*.*f"
-        else:
-            headfmt = "%-12s %*s %*s %*s %*s %*s %*s %*s %*s %*s"
-            valfmt = "%-12s %*.*f %*.*f %*d %*d %*.*f %*.*f %*.*f %*.*f %*.*f"
-
         tmpspace = precision+5
-
         if precision == 0 :
             tmpspace = tmpspace  +1
 
@@ -171,32 +159,40 @@ class TapestatReport(pmcc.MetricGroupPrinter):
             self.Hcount += 1
             if self.Hcount == 24:
                 self.Hcount = 1
+
+        if "t" in TapestatOptions.xflag:
+            valfmt = "%-24s %-12s %*.*f %*.*f %*d %*d %*.*f %*.*f %*.*f %*.*f %*.*f"
+            headfmt = "%-24s %-12s  %*s %*s %*s %*s %*s %*s %*s %*s %*s"
             if self.Hcount == 1:
-                if "t" in TapestatOptions.xflag:
-                    heading = ('# Timestamp', 'Device', tmpspace - 1,
-                               'r/s', tmpspace, 'w/s', tmpspace,
-                               'kb_r/s', tmpspace, 'kb_w/s', tmpspace,
-                               'r_pct', tmpspace, 'w_pct', tmpspace,
-                               'o_pct', tmpspace, 'Rs/s', tmpspace, 'o_cnt')
-                else:
-                    heading = ('# Device', tmpspace, 'r/s', tmpspace,
-                               'w/s', tmpspace, 'kb_r/s', tmpspace,
-                               'kb_w/s', tmpspace, 'r_pct', tmpspace,
-                               'w_pct', tmpspace, 'o_pct', tmpspace,
-                               'Rs/s', tmpspace, 'o_cnt')
-                print(headfmt % heading)
+                print(headfmt % ('# Timestamp', 'Device',
+                       tmpspace - 1, 'r/s', tmpspace, 'w/s',
+                       tmpspace, 'kb_r/s', tmpspace, 'kb_w/s',
+                       tmpspace, 'r_pct', tmpspace, 'w_pct',
+                       tmpspace, 'o_pct', tmpspace, 'Rs/s',
+                       tmpspace, 'o_cnt'))
+        else:
+            valfmt = "%-12s %*.*f %*.*f %*d %*d %*.*f %*.*f %*.*f %*.*f %*.*f"
+            headfmt = "%-12s %*s %*s %*s %*s %*s %*s %*s %*s %*s"
+            if self.Hcount == 1:
+                print(headfmt % ('# Device',
+                   tmpspace, 'r/s', tmpspace, 'w/s',
+                   tmpspace, 'kb_r/s', tmpspace, 'kb_w/s',
+                   tmpspace, 'r_pct', tmpspace, 'w_pct',
+                   tmpspace, 'o_pct', tmpspace, 'Rs/s',
+                   tmpspace, 'o_cnt'))
 
         if p_r == {} or p_w == {} or p_rkb == {} or p_wkb == {} or \
             p_rpw == {} or p_wpw == {} or p_opw == {} or \
             p_resid == {} or p_other == {}:
             # no values for some metric (e.g. near start of archive)
             if "t" in TapestatOptions.xflag:
-                print(headfmt % (timestamp, 'NODATA', rrqmspace - 1,
-                                 '?', wrqmspace, '?', precision + 5,
-                                 '?', precision + 5, '?', precision + 5,
-                                 '?', precision + 5, '?', headfmtavgspace - 1,
-                                 '?', headfmtquspace - 1, '?', precision + 5,
-                                 '?'))
+                headfmt = "%-24s %-12s  %*s %*s %*s %*s %*s %*s %*s %*s %*s"
+                print(headfmt % (timestamp, 'NODATA',
+                    rrqmspace - 1, '?', wrqmspace, '?',
+                    precision + 5, '?', precision + 5, '?',
+                    precision + 5, '?', precision + 5, '?',
+                    headfmtavgspace - 1, '?', headfmtquspace - 1, '?',
+                    precision + 5, '?'))
             return
 
         try:

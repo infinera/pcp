@@ -1,6 +1,6 @@
 '\"macro stdmacro
 .\"
-.\" Copyright (C) 2015-2019 Marko Myllynen <myllynen@redhat.com>
+.\" Copyright (C) 2015-2021 Marko Myllynen <myllynen@redhat.com>
 .\" Copyright (C) 2016-2018 Red Hat.
 .\"
 .\" This program is free software; you can redistribute it and/or modify it
@@ -61,17 +61,19 @@ arguments or a configuration file.
 .B pcp2influxdb
 is a close relative of
 .BR pmrep (1).
-Please refer to
+Refer to
 .BR pmrep (1)
 for the
 .I metricspec
 description accepted on
 .B pcp2influxdb
-command line and
+command line.
+See
 .BR pmrep.conf (5)
 for description of the
 .B pcp2influxdb.conf
-configuration file overall syntax, this page describes
+configuration file syntax.
+This page describes
 .B pcp2influxdb
 specific options and configuration file differences with
 .BR pmrep.conf (5).
@@ -81,7 +83,7 @@ also lists some usage examples of which most are applicable with
 as well.
 .PP
 Only the command line options listed on this page are supported,
-other options recognized by
+other options available for
 .BR pmrep (1)
 are not supported.
 .PP
@@ -94,7 +96,7 @@ Command line options override the corresponding configuration
 file options (if any).
 .SH CONFIGURATION FILE
 .B pcp2influxdb
-uses a configuration file with overall syntax described in
+uses a configuration file with syntax described in
 .BR pmrep.conf (5).
 The following options are common with
 .BR pmrep.conf :
@@ -126,42 +128,43 @@ The following options are common with
 .BR space_scale_force ,
 .BR time_scale ,
 .BR time_scale_force .
-The
-.B output
-option is recognized but ignored for
+The rest of the
 .B pmrep.conf
-compatibility.
+options are recognized but ignored for compatibility.
 .SS pcp2influxdb specific options
 influx_server (string)
 .RS 4
-Specify the URL of InfluxDB server to send the metrics to.
+Specify the destination InfluxDB server.
 Corresponding command line option is \fB\-g\fP.
-Default is \fBhttp://127.0.0.1:8086\fP.
+Defaults to \fBhttp://127.0.0.1:8086\fP.
 .RE
 .PP
 influx_db (string)
 .RS 4
 Specify the metrics database.
 Corresponding command line option is \fB\-x\fP.
-Default is \fBpcp\fP.
+Defaults to \fBpcp\fP.
 .RE
 .PP
 influx_user (string)
 .RS 4
 Specify the username for the database.
 Corresponding command line option is \fB\-U\fP.
+Undefined by default (no authentication attempted).
 .RE
 .PP
 influx_pass (string)
 .RS 4
 Specify the password for the database.
 Corresponding command line option is \fB\-E\fP.
+Undefined by default (no authentication attempted).
 .RE
 .PP
 influx_tags (string)
 .RS 4
 Specify string of tags to add to the metrics.
 Corresponding command line option is \fB\-X\fP.
+Undefined by default.
 .RE
 .SH OPTIONS
 The available command line options are:
@@ -182,7 +185,7 @@ Valid values for
 .I action
 are \fBupdate\fP (refresh metrics being sampled),
 \fBignore\fP (do nothing \- the default behaviour)
-and \fBabort\fP (exit the program if such an event happens).
+and \fBabort\fP (exit the program if such an event occurs).
 .TP
 \fB\-5\fR, \fB\-\-ignore\-unknown\fR
 Silently ignore any metric name that cannot be resolved.
@@ -252,7 +255,9 @@ but this option \fIwill\fP override per-metric specifications.
 \fB\-c\fR \fIconfig\fR, \fB\-\-config\fR=\fIconfig\fR
 Specify the
 .I config
-file to use.
+file or directory to use.
+In case \fIconfig\fP is a directory all files in it ending
+\fB.conf\fR will be included.
 The default is the first found of:
 .IR ./pcp2influxdb.conf ,
 .IR \f(CW$HOME\fP/.pcp2influxdb.conf ,
@@ -282,21 +287,24 @@ performance metrics.
 If
 .I derived
 starts with a slash (``/'') or with a dot (``.'') it will be
-interpreted as a derived metrics configuration file, otherwise it will
+interpreted as a PCP derived metrics configuration file, otherwise it will
 be interpreted as comma- or semicolon-separated derived metric expressions.
-For details see
+For complete description of derived metrics and PCP derived metrics
+configuration files see
 .BR pmLoadDerivedConfig (3)
 and
 .BR pmRegisterDerived (3).
+Alternatively, using
+.BR pmrep.conf (5)
+configuration syntax allows defining derived metrics as part of metricsets.
 .TP
 \fB\-E\fR \fIpassword\fR, \fB\-\-db\-pass\fR=\fIpassword\fR
 Specify the database
 .IR password .
 .TP
 \fB\-g\fR \fIserver\fR, \fB\-\-db\-server\fR=\fIserver\fR
-InfluxDB
-.I server
-to send the metrics to.
+Destination InfluxDB
+.IR server .
 .TP
 \fB\-G\fR, \fB\-\-no\-globals\fR
 Do not include global metrics in reporting (see
@@ -313,21 +321,15 @@ rather than from the default localhost.
 Do not print any headers.
 .TP
 \fB\-i\fR \fIinstances\fR, \fB\-\-instances\fR=\fIinstances\fR
-Report only the listed
-.I instances
-from current instances (if present, see also
-.BR \-j ).
+Retrieve and report only the specified metric
+.IR instances .
 By default all instances, present and future, are reported.
-This is a global option that is used for all metrics unless a
-metric-specific instance definition is provided as part of a
-.IR metricspec .
-By default single-valued ``flat'' metrics without multiple
-instances are still reported as usual, use
-.B \-v
-to change this.
-Please refer to
+.RS
+.PP
+Refer to
 .BR pmrep (1)
-for more details on this option.
+for complete description of this option.
+.RE
 .TP
 \fB\-I\fR, \fB\-\-ignore\-incompat\fR
 Ignore incompatible metrics.
@@ -343,9 +345,9 @@ non-leaf nodes of the PMNS tree for reporting.
 .TP
 \fB\-j\fR, \fB\-\-live\-filter\fR
 Perform instance live filtering.
-This allows capturing all filtered instances even if processes
+This allows capturing all named instances even if processes
 are restarted at some point (unlike without live filtering).
-Performing live filtering over a huge amount of instances will add
+Performing live filtering over a huge number of instances will add
 some internal overhead so a bit of user caution is advised.
 See also
 .BR \-n .
@@ -419,7 +421,7 @@ metrics to be reported, only the processes using most/least (as per
 .BR \-J )
 memory will be included when reporting total bytes written by processes.
 Since \fBmem.util.used\fP is a single-valued metric (thus not sharing the
-same instance domain as the process-related metrics),
+same instance domain as the process related metrics),
 it will be reported as usual.
 .RE
 .TP
@@ -548,8 +550,9 @@ Specify the database
 .IR username .
 .TP
 \fB\-v\fR, \fB\-\-omit\-flat\fR
-Omit single-valued ``flat'' metrics from reporting, only consider
-set-valued metrics (i.e., metrics with multiple values) for reporting.
+Report only set-valued metrics with instances (e.g. disk.dev.read) and
+omit single-valued ``flat'' metrics without instances (e.g.
+kernel.all.sysfork).
 See
 .B \-i
 and
@@ -595,6 +598,9 @@ Display usage message and exit.
 .TP 5
 .I pcp2influxdb.conf
 \fBpcp2influxdb\fP configuration file (see \fB\-c\fP)
+.TP
+.I \f(CW$PCP_SYSCONF_DIR\fP/pmrep/*.conf
+system provided default \fBpmrep\fP configuration files
 .SH PCP ENVIRONMENT
 Environment variables with the prefix \fBPCP_\fP are used to parameterize
 the file and directory names used by PCP.
@@ -605,8 +611,8 @@ configuration file, as described in \fBpcp.conf\fP(5).
 .PP
 For environment variables affecting PCP tools, see \fBpmGetOptions\fP(3).
 .SH SEE ALSO
-.BR mkaf (1),
 .BR PCPIntro (1),
+.BR mkaf (1),
 .BR pcp (1),
 .BR pcp2elasticsearch (1),
 .BR pcp2graphite (1),
@@ -619,12 +625,12 @@ For environment variables affecting PCP tools, see \fBpmGetOptions\fP(3).
 .BR pminfo (1),
 .BR pmrep (1),
 .BR pmGetOptions (3),
-.BR pmSpecLocalPMDA (3),
 .BR pmLoadDerivedConfig (3),
 .BR pmParseUnitsStr (3),
 .BR pmRegisterDerived (3),
+.BR pmSpecLocalPMDA (3),
 .BR LOGARCHIVE (5),
 .BR pcp.conf (5),
-.BR PMNS (5)
+.BR pmrep.conf (5)
 and
-.BR pmrep.conf (5).
+.BR PMNS (5).

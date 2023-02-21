@@ -195,6 +195,18 @@ _pm_isxvmvol(char *dname)
 }
 
 /*
+ * return true if arg is a wwid name
+ */
+static int
+_pm_iswwid(char *wwid)
+{
+    if (wwid && strlen(wwid) == 18 &&
+       (*wwid == '1' || *wwid == '2' || *wwid == '3'))
+	return 1;
+    return 0;
+}
+
+/*
  * return true if arg is a disk name
  */
 static int
@@ -203,7 +215,8 @@ _pm_isdisk(char *dname)
     return (!_pm_isloop(dname) && !_pm_isramdisk(dname) &&
 	    !_pm_iscdrom(dname) && !_pm_iszram(dname) &&
 	    !_pm_ispartition(dname) && !_pm_isxvmvol(dname) &&
-	    !_pm_isdm(dname) && !_pm_ismd(dname));
+	    !_pm_isdm(dname) && !_pm_ismd(dname) &&
+	    !_pm_iswwid(dname));
 }
 
 static int
@@ -446,13 +459,62 @@ persistent_md_name(char *namebuf, int namelen)
     return found;
 }
 
+/* return static string for scsi sd name device WWID, or "unknown" */
+static char *
+_pm_scsi_id(const char *device)
+{
+    int fd;
+    int n;
+    char *id = NULL;
+    char *prefix = linux_statspath ? linux_statspath : "";
+    static char buf[1024];
+    char path[MAXNAMELEN];
+
+    /*
+     * Extract wwid from /sys/block/<device>/device/wwid
+     */
+    n = pmsprintf(path, sizeof(path), "%s/sys/block/%s/device/wwid", prefix, device);
+    if (n <= 0 || access(path, F_OK) != 0) /* try alternate path */
+	n = pmsprintf(path, sizeof(path), "%s/sys/block/%s/wwid", prefix, device);
+    if (n > 0 && (fd = open(path, O_RDONLY)) >= 0) {
+	n = read(fd, buf, sizeof(buf));
+	close(fd);
+	if (n > 0) {
+	    buf[n-1] = '\0';
+	    if ((id = strrchr(buf, '\n')) != NULL)
+	    	*id = '\0';
+	    /*
+	     * Map known wwid prefixes back to canonical numeric form.
+	     * See kernel function scsi_vpd_lun_id() in scsi_lib.c
+	     */
+	    if (strncmp(buf, "t10.", 4) == 0) {
+	    	buf[3] = '1';
+		id = buf + 3;
+	    }
+	    else if (strncmp(buf, "eui.", 4) == 0) {
+	    	buf[3] = '2';
+		id = buf + 3;
+	    }
+	    else if (strncmp(buf, "naa.", 4) == 0) {
+	    	buf[3] = '3';
+		id = buf + 3;
+	    }
+	    else
+		id = buf; /* default */
+	}
+    }
+
+    return id ? id : "unknown";
+}
+
 static partitions_entry_t *
 refresh_disk_indom(char *namebuf, size_t namelen, int devmaj, int devmin,
 		pmInDom disk_indom, pmInDom part_indom, pmInDom zram_indom,
-		pmInDom dm_indom, pmInDom md_indom, int *indom_changes)
+		pmInDom dm_indom, pmInDom md_indom, pmInDom wwid_indom,
+		int *indom_changes)
 {
     int			indom, inst;
-    char		*dmname = NULL, *mdname = NULL;
+    char		*dmname = NULL, *mdname = NULL, *wwid = NULL;
     partitions_entry_t	*p = NULL;
 
     if (_pm_isdm(namebuf)) {
@@ -469,6 +531,8 @@ refresh_disk_indom(char *namebuf, size_t namelen, int devmaj, int devmin,
 	indom = disk_indom;
     else if (_pm_iszram(namebuf))
 	indom = zram_indom;
+    else if (_pm_iswwid(namebuf))
+    	indom = wwid_indom;
     else
 	return NULL;
 
@@ -516,14 +580,28 @@ refresh_disk_indom(char *namebuf, size_t namelen, int devmaj, int devmin,
 	/* long xscsi name */
 	pmdaCacheStore(indom, PMDA_CACHE_ADD, p->udevnamebuf, p);
     else
-	/* short /proc/diskstats or /proc/partitions name */
+	/* short /proc/diskstats or /proc/partitions */
 	pmdaCacheStore(indom, PMDA_CACHE_ADD, namebuf, p);
+
+    /* if scsi device has a wwid, add it to the wwid indom */
+    if (indom == disk_indom) {
+    	wwid = _pm_scsi_id(p->namebuf);
+	if (wwid && strncmp(wwid, "unknown", 7) != 0) {
+	    // fprintf(stderr, "DEBUG found wwid=%s for sd device %s\n", wwid, p->namebuf);
+	    if (p->wwidname)
+	    	free(p->wwidname);
+	    p->wwidname = strdup(wwid);
+	    pmdaCacheStore(wwid_indom, PMDA_CACHE_ADD, p->wwidname, NULL);
+	    pmdaCacheOp(wwid_indom, PMDA_CACHE_SAVE);
+	}
+    }
     return p;
 }
 
 static int
 refresh_diskstats(FILE *fp, pmInDom disk_indom, pmInDom part_indom,
-		pmInDom zram_indom, pmInDom dm_indom, pmInDom md_indom)
+		pmInDom zram_indom, pmInDom dm_indom, pmInDom md_indom,
+		pmInDom wwid_indom)
 {
     int			indom_changes = 0;
     int			devmin, devmaj, n;
@@ -541,7 +619,7 @@ refresh_diskstats(FILE *fp, pmInDom disk_indom, pmInDom part_indom,
 
 	if (!(p = refresh_disk_indom(name, sizeof(name), devmaj, devmin,
 			disk_indom, part_indom, zram_indom, dm_indom, md_indom,
-			&indom_changes)))
+			wwid_indom, &indom_changes)))
 	    continue;
 
 	/* 2.6 style /proc/diskstats */
@@ -585,7 +663,8 @@ refresh_diskstats(FILE *fp, pmInDom disk_indom, pmInDom part_indom,
 
 static int
 refresh_partitions(FILE *fp, pmInDom disk_indom, pmInDom part_indom,
-		pmInDom zram_indom, pmInDom dm_indom, pmInDom md_indom)
+		pmInDom zram_indom, pmInDom dm_indom, pmInDom md_indom,
+		pmInDom wwid_indom)
 {
     int			indom_changes = 0;
     int			devmin, devmaj, n;
@@ -605,7 +684,7 @@ refresh_partitions(FILE *fp, pmInDom disk_indom, pmInDom part_indom,
 
 	if (!(p = refresh_disk_indom(name, sizeof(name), devmaj, devmin,
 			disk_indom, part_indom, zram_indom, dm_indom, md_indom,
-			&indom_changes)))
+			wwid_indom, &indom_changes)))
 	    continue;
 
 	/* 2.4 format /proc/partitions (distro patched) */
@@ -624,7 +703,7 @@ refresh_partitions(FILE *fp, pmInDom disk_indom, pmInDom part_indom,
 int
 refresh_proc_partitions(pmInDom disk_indom, pmInDom part_indom,
 			pmInDom zram_indom, pmInDom dm_indom, pmInDom md_indom,
-			int need_diskstats, int need_partitions)
+			pmInDom wwid_indom, int need_diskstats, int need_partitions)
 {
     FILE	*fp;
     int		indom_changes = 0;
@@ -638,6 +717,7 @@ refresh_proc_partitions(pmInDom disk_indom, pmInDom part_indom,
 	pmdaCacheOp(zram_indom, PMDA_CACHE_LOAD);
 	pmdaCacheOp(dm_indom, PMDA_CACHE_LOAD);
 	pmdaCacheOp(md_indom, PMDA_CACHE_LOAD);
+	pmdaCacheOp(wwid_indom, PMDA_CACHE_LOAD);
 	indom_changes = 1;
 	first = 0;
     }
@@ -647,12 +727,13 @@ refresh_proc_partitions(pmInDom disk_indom, pmInDom part_indom,
     pmdaCacheOp(zram_indom, PMDA_CACHE_INACTIVE);
     pmdaCacheOp(dm_indom, PMDA_CACHE_INACTIVE);
     pmdaCacheOp(md_indom, PMDA_CACHE_INACTIVE);
+    pmdaCacheOp(wwid_indom, PMDA_CACHE_INACTIVE);
 
     /* 2.6 style disk stats */
     if (need_diskstats) {
 	if ((fp = linux_statsfile("/proc/diskstats", buf, sizeof(buf)))) {
 	    indom_changes += refresh_diskstats(fp, disk_indom, part_indom,
-						zram_indom, dm_indom, md_indom);
+						zram_indom, dm_indom, md_indom, wwid_indom);
 	    fclose(fp);
 	} else {
 	    need_partitions = 1;
@@ -663,7 +744,7 @@ refresh_proc_partitions(pmInDom disk_indom, pmInDom part_indom,
     if (need_partitions) {
 	if ((fp = linux_statsfile("/proc/partitions", buf, sizeof(buf)))) {
 	    indom_changes += refresh_partitions(fp, disk_indom, part_indom,
-						zram_indom, dm_indom, md_indom);
+						zram_indom, dm_indom, md_indom, wwid_indom);
 	    fclose(fp);
 	}
     }
@@ -683,6 +764,7 @@ refresh_proc_partitions(pmInDom disk_indom, pmInDom part_indom,
 	pmdaCacheOp(zram_indom, PMDA_CACHE_SAVE);
 	pmdaCacheOp(dm_indom, PMDA_CACHE_SAVE);
 	pmdaCacheOp(md_indom, PMDA_CACHE_SAVE);
+	pmdaCacheOp(wwid_indom, PMDA_CACHE_SAVE);
     }
 
     return 0;
@@ -718,8 +800,8 @@ static pmID disk_metric_table[] = {
     /* disk.dev.discard_merge */     PMDA_PMID(CLUSTER_STAT,91),
     /* disk.dev.discard_rawactive */ PMDA_PMID(CLUSTER_STAT,92),
     /* disk.dev.flush */	     PMDA_PMID(CLUSTER_STAT,93),
-    /* disk.dev.blkflush */	     PMDA_PMID(CLUSTER_STAT,94),
-    /* disk.dev.flush_rawactive */   PMDA_PMID(CLUSTER_STAT,95),
+    /* disk.dev.flush_rawactive */   PMDA_PMID(CLUSTER_STAT,94),
+    /* disk.dev.inflight */	     PMDA_PMID(CLUSTER_STAT,95),
 
     /* disk.all.read */		     PMDA_PMID(CLUSTER_STAT,24),
     /* disk.all.write */	     PMDA_PMID(CLUSTER_STAT,25),
@@ -743,8 +825,9 @@ static pmID disk_metric_table[] = {
     /* disk.all.discard_merge */     PMDA_PMID(CLUSTER_STAT,99),
     /* disk.all.discard_rawactive */ PMDA_PMID(CLUSTER_STAT,100),
     /* disk.all.flush */	     PMDA_PMID(CLUSTER_STAT,101),
-    /* disk.all.blkflush */	     PMDA_PMID(CLUSTER_STAT,102),
-    /* disk.all.flush_rawactive */   PMDA_PMID(CLUSTER_STAT,103),
+    /* disk.all.flush_rawactive */   PMDA_PMID(CLUSTER_STAT,102),
+    /* hinv.map.scsi_id */	     PMDA_PMID(CLUSTER_STAT,103),
+    /* disk.all.inflight */	     PMDA_PMID(CLUSTER_STAT,104),
 
     /* disk.partitions.read */	     PMDA_PMID(CLUSTER_PARTITIONS,0),
     /* disk.partitions.write */	     PMDA_PMID(CLUSTER_PARTITIONS,1),
@@ -769,8 +852,8 @@ static pmID disk_metric_table[] = {
     /* disk.partitions.discard_merge */   PMDA_PMID(CLUSTER_PARTITIONS,20),
     /* disk.partitions.discard_rawactive */ PMDA_PMID(CLUSTER_PARTITIONS,21),
     /* disk.partitions.flush */      PMDA_PMID(CLUSTER_PARTITIONS,22),
-    /* disk.partitions.blkflush */   PMDA_PMID(CLUSTER_PARTITIONS,23),
-    /* disk.partitions.flush_rawactive */ PMDA_PMID(CLUSTER_PARTITIONS,24),
+    /* disk.partitions.flush_rawactive */ PMDA_PMID(CLUSTER_PARTITIONS,23),
+    /* disk.partitions.inflight */   PMDA_PMID(CLUSTER_PARTITIONS,24),
 
     /* disk.dm.read */               PMDA_PMID(CLUSTER_DM,0),
     /* disk.dm.write */		     PMDA_PMID(CLUSTER_DM,1),
@@ -796,8 +879,8 @@ static pmID disk_metric_table[] = {
     /* disk.dm.discard_merge */      PMDA_PMID(CLUSTER_DM,21),
     /* disk.dm.discard_rawactive */  PMDA_PMID(CLUSTER_DM,22),
     /* disk.dm.flush */	             PMDA_PMID(CLUSTER_DM,23),
-    /* disk.dm.blkflush */	     PMDA_PMID(CLUSTER_DM,24),
-    /* disk.dm.flush_rawactive */    PMDA_PMID(CLUSTER_DM,25),
+    /* disk.dm.flush_rawactive */    PMDA_PMID(CLUSTER_DM,24),
+    /* disk.dm.inflight */           PMDA_PMID(CLUSTER_DM,25),
 
     /* disk.md.read */               PMDA_PMID(CLUSTER_MD,0),
     /* disk.md.write */		     PMDA_PMID(CLUSTER_MD,1),
@@ -823,8 +906,8 @@ static pmID disk_metric_table[] = {
     /* disk.md.discard_merge */      PMDA_PMID(CLUSTER_MD,21),
     /* disk.md.discard_rawactive */  PMDA_PMID(CLUSTER_MD,22),
     /* disk.md.flush */	             PMDA_PMID(CLUSTER_MD,23),
-    /* disk.md.blkflush */	     PMDA_PMID(CLUSTER_MD,24),
-    /* disk.md.flush_rawactive */    PMDA_PMID(CLUSTER_MD,25),
+    /* disk.md.flush_rawactive */    PMDA_PMID(CLUSTER_MD,24),
+    /* disk.md.inflight */	     PMDA_PMID(CLUSTER_MD,25),
 
     /* zram.read */	             PMDA_PMID(CLUSTER_ZRAM_DEVICES,0),
     /* zram.write */     	     PMDA_PMID(CLUSTER_ZRAM_DEVICES,1),
@@ -849,8 +932,36 @@ static pmID disk_metric_table[] = {
     /* zram.discard_merge */         PMDA_PMID(CLUSTER_ZRAM_DEVICES,20),
     /* zram.discard_rawactive */     PMDA_PMID(CLUSTER_ZRAM_DEVICES,21),
     /* zram.flush */                 PMDA_PMID(CLUSTER_ZRAM_DEVICES,22),
-    /* zram.blkflush */              PMDA_PMID(CLUSTER_ZRAM_DEVICES,23),
-    /* zram.flush_rawactive */       PMDA_PMID(CLUSTER_ZRAM_DEVICES,24),
+    /* zram.flush_rawactive */       PMDA_PMID(CLUSTER_ZRAM_DEVICES,23),
+    /* zram.inflight */              PMDA_PMID(CLUSTER_ZRAM_DEVICES,24),
+
+    /* PMIDs for disk.wwid */
+    /* disk.wwid.read */	     PMDA_PMID(CLUSTER_WWID,4),
+    /* disk.wwid.write */	     PMDA_PMID(CLUSTER_WWID,5),
+    /* disk.wwid.total */	     PMDA_PMID(CLUSTER_WWID,28),
+    /* disk.wwid.blkread */	     PMDA_PMID(CLUSTER_WWID,6),
+    /* disk.wwid.blkwrite */	     PMDA_PMID(CLUSTER_WWID,7),
+    /* disk.wwid.blktotal */	     PMDA_PMID(CLUSTER_WWID,36),
+    /* disk.wwid.read_bytes */	     PMDA_PMID(CLUSTER_WWID,38),
+    /* disk.wwid.write_bytes */	     PMDA_PMID(CLUSTER_WWID,39),
+    /* disk.wwid.total_bytes */	     PMDA_PMID(CLUSTER_WWID,40),
+    /* disk.wwid.read_merge */	     PMDA_PMID(CLUSTER_WWID,49),
+    /* disk.wwid.write_merge */	     PMDA_PMID(CLUSTER_WWID,50),
+    /* disk.wwid.avactive */	     PMDA_PMID(CLUSTER_WWID,46),
+    /* disk.wwid.aveq */	     PMDA_PMID(CLUSTER_WWID,47),
+    /* disk.wwid.scheduler */	     PMDA_PMID(CLUSTER_WWID,59),
+    /* disk.wwid.read_rawactive */   PMDA_PMID(CLUSTER_WWID,72),
+    /* disk.wwid.write_rawactive */  PMDA_PMID(CLUSTER_WWID,73),
+    /* disk.wwid.total_rawactive */  PMDA_PMID(CLUSTER_WWID,79),
+    /* disk.wwid.capacity */	     PMDA_PMID(CLUSTER_WWID,87),
+    /* disk.wwid.discard */	     PMDA_PMID(CLUSTER_WWID,88),
+    /* disk.wwid.blkdiscard */	     PMDA_PMID(CLUSTER_WWID,89),
+    /* disk.wwid.discard_bytes */    PMDA_PMID(CLUSTER_WWID,90),
+    /* disk.wwid.discard_merge */    PMDA_PMID(CLUSTER_WWID,91),
+    /* disk.wwid.discard_rawactive */PMDA_PMID(CLUSTER_WWID,92),
+    /* disk.wwid.flush */	     PMDA_PMID(CLUSTER_WWID,93),
+    /* disk.wwid.flush_rawactive */  PMDA_PMID(CLUSTER_WWID,94),
+    /* disk.wwid.inflight */	     PMDA_PMID(CLUSTER_WWID,95),
 };
 
 int
@@ -887,8 +998,11 @@ is_capacity_metric(int cluster, int item)
 	return 1;
     if (item == 17 && (cluster == CLUSTER_DM || cluster == CLUSTER_MD))
 	return 1;
+    if (item == 87 && cluster == CLUSTER_WWID)
+	return 1;
     return 0;
 }
+
 
 char *
 _pm_ioscheduler(const char *device)
@@ -958,7 +1072,10 @@ proc_partitions_fetch(pmdaMetric *mdesc, unsigned int inst, pmAtomValue *atom)
     unsigned int	cluster = pmID_cluster(mdesc->m_desc.pmid);
     unsigned int	item = pmID_item(mdesc->m_desc.pmid);
     int                 i;
+    int			len;
+    char		*inst_wwid = NULL;
     partitions_entry_t	*p = NULL;
+    static char		scsi_paths[1024];
 
     if (inst != PM_IN_NULL) {
 	if (pmdaCacheLookup(mdesc->m_desc.indom, inst, NULL, (void **)&p) < 0)
@@ -1098,6 +1215,16 @@ proc_partitions_fetch(pmdaMetric *mdesc, unsigned int inst, pmAtomValue *atom)
 		return PM_ERR_INST;
 	    atom->ul = p->fl_ticks;
 	    break;
+	case 95: /* disk.dev.inflight */
+	    if (p == NULL)
+		return PM_ERR_INST;
+	    atom->ul = p->ios_in_flight;
+	    break;
+	case 103: /* hinv.map.scsi_id */
+	    if (p == NULL)
+		return PM_ERR_INST;
+	    atom->cp = _pm_scsi_id(p->namebuf);
+	    break;
 	default:
 	    /* disk.all.* is a singular instance domain */
 	    atom->ull = 0;
@@ -1175,6 +1302,9 @@ proc_partitions_fetch(pmdaMetric *mdesc, unsigned int inst, pmAtomValue *atom)
 		    break;
 		case 102: /* disk.all.flush_rawactive ... already msec from /proc/diskstats */
 		    atom->ul += p->fl_ticks;
+		    break;
+		case 104: /* disk.all.inflight */
+		    atom->ull += p->ios_in_flight;
 		    break;
 		default:
 		    return PM_ERR_PMID;
@@ -1278,6 +1408,9 @@ proc_partitions_fetch(pmdaMetric *mdesc, unsigned int inst, pmAtomValue *atom)
 	    case 23: /* {disk.partitions,zram}.flush_rawactive */
 		atom->ul = p->fl_ticks;
 		break;
+	    case 24: /* {disk.partitions,zram}.inflight */
+		atom->ul = p->ios_in_flight;
+		break;
 	    default:
 		return PM_ERR_PMID;
 	}
@@ -1364,6 +1497,9 @@ proc_partitions_fetch(pmdaMetric *mdesc, unsigned int inst, pmAtomValue *atom)
 	    break;
 	case 24: /* disk.{dm,md}.flush_rawactive */
 	    atom->ul = p->fl_ticks;
+	    break;
+	case 25: /* disk.{dm,md}.inflight */
+	    atom->ul = p->ios_in_flight;
 	    break;
 	default:
 	    return PM_ERR_PMID;
@@ -1460,6 +1596,122 @@ proc_partitions_fetch(pmdaMetric *mdesc, unsigned int inst, pmAtomValue *atom)
 	}
 	break;
 
+
+    case CLUSTER_WWID:
+	/*
+	 * disk.wwid.* is aggregated from disk.dev instance(s)
+	 */
+	memset(atom, 0, sizeof(*atom));
+	if (pmdaCacheLookup(INDOM(WWID_INDOM), inst, &inst_wwid, NULL) < 0 || inst_wwid == NULL)
+	    return PM_ERR_INST;
+	scsi_paths[0] = '\0';
+	for (pmdaCacheOp(INDOM(DISK_INDOM), PMDA_CACHE_WALK_REWIND);;) {
+	    /* walk all disk.dev instances and aggregate by wwid */
+	    const char *wwid;
+
+	    if ((i = pmdaCacheOp(INDOM(DISK_INDOM), PMDA_CACHE_WALK_NEXT)) < 0)
+		break;
+	    if (!pmdaCacheLookup(INDOM(DISK_INDOM), i, NULL, (void **)&p) || !p)
+		continue;
+
+	    if ((wwid = p->wwidname) == NULL) /* device offline? */
+		wwid = _pm_scsi_id(p->namebuf);
+
+	    if (!wwid || strcmp(wwid, inst_wwid) != 0)
+	    	continue; /* skip - device is not a path to this wwid instance */
+
+	    switch (item) {
+	    case 3: /* disk.wwid.scsi_paths */
+		if ((len = strlen(scsi_paths)) > 0)
+		    strcat(scsi_paths, " ");
+		strncat(scsi_paths, p->namebuf, sizeof(scsi_paths)-len-1);
+		atom->cp = scsi_paths;
+	    	break;
+	    case 4: /* disk.wwid.read */
+		atom->ull += p->rd_ios;
+		break;
+	    case 5: /* disk.wwid.write */
+		atom->ull += p->wr_ios;
+		break;
+	    case 6: /* disk.wwid.blkread */
+		atom->ull += p->rd_sectors;
+		break;
+	    case 7: /* disk.wwid.blkwrite */
+		atom->ull += p->wr_sectors;
+		break;
+	    case 28: /* disk.wwid.total */
+		atom->ull += p->rd_ios + p->wr_ios;
+		break;
+	    case 36: /* disk.wwid.blktotal */
+		atom->ull += p->rd_sectors + p->wr_sectors;
+		break;
+	    case 38: /* disk.wwid.read_bytes */
+		atom->ull += p->rd_sectors / 2;
+		break;
+	    case 39: /* disk.wwid.write_bytes */
+		atom->ull += p->wr_sectors / 2;
+		break;
+	    case 40: /* disk.wwid.total_bytes */
+		atom->ull += (p->rd_sectors + p->wr_sectors) / 2;
+		break;
+	    case 46: /* disk.wwid.avactive ... already msec from /proc/diskstats */
+		atom->ul += p->io_ticks;
+		break;
+	    case 47: /* disk.wwid.aveq ... already msec from /proc/diskstats */
+		atom->ul += p->aveq;
+		break;
+	    case 49: /* disk.wwid.read_merge */
+		atom->ull += p->rd_merges;
+		break;
+	    case 50: /* disk.wwid.write_merge */
+		atom->ull += p->wr_merges;
+		break;
+	    case 59: /* disk.wwid.scheduler */
+		atom->cp = _pm_ioscheduler(p->namebuf);
+		break;
+	    case 72: /* disk.wwid.read_rawactive already ms from /proc/diskstats */
+		atom->ul += p->rd_ticks;
+		break;
+	    case 73: /* disk.wwid.write_rawactive already ms from /proc/diskstats */
+		atom->ul += p->wr_ticks;
+		break;
+	    case 79: /* disk.wwid.total_rawactive already ms from /proc/diskstats */
+		atom->ul += p->rd_ticks + p->wr_ticks;
+		break;
+	    case 87: /* disk.wwid.capacity already kb from /proc/partitions */
+		if (!p->nr_blocks)
+		    return 0;
+		atom->ull += p->nr_blocks;
+		break;
+	    case 88: /* disk.wwid.discard */
+		atom->ul += p->ds_ios;
+		break;
+	    case 89: /* disk.wwid.blkdiscard */
+		atom->ul += p->ds_sectors;
+		break;
+	    case 90: /* disk.wwid.discard_bytes */
+		atom->ul = p->ds_sectors / 2;
+		break;
+	    case 91: /* disk.wwid.discard_merge */
+		atom->ul += p->ds_merges;
+		break;
+	    case 92: /* disk.wwid.discard_rawactive already ms from /proc/diskstats */
+		atom->ul += p->ds_ticks;
+		break;
+	    case 93: /* disk.wwid.flush */
+		atom->ul += p->fl_ios;
+		break;
+	    case 94: /* disk.wwid.flush_rawactive already ms from /proc/diskstats */
+		atom->ul += p->fl_ticks;
+		break;
+	    case 95: /* disk.wwid.inflight */
+		atom->ull += p->ios_in_flight;
+		break;
+	    default: /* ? */
+		return PM_ERR_PMID;
+	}
+    }
+    break;
 
     default: /* switch cluster */
 	return PM_ERR_PMID;

@@ -88,10 +88,11 @@ pmlc> log advisory on -1 msec sample.bin [100]
 pmlc> 
 Log for pmlogger on HOST started DATE
 
+[DATE] pmlogger(PID) Info: Start
 Config parsed
 Starting logger for host "HOST"
 Archive basename: ARCHIVE
-pmlogger: Caught signal 15, exiting
+[DATE] pmlogger(PID) Info: pmlogger: Caught signal 15, exiting
 
 Log finished DATE
 Logging delta (270000000 msec) cannot be bigger than 268435455 msec
@@ -124,10 +125,11 @@ pmlc> log advisory on 75 hours sample.bin [100]
 pmlc> 
 Log for pmlogger on HOST started DATE
 
+[DATE] pmlogger(PID) Info: Start
 Config parsed
 Starting logger for host "HOST"
 Archive basename: ARCHIVE
-pmlogger: Caught signal 15, exiting
+[DATE] pmlogger(PID) Info: pmlogger: Caught signal 15, exiting
 
 Log finished DATE
 Logging delta (-2138567296 msec) must be positive
@@ -160,10 +162,11 @@ pmlc> log advisory on 599 hours sample.bin [100]
 pmlc> 
 Log for pmlogger on HOST started DATE
 
+[DATE] pmlogger(PID) Info: Start
 Config parsed
 Starting logger for host "HOST"
 Archive basename: ARCHIVE
-pmlogger: Caught signal 15, exiting
+[DATE] pmlogger(PID) Info: pmlogger: Caught signal 15, exiting
 
 Log finished DATE
 Performance Co-Pilot Logger Control (pmlc), Version VERSION
@@ -195,6 +198,7 @@ pmlc> log advisory on 1200 hours sample.bin [100]
 pmlc> 
 Log for pmlogger on HOST started DATE
 
+[DATE] pmlogger(PID) Info: Start
 Config parsed
 Starting logger for host "HOST"
 Archive basename: ARCHIVE
@@ -203,7 +207,7 @@ DATE
 pmlc request from HOST: advisory on 25032.7 sec
   metric: sample.dupnames.five.bin or sample.dupnames.four.bin or sample.dupnames.three.bin or sample.dupnames.two.bin or sample.bin
     instance: bin-100
-pmlogger: Caught signal 15, exiting
+[DATE] pmlogger(PID) Info: pmlogger: Caught signal 15, exiting
 
 Log finished DATE
 Error: metric sample.bin currently has no instance number 333

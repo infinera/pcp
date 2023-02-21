@@ -60,7 +60,7 @@ dbpmda> open pipe $PCP_PMDAS_DIR/sample/pmdasample -d 29 -l TMP.log
 Start pmdasample PMDA: $PCP_PMDAS_DIR/sample/pmdasample -d 29 -l TMP.log
 dbpmda> fetch sample.secret.foo.one, my.derived, sample.secret.foo.two
 PMID(s): 29.0.1001 511.0.3 29.0.1002
-pmResult dump from ADDR timestamp: 0.000000 HH:00:00.000 numpmid: 3
+__pmResult dump from ADDR timestamp: 0.000000000 HH:00:00.000000000 numpmid: 3
   29.0.1001 (<noname>): numval: 1 valfmt: 0 vlist[]:
    value 1 1.4012985e-45 ADDR
   511.0.3 (my.derived): No values returned!
@@ -119,6 +119,7 @@ pmLoadNameSpace: drift -> 29.0.7
 pmLoadNameSpace: end -> 29.0.125
 pmLoadNameSpace: error_check -> 29.0.75
 pmLoadNameSpace: error_code -> 29.0.74
+pmLoadNameSpace: exec -> 29.0.157
 pmLoadNameSpace: ghosts -> 29.*.*
 pmLoadNameSpace: gradient -> 29.0.73
 pmLoadNameSpace: hecto -> 29.0.117
@@ -140,8 +141,10 @@ pmLoadNameSpace: kilo -> 29.0.118
 pmLoadNameSpace: lights -> 29.0.46
 pmLoadNameSpace: lights -> 29.0.46
 pmLoadNameSpace: load -> 29.0.4
+pmLoadNameSpace: long -> 29.0.160
 pmLoadNameSpace: long -> 29.0.57
 pmLoadNameSpace: long_bin -> 29.0.103
+pmLoadNameSpace: longlong -> 29.0.162
 pmLoadNameSpace: longlong -> 29.0.59
 pmLoadNameSpace: m_32 -> 29.0.141
 pmLoadNameSpace: m_32 -> 29.0.145
@@ -156,6 +159,7 @@ pmLoadNameSpace: m_float -> 29.0.143
 pmLoadNameSpace: m_float -> 29.0.147
 pmLoadNameSpace: m_float -> 29.0.151
 pmLoadNameSpace: magnitude -> 29.0.47
+pmLoadNameSpace: max -> 29.0.167
 pmLoadNameSpace: mega -> 29.0.119
 pmLoadNameSpace: metric -> 29.0.86
 pmLoadNameSpace: million -> 29.0.101
@@ -165,6 +169,7 @@ pmLoadNameSpace: million -> 29.0.23
 pmLoadNameSpace: million -> 29.0.28
 pmLoadNameSpace: million -> 29.0.96
 pmLoadNameSpace: milliseconds -> 29.0.3
+pmLoadNameSpace: min -> 29.0.166
 pmLoadNameSpace: mirage -> 29.0.155
 pmLoadNameSpace: mirage -> 29.0.37
 pmLoadNameSpace: mirage_longlong -> 29.0.38
@@ -177,6 +182,7 @@ pmLoadNameSpace: not_ready -> 29.0.56
 pmLoadNameSpace: novalues -> 29.0.138
 pmLoadNameSpace: null -> 29.0.30
 pmLoadNameSpace: null -> 29.0.33
+pmLoadNameSpace: obs -> 29.0.164
 pmLoadNameSpace: one -> 29.0.10
 pmLoadNameSpace: one -> 29.0.15
 pmLoadNameSpace: one -> 29.0.20
@@ -184,6 +190,7 @@ pmLoadNameSpace: one -> 29.0.25
 pmLoadNameSpace: one -> 29.0.52
 pmLoadNameSpace: one -> 29.0.93
 pmLoadNameSpace: one -> 29.0.98
+pmLoadNameSpace: ordinal -> 29.0.156
 pmLoadNameSpace: param_32 -> 29.0.128
 pmLoadNameSpace: param_64 -> 29.0.130
 pmLoadNameSpace: param_aggregate -> 29.0.135
@@ -201,13 +208,16 @@ pmLoadNameSpace: rapid -> 29.0.64
 pmLoadNameSpace: records -> 29.0.136
 pmLoadNameSpace: recv_pdu -> 29.0.41
 pmLoadNameSpace: recv_pdu -> 29.0.44
+pmLoadNameSpace: repeat -> 29.0.165
 pmLoadNameSpace: reset -> 29.0.126
+pmLoadNameSpace: reset -> 29.0.159
 pmLoadNameSpace: reset_highres -> 29.0.140
 pmLoadNameSpace: seconds -> 29.0.2
 pmLoadNameSpace: seconds -> 29.0.2
 pmLoadNameSpace: secret -> 29.*.*
 pmLoadNameSpace: sem -> 29.0.89
 pmLoadNameSpace: start -> 29.0.124
+pmLoadNameSpace: step -> 29.0.168
 pmLoadNameSpace: step -> 29.0.8
 pmLoadNameSpace: step_counter -> 29.0.63
 pmLoadNameSpace: sysinfo -> 29.0.39
@@ -219,12 +229,15 @@ pmLoadNameSpace: ten -> 29.0.26
 pmLoadNameSpace: ten -> 29.0.26
 pmLoadNameSpace: ten -> 29.0.94
 pmLoadNameSpace: ten -> 29.0.99
+pmLoadNameSpace: time -> 29.0.158
 pmLoadNameSpace: time_up_nanosecs -> 29.0.70
 pmLoadNameSpace: time_up_secs -> 29.0.69
 pmLoadNameSpace: two -> 29.0.53
 pmLoadNameSpace: type -> 29.0.127
 pmLoadNameSpace: type -> 29.0.87
+pmLoadNameSpace: ulong -> 29.0.161
 pmLoadNameSpace: ulong -> 29.0.58
+pmLoadNameSpace: ulonglong -> 29.0.163
 pmLoadNameSpace: ulonglong -> 29.0.60
 pmLoadNameSpace: units -> 29.0.90
 pmLoadNameSpace: unknown -> 29.0.54

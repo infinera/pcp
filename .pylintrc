@@ -149,10 +149,17 @@ disable=print-statement,
         bad-option-value, # older pylint versions don't recognize options from newer pylint versions
         no-else-continue,
         wrong-import-order,
-        super-with-arguments, # Python 2 doesn't support this
-        raise-missing-from, # Python 2 doesn't support this
         relative-beyond-top-level,
-        unsubscriptable-object # https://github.com/PyCQA/pylint/issues/3882
+        unsubscriptable-object, # https://github.com/PyCQA/pylint/issues/3882
+        use-implicit-booleaness-not-comparison,
+
+        # Python 2 doesn't support the following code changes
+        # remove these once PCP drops support for Python 2
+        consider-using-with,
+        super-with-arguments,
+        raise-missing-from,
+        consider-using-f-string,
+        unspecified-encoding
 
 # Enable the message, report, category or checker with the given id(s). You can
 # either give multiple identifier separated by comma (,) or put this option
@@ -440,13 +447,6 @@ max-line-length=120
 
 # Maximum number of lines in a module
 max-module-lines=1000
-
-# List of optional constructs for which whitespace checking is disabled. `dict-
-# separator` is used to allow tabulation in dicts, etc.: {1  : 1,\n222: 2}.
-# `trailing-comma` allows a space between comma and closing bracket: (a, ).
-# `empty-line` allows space-only lines.
-no-space-check=trailing-comma,
-               dict-separator
 
 # Allow the body of a class to be on the same line as the declaration if body
 # contains single statement.

@@ -60,7 +60,8 @@ then
 	eval `rpm -q glibc | sed -e 's/glibc-/a=/' -e 's/\./ b=/' -e 's/\./ c=/' -e 's/-.*//'`
     elif which dpkg >/dev/null 2>&1
     then
-	lib=`find /lib -name libc.so.\* | sed -e 1q`
+	lib=`find /lib /usr/lib -name libc.so 2>/dev/null | sed -e '/plexmediaserver/d' -e 1q`
+	echo "lib=$lib" >>$seq.full
 	if [ -n "$lib" ]
 	then
 	    pkg=`dpkg -S $lib | sed -e 's/: .*//' -e 1q`
@@ -85,6 +86,7 @@ then
     fi
 
     # Use glibc version
+    echo "glibc a=$a b=$b c=$c" >>$seq.full
     if [ "$a" -lt 2 ]
     then
 	# a.?.?, a < 2
@@ -157,6 +159,9 @@ then
 elif [ $PCP_PLATFORM = darwin -o $PCP_PLATFORM = freebsd ]
 then
     ln $seq.out.darwin $seq.out
+elif [ $PCP_PLATFORM = openbsd ]
+then
+    ln $seq.out.openbsd $seq.out
 elif [ $PCP_PLATFORM = solaris  ]
 then
     ln $seq.out.solaris $seq.out
@@ -168,16 +173,10 @@ status=1	# failure is the default!
 trap "rm -f $tmp.*; exit \$status" 0 1 2 3 15
 
 # real QA test starts here
-src/tztest >$seq.full
+src/tztest >>$seq.full
 
 TZ=XYZ-11; export TZ
+src/tztest
 
-# I don't understand the sed replacement below - Ken, Jul 2003
-#
-src/tztest \
-| tee -a $seq.full \
-| sed \
-	-e's|XYZ-11:03:04ABC-10:01:02,M12.5.0/3:04:05,M7.1.0/2:06:07|ABC-10:01:02XYZ-11:03:04,M12.5.0/3:04:05,M7.1.0/2:06:07|' \
-	-e's|XYZ-11ABC-10,M12.5.0/3:01:02,M7.1.0/2:03:04|ABC-10XYZ-11,M12.5.0/3:01:02,M7.1.0/2:03:04|'
 status=0
 exit

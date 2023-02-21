@@ -1,12 +1,12 @@
 /*
- * Copyright (c) 2013-2018 Red Hat.
+ * Copyright (c) 2013-2018,2021-2022 Red Hat.
  * Copyright (c) 2010 Ken McDonell.  All Rights Reserved.
- * 
+ *
  * This library is free software; you can redistribute it and/or modify it
  * under the terms of the GNU Lesser General Public License as published
  * by the Free Software Foundation; either version 2.1 of the License, or
  * (at your option) any later version.
- * 
+ *
  * This library is distributed in the hope that it will be useful, but
  * WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY
  * or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU Lesser General Public
@@ -51,25 +51,26 @@ typedef struct {
 } pmi_label;
 
 typedef struct {
-    int		state;
-    char	*archive;
-    char	*hostname;
-    char	*timezone;
-    __pmLogCtl	logctl;
-    __pmArchCtl	archctl;
-    pmResult	*result;
-    int		nmetric;
-    pmi_metric	*metric;
-    int		nindom;
-    pmi_indom	*indom;
-    int		nhandle;
-    pmi_handle	*handle;
-    int		ntext;
-    pmi_text	*text;
-    int		nlabel;
-    pmi_label	*label;
-    int		last_sts;
-    struct timeval	last_stamp;
+    int			state;
+    int			version;
+    char		*archive;
+    char		*hostname;
+    char		*timezone;
+    __pmLogCtl		logctl;
+    __pmArchCtl		archctl;
+    __pmResult		*result;
+    int			nmetric;
+    pmi_metric		*metric;
+    int			nindom;
+    pmi_indom		*indom;
+    int			nhandle;
+    pmi_handle		*handle;
+    int			ntext;
+    pmi_text		*text;
+    int			nlabel;
+    pmi_label		*label;
+    int			last_sts;
+    __pmTimestamp	last_stamp;
 } pmi_context;
 
 #define CONTEXT_START	1
@@ -83,7 +84,7 @@ typedef struct {
 #endif
 
 extern int _pmi_stuff_value(pmi_context *, pmi_handle *, const char *) _PMI_HIDDEN;
-extern int _pmi_put_result(pmi_context *, pmResult *) _PMI_HIDDEN;
+extern int _pmi_put_result(pmi_context *, __pmResult *) _PMI_HIDDEN;
 extern int _pmi_put_text(pmi_context *) _PMI_HIDDEN;
 extern int _pmi_put_label(pmi_context *) _PMI_HIDDEN;
 extern int _pmi_end(pmi_context *) _PMI_HIDDEN;

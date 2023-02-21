@@ -347,15 +347,21 @@ static int perfevent_text(int ident, int type, char **buffer, pmdaExt *pmda)
 
     if ((type & PM_TEXT_PMID) == PM_TEXT_PMID)
     {
-        /* Lookup pmid in the metric table. */
-        int item = pmID_item(ident);
+        int i;
 
-        /* bounds check item, ensure PMID matches and user data present */
-        if (item >= 0 && item < nummetrics
-                && metrictab[item].m_desc.pmid == (pmID)ident
-                && metrictab[item].m_user != NULL)
-        {
-            dynamic_metric_info_t *pinfo = metrictab[item].m_user;
+	/* Single static metric below the dynamic 'derived' namespace */
+	if (pmID_cluster(ident) == 1 && pmID_item(ident) == 0) {
+            *buffer = "The number of derived metrics configured";
+            return 0;
+	}
+
+        /* Lookup pmid in the metric table. */
+	for (i = 0; i < nummetrics; i++)
+	{
+            dynamic_metric_info_t *pinfo = metrictab[i].m_user;
+
+	    if (!pinfo || metrictab[i].m_desc.pmid != (pmID)ident)
+		continue;
 
             *buffer = (char *)pinfo->help_text;
             return 0;
@@ -686,6 +692,7 @@ static int setup_pmns()
  * Initialise the agent (both daemon and DSO).
  */
 void
+__PMDA_INIT_CALL
 perfevent_init(pmdaInterface *dp)
 {
     if (isDSO)
@@ -699,8 +706,6 @@ perfevent_init(pmdaInterface *dp)
     {
         return;
     }
-
-    pmdaOpenLog(dp);
 
     if(setup_perfevents() < 0 )
     {

@@ -18,6 +18,7 @@
 #
 # pylint: disable=line-too-long,protected-access,dangerous-default-value
 # pylint: disable=too-many-lines,too-many-arguments,too-many-nested-blocks
+# pylint: disable=consider-using-dict-items
 #
 
 import sys
@@ -424,7 +425,7 @@ class MetricGroup(dict):
         self._altD = {}
         self.mgAdd(inL)
 
-    def __setitem__(self, attr, value=[]):
+    def __setitem__(self, attr, value):
         if attr in self:
             raise KeyError("metric group with that key already exists")
         dict.__setitem__(self, attr, MetricGroup(self, inL=value))
@@ -554,7 +555,7 @@ class MetricGroupManager(dict, MetricCache):
         self._printer = None
         self._counter = 0
 
-    def __setitem__(self, attr, value=[]):
+    def __setitem__(self, attr, value):
         if attr in self:
             raise KeyError("metric group with that key already exists")
         dict.__setitem__(self, attr, MetricGroup(self, inL=value))

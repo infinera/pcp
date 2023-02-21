@@ -1,6 +1,6 @@
 #!/usr/bin/env pmpython
 #
-# Copyright (C) 2015-2020 Marko Myllynen <myllynen@redhat.com>
+# Copyright (C) 2015-2021 Marko Myllynen <myllynen@redhat.com>
 #
 # This program is free software; you can redistribute it and/or modify it
 # under the terms of the GNU General Public License as published by the
@@ -64,6 +64,14 @@ class PCP2XML(object):
                      'speclocal', 'instances', 'ignore_incompat', 'ignore_unknown',
                      'omit_flat', 'include_labels')
 
+        # Ignored for pmrep(1) compatibility
+        self.keys_ignore = (
+                     'timestamp', 'unitinfo', 'colxrow', 'separate_header', 'fixed_header',
+                     'delay', 'width', 'delimiter', 'extcsv', 'width_force',
+                     'extheader', 'repeat_header', 'interpol',
+                     'dynamic_header', 'overall_rank', 'overall_rank_alt', 'sort_metric',
+                     'instinfo', 'include_texts')
+
         # The order of preference for options (as present):
         # 1 - command line options
         # 2 - options from configuration file(s)
@@ -126,7 +134,7 @@ class PCP2XML(object):
         self.pmfg_ts = None
 
         # Read configuration and prepare to connect
-        self.config = self.pmconfig.set_config_file(DEFAULT_CONFIG)
+        self.config = self.pmconfig.set_config_path(DEFAULT_CONFIG)
         self.pmconfig.read_options()
         self.pmconfig.read_cmd_line()
         self.pmconfig.prepare_metrics()
@@ -546,11 +554,11 @@ class PCP2XML(object):
                     if not isinstance(value[0], dict):
                         self.writer.write('%s<%s%s>%s</%s>\n' % (indent, key, create_attrs(None, None, value[2], value[4], value[5], value[6]), value[3], key))
                     else:
-                        for j, _ in enumerate(value):
-                            for k in value[j]:
+                        for v in value:
+                            for k in v:
                                 if k == inst_key:
                                     continue
-                                self.writer.write('%s<%s%s>%s</%s>\n' % (indent, k, create_attrs(value[j][k][0], value[j][k][1], value[j][k][2], value[j][k][4], value[j][k][5], value[j][k][6]), value[j][k][3], k))
+                                self.writer.write('%s<%s%s>%s</%s>\n' % (indent, k, create_attrs(v[k][0], v[k][1], v[k][2], v[k][4], v[k][5], v[k][6]), v[k][3], k))
 
         # Add current values
         interval = str(int(ts - self.prev_ts + 0.5))
@@ -567,8 +575,8 @@ class PCP2XML(object):
                 self.writer.write("  </host>\n")
                 self.writer.write("</pcp>\n")
                 self.writer.flush()
-            except IOError as error:
-                if error.errno != errno.EPIPE:
+            except IOError as write_error:
+                if write_error.errno != errno.EPIPE:
                     raise
             try:
                 self.writer.close()

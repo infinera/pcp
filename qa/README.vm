@@ -30,13 +30,13 @@ version specific I'm afraid ... good luck with that!
 
 === Distro Releases and Packaging Hints ===
 
-Debian
-    https://wiki.debian.org/DebianReleases
-    17 Nov 2015: 6.0 (squeeze), 7.0 (wheezy) and 8.0 (jessie)
-    04 May 2016: 7.0 (Wheezy), 8.0 (Jessie) and 9.0 (Stretch)
-
 Ubuntu
     https://wiki.ubuntu.com/Releases
+    20 Nov 2022: 22.10 (Kinetic) 22.04.1 LTS (Jammy), 20.04.5 LTS (Focal),
+    		 18.04.6 LTS (Bionic), 16.04.7 LTS (Xenial), 14.04.6
+		 (Trusty)
+    13 Sep 2021: 20.04 LTS (Focal), 18.04 (Bionic) 16.04 LTS (Xenial),
+    		 14.04 LTS (Trusty)
     04 Jun 2018: 18.04 (Bionic) 17.10 (Artful), 16.04 LTS (Xenial),
 		 14.04.3 LTS (Trusty),
     # which packages are installed
@@ -56,34 +56,70 @@ Ubuntu
     # release upgrade recipe ... update, then
     $ sudo do-release-upgrade
 
+Debian
+    https://wiki.debian.org/DebianReleases
+    17 Nov 2015: 6.0 (squeeze), 7.0 (wheezy) and 8.0 (jessie)
+    04 May 2016: 7.0 (Wheezy), 8.0 (Jessie) and 9.0 (Stretch)
+    15 Sep 2021: 10 (Buster) and 11 (Bullseye)
+    # see Ubuntu for most notes
+    #
+    # release upgrade reciple
+    # make sure everything is up to date
+    $ sudo apt update; sudo apt upgrade
+    # In a text editor, replace the codename of your release with that
+    # of the next release in APT's package sources
+    # For instance, the line
+    #    deb https://deb.debian.org/debian/ buster main
+    # should be replaced with
+    #    deb https://deb.debian.org/debian/ bullseye main
+    $ sudo vi /etc/apt/sources.list /etc/apt/sources.list.d/*
+    # Clean and update package lists
+    $ sudo apt clean; sudo apt update
+    # Perform the major release upgrade, removing packages if required
+    $ sudo apt full-upgrade
+    # Remove packages that are not required anymore
+    $ sudo apt autoremove
+    # Reboot to make changes effective (optional, but recommended)
+    $ sudo shutdown -r now
+
 Fedora
     https://fedoraproject.org/wiki/Releases
-    23 Sep 2018: 27 & 28
+    12 Dec 2022: 35, 36 & 37
+    07 Sep 2021: 33 & 34
     23 Aug 2020: 31 & 32
     # which packages are installed
     $ rpm -qa --qf '%{NAME}\n'
     # package search recipe (name and info or description)
     $ dnf search <pattern>
     # which package installs a file/directory
-    $ rpm -qF <path>
+    $ rpm -qf <path>
     # which files are in an installed package
     $ rpm -ql <package>
     # update all packages recipe
     $ sudo dnf update
     # upgrade recipe from Fedora 21 onwards
-    $ sudo dnf update --refresh; sudo dnf install dnf-plugin-system-upgrade
+    $ sudo dnf --refresh update; sudo dnf install dnf-plugin-system-upgrade
     $ sudo dnf install fedora-gpg-keys
 
-    # if you get more than one release behind (I think) ... do this with
-    # "32" replaced by the desired version number
-    $ cd /etc/pki/rpm-gpg/
-    $ sudo wget https://src.fedoraproject.org/rpms/fedora-repos/raw/main/f/RPM-GPG-KEY-fedora-32-primary
-    $ sudo ln -s RPM-GPG-KEY-fedora-32-primary RPM-GPG-KEY-fedora-32-x86_64
-
-    #                                                             for Fedora 26
-    $ sudo dnf system-upgrade download --refresh --allowerasing --releasever=26
+    # only upgrade from N to N+1 is supported
+    # for Fedora 33, else "33" replaced by the desired version number
+    $ ver=33
+    $ sudo dnf --refresh upgrade
+    $ sudo dnf system-upgrade download --allowerasing --releasever=$ver
     $ sudo dnf system-upgrade reboot
     # and then watch the console window ...
+
+    # recipe below works (at least) for Fedora 34
+    # setting up a static IP addr using nmcli (assume interface enp1s0)
+    $ if=enp1s0
+    $ sudo connection modify IPv4.address 192.168.178.226/24
+                                                      ^^^ 200 + vm ordinal, e.g vm26 here
+    $ sudo nmcli connection modify $if IPv4.gateway 192.168.178.1
+    $ sudo nmcli connection modify $if IPv4.dns 192.168.178.100
+    $ sudo nmcli connection modify $if IPv4.dns-search localdomain
+    $ sudo nmcli connection modify $if IPv4.method manual
+    $ sudo nmcli connection down $if
+    $ sudo nmcli connection up $if
 
 RedHat
     https://access.redhat.com/articles/3078
@@ -128,10 +164,14 @@ CentOS
       then
     # sudo dnf install epel-release -y
 
+    # special notes for CentOS Stream 9
+    # - need CRB repo enabled (it is not enabled by default)
+    $ sudo dnf config-manager --set-enabled crb
+
 openSUSE
     https://en.opensuse.org/Lifetime
-    24 Sep 2018: 42.3 and 15
     16 Oct 2019: 15.0 and 15.1
+    15 Sep 2021: 15.2 and 15.3
     # which packages are installed
     $ rpm -qa --qf '%{NAME}\n'
     # package search recipe (name and info or description)
@@ -273,22 +313,21 @@ Linux Mint
     24 Dec 2015: 13 (LTS), 17 (LTS)
     # same as Ubuntu
     
-Mandriva
+OpenMandriva
     https://wiki.openmandriva.org/en/Category:Releases
-    4 Jun 2016: 2014.0 2014.1 2014.2
     9 Aug 2020: 2014.2 3.3 4.0 4.1
-    # package search recipe (name and info or description)
-    $ urpmq -Y --fuzzy --summary <string>
-    # which package installs a file/directory
-    $ ???
-    # which files are in an installed package
-    $ ???
-    # package install recipe
-    $ sudo urpmi <package-name>
-    # update all packages recipe
-    $ sudo urpmi.update -a; sudo urpmi --auto-select
-    # release upgrade recipe
-    $ ???
+    20 Oct 2021: 4.1 4.2 4.3
+    # same as Fedora now
+    ...
+    # for 4.1 -> 4.2 this looks promising
+    https://forum.openmandriva.org/t/how-to-upgrade-from-rock-lx-4-1-to-lx-4-2/3791
+    - update repository source to Release
+    - dnf clean-all
+    - sudo dnf clean-all
+    - sudo dnf upgrade
+    - revert repository source to Rock
+    - dnf clean all
+    - sudo dnf clean all ; sudo dnf --allowerasing distro-sync
 
 Slackware
     https://www.slackware.com
@@ -311,6 +350,10 @@ Slackware
 Arch Linux
     https://www.archlinux.org/releng/releases/
     05 Oct 2020: 2020.10.01 2020.09.01 2020.08.01
+    # after virgin install, need at least this to get going
+    $ sudo pacman -S inetutils	# for hostname(1)
+    $ sudo pacman -S iputils	# for ping(1)
+    $ sudo pacman -S which	# for which(1)
     # which packages are installed
     $ pacman -Q -i | sed -n -e '/^Name /s/.* : //p'
     # package search recipe (name and info or description)
@@ -330,6 +373,8 @@ Arch Linux
     # update all packages recipe
     $ sudo pacman -Sy archlinux-keyring
     $ sudo pacman -Syyu
+    # clean pacman cache
+    $ sudo pacman -Sc
 
 OpenIndiana
     https://www.openindiana.org/download/
@@ -361,12 +406,13 @@ OpenIndiana
 
 OpenBSD
     https://en.wikipedia.org/wiki/OpenBSD_version_history
-    26 Oct 2018: 6.2, 6.3, 6.4
-    24 Oct 2019: 6.4, 6.5, 6.6
-    24 Aug 2020: 6.6, 6.7
+    13 Sep 2021: 6.8, 6.9
+    08 Dec 2021: 6.9, 7.0
     # package search recipe (name only, not info or description)
     $ pkg_info -Q <pattern>
     # which package installs a file/directory
+    # -- pkg_add pkglocatedb first to get the "all" packages DB,
+    #    rather than searching just the installed packages
     $ pkglocate <filename> or <pathname>
     # which files are in an installed package
     $ pkg_info -L <package>
@@ -374,29 +420,15 @@ OpenBSD
     $ sudo pkg_add <package>
     # update all packages recipe
     $ sudo pkg_add -u
-    # release upgrade recipe
-    $ cd /tmp
-    $ wget https://mirror.vdms.com/pub/OpenBSD/6.7/amd64/bsd.rd
-                                                   ^^^^^ architecture
-					       ^^^ new version		   
-    $ wget https://mirror.vdms.com/pub/OpenBSD/6.7/amd64/SHA256.sig
-    $ signify -C -p /etc/signify/openbsd-67-base.pub -x SHA256.sig bsd.rd
-                                         ^^ new version, no "."
-    $ sudo mv /bsd.rd /bsd.rd.6.3
-    			      ^^^ old version
-    $ sudo mv bsd.rd /bsd.rd
-    $ sudo ln /bsd.rd /bsd.rd.6.7
-    			      ^^^ new version
-    $ sudo reboot
-    and in console window, when boot> prompt appears, enter
-    boot /bsd.rd
-    Welcome to the OpenBSD/amd64 6.4 installation program.
-    (I)nstall, (U)pgrade, (A)utoinstall or (S)hell? u
-    ...
-    reboot
+    # remove a package
+    $ sudo pkg_delete <package>
+    # unattended release upgrade recipe ... only supported from
+    # one version to the next version
+    $ sudo sysupgrade
+    ... switch to console window after Fetching and Verifying sets ...
+    - will reboot and install fetched sets
+    - will reboot again
     $ sudo sysmerge
-    $ sudo syspatch
-    $ sudo reboot (if instructed to do so)
     $ sudo pkg_add -u
 
 Template
@@ -416,7 +448,8 @@ If you're short of space, or have long-standing VMs that you'd like to
 minimize update times for, the following list of packages are ones that
 are commonly installed and are not needed for PCP builds nor QA.
 
-    qt4-doc qt5-doc libx11-doc imagemagick libreoffice* libfreerdp freerdp*
+    qt4-doc qt5-doc nodejs-docs libx11-doc
+    imagemagick libreoffice* libfreerdp freerdp*
     cups foomatic-filters foomatic-db-filesystem hplip*
     sane xsane libsane libksane sane-backends*
     brasero evince totem evolution thunderbird firefox
@@ -425,24 +458,31 @@ are commonly installed and are not needed for PCP builds nor QA.
     atril analog coinor shotwell synaptic wamerican samba* libsamba*
     lohit-*-fonts adobe-source-han-sans-* cjkuni-uming-fonts
     wqy-zenhei-fonts julietaula-montserrat-fonts naver-nanum-fonts-common
+    abattis-cantarell-fonts
     naver-nanum-gothic-fonts gnome-orca ndiswrapper* libhangul* libpinyin*
     libzhuyin*
 
 === Miscellaneous Hints ===
 
-Extending a roto LVM with oevice-mapper by adding a partition
+Extending a root LVM with device-mapper by adding a partition
     From
     https://serverfault.com/questions/810221/how-to-correctly-extend-a-linux-device-mapper-partition
     or
     https://rbgeek.wordpress.com/2013/01/27/how-to-extend-the-root-partition-in-lvm/
     Assume device-mapper vgname fedora-server
     Assume partiton to add is partiton 1 of /dev/vdb
-    $ sudo cfdisk /dev/vdb	<- make 1 partition, all of the disk
-    $ sudo pvcreate /dev/vdb1	<- initialize partition for use with LVM
+    $ disk=/dev/vdb
+    $ sudo cfdisk $disk		<- make 1 partition, all of the disk
+    $ sudo pvcreate ${disk}1	<- initialize partition for use with LVM
     $ sudo vgdisplay		<- get volume group name
-    $ sudo vgextend /dev/fedora-server /dev/vdb1	<- extend the volume group
-    $ sudo lvextend -l +100%FREE /dev/fedora-server/root	<- extend LVM
-    $ sudo resize2fs /dev/fedora-server/root		<- extend filesystem
+    $ vg=<name>			<- from above will be "fedora-server" or
+    				   "centos" or similar
+    $ sudo vgextend /dev/$vg ${disk}1	<- extend the volume group
+    $ sudo lvextend -l +100%FREE /dev/$vg/root	<- extend LVM
+    # for ext2
+    $ sudo resize2fs /dev/$vg/root		<- extend filesystem
+    # for xfs
+    $ sudo xfs_growfs /				<- extend filesytem
 
 Just remember that if you're using XFS, you need xfs_growfs instead of
 resize2fs.

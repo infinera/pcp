@@ -32,7 +32,7 @@ TIMESTAMP 1 instances
    LOGGER_PID or "LOGGER_PID"
 
 Complete, expect meta data and 4 sets of results
-Log Label (Log Format Version 2)
+Log Label (Log Format Version OK)
 Performance metrics from host ...
 
 Descriptions for Metrics in the Log ...
@@ -112,9 +112,10 @@ TIMESTAMP 5 metrics
 pmlogger log
 Log for pmlogger on HOST started DATE
 
+[DATE] pmlogger(PID) Info: Start
 Config parsed
 Starting logger for host "HOST"
 Archive basename: ARCHIVE
-pmlogger: Sample limit reached, exiting
+[DATE] pmlogger(PID) Info: pmlogger: Sample limit reached, exiting
 
 Log finished DATE

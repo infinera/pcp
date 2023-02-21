@@ -92,17 +92,31 @@ typedef struct {
 } desc_t;
 
 /*
+ * borrowed from __ntohpmUnits() in endian.c in libpcp (that function is
+ * not exported there, so not callable here)
+ */
+static pmUnits
+ntoh_pmUnits(pmUnits units)
+{
+    unsigned int x;
+
+    x = ntohl(*(unsigned int *)&units);
+    units = *(pmUnits *)&x;
+    return units;
+}
+
+/*
  * reverse the logic of __pmLogPutDesc()
  */
 static void
-_pmUnpackDesc(__pmPDU *pdubuf, pmDesc *desc, int *numnames, char ***names)
+_pmUnpackDesc(__int32_t *recbuf, pmDesc *desc, int *numnames, char ***names)
 {
     desc_t	*pp;
     int		i;
     char	*p;
     int		slen;
 
-    pp = (desc_t *)pdubuf;
+    pp = (desc_t *)recbuf;
     desc->type = ntohl(pp->desc.type);
     desc->sem = ntohl(pp->desc.sem);
     desc->indom = ntoh_pmInDom(pp->desc.indom);
@@ -152,7 +166,7 @@ do_desc(void)
     char		**names;
     long		out_offset;
 
-    out_offset = __pmFtell(outarch.logctl.l_mdfp);
+    out_offset = __pmFtell(outarch.logctl.mdfp);
     _pmUnpackDesc(inarch.metarec, &desc, &numnames, &names);
 
     for (mp = metric_root; mp != NULL; mp = mp->m_next) {

@@ -19,7 +19,7 @@
 \f3pcp-iostat\f1 \- report block I/O statistics
 .SH SYNOPSIS
 \f3pcp\f1 [\f2pcp\ options\f1] \f3iostat\f1
-[\f3\-u\f1]
+[\f3\-u?\f1]
 [\f3\-G\f1 \f2method\f1]
 [\f3\-P\f1 \f2precision\f1]
 [\f3\-R\f1 \f2pattern\f1]
@@ -31,23 +31,36 @@ reports I/O statistics for SCSI (by default) or other devices (if the \f3\-x\f1 
 When invoked via the
 .BR pcp (1)
 command, the
+.I "pcp options"
+.hy 0
+.BR \-A /\c
+.BR \-\-align ,
 .BR \-a /\c
 .BR \-\-archive ,
 .BR \-h /\c
 .BR \-\-host ,
 .BR \-O /\c
 .BR \-\-origin ,
+.BR \-S /\c
+.BR \-\-start ,
 .BR \-s /\c
 .BR \-\-samples ,
+.BR \-T /\c
+.BR \-\-finish ,
 .BR \-t /\c
 .BR \-\-interval ,
+.BR \-v /\c
+.BR \-\-version ,
 .BR \-Z /\c
-.BR \-\-timezone
-and several other
-.I pcp options
+.B \-\-timezone
+and
+.BR \-z /\c
+.B \-\-hostzone
 become indirectly available; refer to
 .BR PCPIntro (1)
 for a complete description of these options.
+.br
+.hy
 .PP
 The additional command line options available for
 .B pcp-iostat
@@ -170,6 +183,9 @@ is specified then
 .B \-a
 must also be specified.
 .TP
+\fB\-V\fR, \fB\-\-version\fR
+Display version number and exit.
+.TP
 \f3\-x\f1 \f2comma-separated-options\f1
 Specifies a comma-separated list of one or more extended reporting
 options as follows:
@@ -183,6 +199,9 @@ of SCSI devices,
 \f3h\fP - omit the heading, which is otherwise reported every 24 samples,
 .br
 \f3noidle\fP - Do not display statistics for idle devices.
+.TP
+\fB\-?\fR, \fB\-\-help\fR
+Display usage message and exit.
 .SH REPORT
 The columns in the
 .B pcp-iostat
@@ -252,8 +271,6 @@ The average time in milliseconds that write requests were queued
 The percentage of time during the reporting interval that the
 device was busy processing requests.
 A value of 100% indicates device saturation.
-.SH DIAGNOSTICS
-All are generated on standard error and are intended to be self-explanatory.
 .SH PCP ENVIRONMENT
 Environment variables with the prefix \fBPCP_\fP are used to parameterize
 the file and directory names used by PCP.

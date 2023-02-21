@@ -1,5 +1,6 @@
 /*
  * Copyright (c) 2019 Miroslav Foltýn.  All Rights Reserved.
+ * Copyright (c) 2022 Red Hat.
  * 
  * This program is free software; you can redistribute it and/or modify it
  * under the terms of the GNU General Public License as published by the
@@ -82,7 +83,7 @@ create_instance_map_key(pmInDom indom) {
     char buffer[JSON_BUFFER_SIZE];
     int l = pmsprintf(buffer, JSON_BUFFER_SIZE, "%s", pmInDomStr(indom)) + 1;
     char* key = malloc(sizeof(char) * l);
-    ALLOC_CHECK("Unable to allocate memory for instance key");
+    ALLOC_CHECK(key, "Unable to allocate memory for instance key");
     memcpy(key, buffer, l);
     return key;
 }
@@ -97,13 +98,13 @@ static void
 create_pcp_metric(char* key, struct metric* item, pmdaExt* pmda) {
     struct pmda_data_extension* data = (struct pmda_data_extension*)pmdaExtGetData(pmda);    
     data->pcp_metrics = realloc(data->pcp_metrics, sizeof(pmdaMetric) * (data->pcp_metric_count + 1));
-    ALLOC_CHECK("Cannot grow statsd metric list.");
+    ALLOC_CHECK(data->pcp_metrics, "Cannot grow statsd metric list.");
     // .. with new metric description 
     size_t i = data->pcp_metric_count;
     pmID newpmid = get_next_pmID(pmda);
     pmdaMetric* new_metric = &data->pcp_metrics[i];
     struct pmda_metric_helper* helper = (struct pmda_metric_helper*) malloc(sizeof(struct pmda_metric_helper));
-    ALLOC_CHECK("Unable to allocate mem for metric helper struct.");
+    ALLOC_CHECK(helper, "Unable to allocate mem for metric helper struct.");
     helper->key = key;
     helper->item = item;
     helper->data = data;
@@ -159,7 +160,7 @@ map_labels_to_instances(struct metric* item, struct pmda_data_extension* data, s
     }
     pmdaInstid* instances =
         (pmdaInstid*) malloc(sizeof(pmdaInstid) * indom_i_inst_cnt);
-    ALLOC_CHECK("Unable to allocate memory for new PMDA instance domain instances.");
+    ALLOC_CHECK(instances, "Unable to allocate memory for new PMDA instance domain instances.");
     if (has_root_value) {
         if (item->type == METRIC_TYPE_DURATION) {
             // reuse static pmdaInstid* instances from STATSD_METRIC_DEFAULT_DURATION_INDOM domain
@@ -177,10 +178,10 @@ map_labels_to_instances(struct metric* item, struct pmda_data_extension* data, s
     // - prepare map
     item->meta->pcp_instance_map =
         (struct pmdaInstid_map*) malloc(sizeof(pmdaInstid_map));
-    ALLOC_CHECK("Unable to allocate memory for new instance domain map.");
+    ALLOC_CHECK(item->meta->pcp_instance_map, "Unable to allocate memory for new instance domain map.");
     item->meta->pcp_instance_map->length = labels_count;
     item->meta->pcp_instance_map->labels = (char**) malloc(sizeof(char*) * labels_count);
-    ALLOC_CHECK("Unable to allocate memory for new instance domain map label references.");
+    ALLOC_CHECK(item->meta->pcp_instance_map->labels, "Unable to allocate memory for new instance domain map label references.");
     // - prepare for iteration
     char buffer[JSON_BUFFER_SIZE];
     size_t instance_name_length;
@@ -220,7 +221,7 @@ map_labels_to_instances(struct metric* item, struct pmda_data_extension* data, s
                         label->meta->instance_label_segment_str
                     ) + 1;
                 instances[label_offset + i].i_name = (char*) malloc(sizeof(char) * instance_name_length);
-                ALLOC_CHECK("Unable to allocate memory for instance description.");
+                ALLOC_CHECK(instances[label_offset + i].i_name, "Unable to allocate memory for instance description.");
                 memcpy(instances[label_offset + i].i_name, buffer, instance_name_length);
             }
         } else {
@@ -229,7 +230,7 @@ map_labels_to_instances(struct metric* item, struct pmda_data_extension* data, s
             instances[label_offset].i_inst = label_offset;
             instance_name_length = pmsprintf(buffer, JSON_BUFFER_SIZE, "/%s", label->meta->instance_label_segment_str) + 1;
             instances[label_offset].i_name = (char*) malloc(sizeof(char) * instance_name_length);
-            ALLOC_CHECK("Unable to allocate memory for instance description.");
+            ALLOC_CHECK(instances[label_offset].i_name, "Unable to allocate memory for instance description.");
             memcpy(instances[label_offset].i_name, buffer, instance_name_length);
         }
         label_index++;
@@ -261,7 +262,7 @@ create_instance(char* key, struct metric* item, pmdaExt* pmda) {
             data->pcp_instance_domains,
             (data->pcp_instance_domain_count + 1) * sizeof(pmdaIndom)
         );
-    ALLOC_CHECK("Unable to resize memory for PMDA instance domains");
+    ALLOC_CHECK(data->pcp_instance_domains, "Unable to resize memory for PMDA instance domains");
     char* instance_key = create_instance_map_key(next_pmindom);
     dictAdd(data->instance_map, instance_key, item->name);
     free(instance_key);
@@ -575,7 +576,7 @@ statsd_text(int ident, int type, char** buffer, pmdaExt* pmda) {
             {
                 static char oneliner[] = "Total time in microseconds spent parsing metrics";
                 static char full_description[] = 
-                    "Total time in microseconds spent parsing metrics. Includes time spent parsing a datagram and failing midway.\n";
+                    "Total time in microseconds spent parsing metrics.\nIncludes time spent parsing a datagram and failing midway.\n";
                 *buffer = (type & PM_TEXT_ONELINE) ? oneliner : full_description;
                 return 0;
             }
@@ -583,7 +584,7 @@ statsd_text(int ident, int type, char** buffer, pmdaExt* pmda) {
             {
                 static char oneliner[] = "Total time in microseconds spent aggregating metrics";
                 static char full_description[] = 
-                    "Total time in microseconds spent aggregating metrics. Includes time spent aggregating a metric and failing midway.\n";
+                    "Total time in microseconds spent aggregating metrics.\nIncludes time spent aggregating a metric and failing midway.\n";
                 *buffer = (type & PM_TEXT_ONELINE) ? oneliner : full_description;
                 return 0;
             }
@@ -735,7 +736,7 @@ statsd_children(const char* name, int traverse, char*** children, int** status, 
  * Wrapper around pmdaLabel, called before control is passed to pmdaLabel
  * - since this is always called before statsd_label_callback, we set global *g_ext_reference* so that it is available in statsd_label_callback as well 
  * @arg ident - identifier
- * @arg type - type specifying what is identifing
+ * @arg type - type specifying what is identifying
  * @arg lp - Provides name and value indexes in JSON string
  * @arg pmda - PMDA extension structure (contains agent-specific private data)
  */
@@ -881,11 +882,10 @@ statsd_resolve_static_metric_fetch(pmdaMetric* mdesc, unsigned int instance, pmA
         /* settings.debug_output_filename */
         case 10:
         {
-            size_t length = strlen(config->debug_output_filename) + 1;
-            char* result = (char*) malloc(sizeof(char) * length);
-            ALLOC_CHECK("Unable to allocate memory for port value.");
-            memcpy(result, config->debug_output_filename, length);
+            char* result = strdup(config->debug_output_filename);
+            ALLOC_CHECK(result, "Unable to allocate memory for port value.");
             (*atom)->cp = result;
+            status = PMDA_FETCH_DYNAMIC;
             break;
         }
         /* settings.port */
@@ -895,35 +895,25 @@ statsd_resolve_static_metric_fetch(pmdaMetric* mdesc, unsigned int instance, pmA
         /* settings.parser_type */
         case 12:
         {   
-            size_t length = 6;
-            char* result = (char*) malloc(sizeof(char) * length);
-            ALLOC_CHECK("Unable to allocate memory for parser type value.");
-            char* basic = "Basic";
-            char* ragel = "Ragel";
+            const char* basic = "Basic";
+            const char* ragel = "Ragel";
             if (config->parser_type == PARSER_TYPE_BASIC) {
-                memcpy(result, basic, length);
+                (*atom)->cp = (char*)basic;
             } else {
-                memcpy(result, ragel, length);
+                (*atom)->cp = (char*)ragel;
             }
-            (*atom)->cp = result;
             break;
         }
         /* settings.duration_aggregation_type */
         case 13:
         {
-            char* result;
-            char* basic = "Basic";
-            char* ragel = "HDR histogram";
+            const char* basic = "Basic";
+            const char* hdr = "HDR histogram";
             if (config->duration_aggregation_type == DURATION_AGGREGATION_TYPE_BASIC) {
-                result = (char*) malloc(sizeof(char) * 6);
-                ALLOC_CHECK("Unable to allocate memory for duration aggregation type value.");
-                memcpy(result, basic, 6);
+                (*atom)->cp = (char*)basic;
             } else {
-                result = (char*) malloc(sizeof(char) * 14);
-                ALLOC_CHECK("Unable to allocate memory for duration aggregation type value.");
-                memcpy(result, ragel, 14);
+                (*atom)->cp = (char*)hdr;
             }
-            (*atom)->cp = result;
             break;
         }
         default:

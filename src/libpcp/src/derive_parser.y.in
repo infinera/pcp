@@ -253,7 +253,7 @@ __dminit(void)
 	char	global[MAXPATHLEN+1];
 
 	/* anon metrics for event record unpacking */
-PM_FAULT_POINT("libpcp/derive.c:7", PM_FAULT_PMAPI);
+PM_FAULT_POINT("libpcp/derive.c:7", PM_FAULT_CALL);
 	sts = registeranon(PM_LOCKED, "event.flags", PM_TYPE_U32);
 	if (sts < 0) {
 	    char	errmsg[PM_MAXERRMSGLEN];
@@ -266,7 +266,7 @@ PM_FAULT_POINT("libpcp/derive.c:7", PM_FAULT_PMAPI);
 	    registered.mlist[registered.nmetric-1].helptext =
 "An anonymous derived metric that is used to encode the event flags\n"
 "associated with event records.   See pmUnpackEventRecords(3).";
-PM_FAULT_POINT("libpcp/derive.c:8", PM_FAULT_PMAPI);
+PM_FAULT_POINT("libpcp/derive.c:8", PM_FAULT_CALL);
 	}
 	sts = registeranon(PM_LOCKED, "event.missed", PM_TYPE_U32);
 	if (sts < 0) {
@@ -316,18 +316,14 @@ static node_t *
 newnode(int type)
 {
     node_t	*np;
-    np = (node_t *)malloc(sizeof(node_t));
-    if (np == NULL) {
+
+
+    if ((np = (node_t *)calloc(1, sizeof(node_t))) == NULL) {
 	PM_UNLOCK(registered.mutex);
 	pmNoMem("pmRegisterDerived: newnode", sizeof(node_t), PM_FATAL_ERR);
 	/*NOTREACHED*/
     }
     np->type = type;
-    np->save_last = 0;
-    np->left = NULL;
-    np->right = NULL;
-    np->value = NULL;
-    np->data.info = NULL;
     return np;
 }
 
@@ -493,22 +489,14 @@ bind_expr(__pmContext *ctxp, int n, node_t *np, int lookup_err_ok, int is_global
 	 * need to allocate the data.info block ... this is not done
 	 * in the parser for any of the nodes
 	 */
-	if ((new->data.info = (info_t *)malloc(sizeof(info_t))) == NULL) {
+	if ((new->data.info = (info_t *)calloc(1, sizeof(info_t))) == NULL) {
 	    PM_UNLOCK(registered.mutex);
 	    pmNoMem("bind_expr: info block", sizeof(info_t), PM_FATAL_ERR);
 	    /*NOTREACHED*/
 	}
 	new->data.info->pmid = PM_ID_NULL;
-	new->data.info->numval = 0;
 	new->data.info->mul_scale = new->data.info->div_scale = 1;
-	new->data.info->ivlist = NULL;
-	new->data.info->stamp.tv_sec = 0;
-	new->data.info->stamp.tv_usec = 0;
-	new->data.info->time_scale = -1;		/* one-trip initialization if needed */
-	new->data.info->last_numval = 0;
-	new->data.info->last_ivlist = NULL;
-	new->data.info->last_stamp.tv_sec = 0;
-	new->data.info->last_stamp.tv_usec = 0;
+	new->data.info->time_scale = -1; /* one-trip initialization if needed */
     }
 
     if (is_global) {
@@ -1693,7 +1681,7 @@ registerderived(int derive_locked, const char *name, const char *expr, int isano
     else {
 	/* begin fault-injection block */
 PM_FAULT_POINT("libpcp/derive.c:1", PM_FAULT_MISC);
-	if (PM_FAULT_CHECK(PM_FAULT_MISC)) {
+	if (PM_FAULT_CHECK) {
 	    PM_FAULT_CLEAR;
 	    pmid.item = 1024 - 1;
 	    pmid.cluster = 2048 - 1;
@@ -1872,7 +1860,7 @@ registeranon(int derive_locked, const char *name, int type)
     char	*msg;
     char	buf[21];	/* anon(PM_TYPE_XXXXXX) */
 
-PM_FAULT_RETURN(PM_FAULT_PMAPI);
+PM_FAULT_RETURN(PM_ERR_FAULT);
     switch (type) {
 	case PM_TYPE_32:
 	    pmsprintf(buf, sizeof(buf), "anon(PM_TYPE_32)");
@@ -2130,7 +2118,7 @@ __dminit_configfile(const char *fname)
 			 * sequences ... may need more input for multi-line
 			 * <value>s
 			 */
-			char	*q = value;
+			char	*v = value;
 			int	esc = 0;
 			int	xtralines = 0;
 			for ( ; ; ) {
@@ -2147,20 +2135,22 @@ __dminit_configfile(const char *fname)
 			    }
 			    if (c == '\n')
 				xtralines++;
-			    if (q >= &value[vlen]) {
+			    if (v >= &value[vlen]) {
 				/*
 				 * out the end of the value buffer ... use
 				 * a "doubling" algorithm
 				 */
 				char	*tmp_value;
+				size_t	tmp_v;
 
+				tmp_v = v - value; /* beware realloc'd ptrs */
 				tmp_value = realloc(value, 2*vlen);
 				if (tmp_value == NULL) {
 				    /* registered.mutex not locked in this case */
 				    pmNoMem("pmLoadDerivedConfig: expand value", 2*vlen, PM_FATAL_ERR);
 				    /*NOTREACHED*/
 				}
-				q = &tmp_value[q - value];
+				v = &tmp_value[tmp_v];
 				value = tmp_value;
 				vlen *= 2;
 			    }
@@ -2172,7 +2162,7 @@ __dminit_configfile(const char *fname)
 				 * "continuation"
 				 */
 				if (c != '\n')
-				    *q++ = c;
+				    *v++ = c;
 				continue;
 			    }
 			    if (c == '\\') {
@@ -2180,10 +2170,10 @@ __dminit_configfile(const char *fname)
 				continue;
 			    }
 			    if (c == delim) {
-				*q++ = '\0';
+				*v++ = '\0';
 				break;
 			    }
-			    *q++ = c;
+			    *v++ = c;
 			}
 			if (xtralines > 1)
 			    lineno += xtralines - 1;
@@ -2280,6 +2270,7 @@ pmDerivedErrStr(void)
     return PM_TPD(derive_errmsg);
 }
 
+#undef NO_ERROR
 #define NO_ERROR 0
 #define SYNTAX_ERROR 1
 #define SEMANTIC_ERROR 2
@@ -2367,7 +2358,7 @@ addderived(const char *name, const char *expr, char **p)
     else {
 	/* begin fault-injection block */
 PM_FAULT_POINT("libpcp/derive.c:2", PM_FAULT_MISC);
-	if (PM_FAULT_CHECK(PM_FAULT_MISC)) {
+	if (PM_FAULT_CHECK) {
 	    PM_FAULT_CLEAR;
 	    pmid.item = 1;
 	    pmid.cluster = 0;
@@ -2876,7 +2867,7 @@ __dmchildren(__pmContext *ctxp, int derive_locked, const char *name, char ***off
 		    status[num_chn-1] = cp->mlist[i].name[start+len] == '\0' ? PMNS_LEAF_STATUS : PMNS_NONLEAF_STATUS;
 		    if (pmDebugOptions.derive && pmDebugOptions.appl2) {
 			fprintf(stderr, " (status=%d)", status[num_chn-1]);
-		}
+		    }
 		}
 		if (pmDebugOptions.derive && pmDebugOptions.appl2) {
 		    fputc('\n', stderr);
@@ -3117,7 +3108,7 @@ __dmopencontext(__pmContext *ctxp)
     ctxp->c_dm = (void *)cp;
     cp->glob_last = cp->nmetric = registered.nmetric;
     cp->limit = registered.limit;
-    if ((cp->mlist = (dm_t *)malloc(cp->nmetric*sizeof(dm_t))) == NULL) {
+    if ((cp->mlist = (dm_t *)calloc(cp->nmetric, sizeof(dm_t))) == NULL) {
 	PM_UNLOCK(registered.mutex);
 	pmNoMem("pmNewContext: derived metrics (mlist)", cp->nmetric*sizeof(dm_t), PM_FATAL_ERR);
 	/* NOTREACHED */

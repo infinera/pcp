@@ -9,13 +9,6 @@ Net::SNMP cpan
 RediSearch
 SoQt-devel
 Spreadsheet::Read cpan
-Spreadsheet::ReadSXC cpan
-Spreadsheet::WriteExcel cpan
-Spreadsheet::XLSX cpan
-Text::CSV_XS cpan
-XML::LibXML cpan
-XML::TokeParser cpan
-YAML::LibYAML cpan
 audit
 autoconf
 avahi-devel
@@ -27,6 +20,7 @@ bison
 bpftrace
 chan-devel
 coreutils
+clang
 cppcheck
 cronie
 curl
@@ -48,40 +42,35 @@ git-core
 grep
 iproute
 httpd
-infiniband-diags-devel
 initscripts
 java-latest-openjdk-headless
 kubernetes-client
-libibmad-devel
-libibumad-devel
+libbpf
+libbpf-devel
+libcmocka-devel
 libicu-devel
 libpfm-devel
 libuv-devel
-libvarlink-devel
 libvirt-daemon
 libvirt-daemon-driver-qemu
-libvirt-python3
+llvm
+llvm-devel
 lm_sensors
 mailx
 make
-man
+man-db
 mandoc
 mariadb
 memcached
 mesa-dri-drivers
-mysql
 ncurses-devel
 net-tools
 nmap
-nspr-devel
-nss-devel
-nss-tools
 openssl
 openssl-devel
 perl
 perl-CPAN
 perl-DBD-MySQL
-perl-DBD-mysql
 perl-Date-Manip
 perl-ExtUtils-MakeMaker
 perl-File-Slurp
@@ -102,10 +91,7 @@ perl-autodie
 perl-base
 perl-interpreter
 perl-libwww-perl
-perl-rrdtool
-pkg-config
 pkgconf-pkg-config
-pkgconfig
 podman-docker
 postfix-perl-scripts
 postgresql
@@ -124,13 +110,13 @@ python3-pillow
 python3-prometheus_client
 python3-psycopg2
 python3-pylint
+python3-pymongo
 python3-pyodbc
 python3-requests
 python3-rtslib
 python3-setuptools
 python3-six
 qt-devel
-qt4-devel
 qt5-qtbase-devel
 qt5-qtsvg-devel
 qtchooser
@@ -139,14 +125,12 @@ rdma-core-devel
 readline-devel
 redis
 rpm-build
-rpm-devel
 rrdtool
 rrdtool-perl
 sed
 selinux-policy
 selinux-policy-devel
 selinux-policy-targeted
-setools
 setools-console
 smartmontools
 socat

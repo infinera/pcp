@@ -1,6 +1,6 @@
 #!/usr/bin/env pmpython
 #
-# Copyright (C) 2015-2020 Marko Myllynen <myllynen@redhat.com>
+# Copyright (C) 2015-2021 Marko Myllynen <myllynen@redhat.com>
 #
 # This program is free software; you can redistribute it and/or modify it
 # under the terms of the GNU General Public License as published by the
@@ -68,6 +68,14 @@ class PCP2JSON(object):
                      'speclocal', 'instances', 'ignore_incompat', 'ignore_unknown',
                      'omit_flat', 'include_labels')
 
+        # Ignored for pmrep(1) compatibility
+        self.keys_ignore = (
+                     'timestamp', 'unitinfo', 'colxrow', 'separate_header', 'fixed_header',
+                     'delay', 'width', 'delimiter', 'extcsv', 'width_force',
+                     'extheader', 'repeat_header', 'interpol',
+                     'dynamic_header', 'overall_rank', 'overall_rank_alt', 'sort_metric',
+                     'instinfo', 'include_texts')
+
         # The order of preference for options (as present):
         # 1 - command line options
         # 2 - options from configuration file(s)
@@ -132,7 +140,7 @@ class PCP2JSON(object):
         self.pmfg_ts = None
 
         # Read configuration and prepare to connect
-        self.config = self.pmconfig.set_config_file(DEFAULT_CONFIG)
+        self.config = self.pmconfig.set_config_path(DEFAULT_CONFIG)
         self.pmconfig.read_options()
         self.pmconfig.read_cmd_line()
         self.pmconfig.prepare_metrics()
@@ -525,8 +533,8 @@ class PCP2JSON(object):
                                              separators=(',', ': ')))
                 self.writer.write("\n")
                 self.writer.flush()
-            except IOError as error:
-                if error.errno != errno.EPIPE:
+            except IOError as write_error:
+                if write_error.errno != errno.EPIPE:
                     raise
             try:
                 self.writer.close()

@@ -23,6 +23,7 @@ pmcd {
     numclients	PMCD:0:3
     pmlogger
     timezone	PMCD:0:5
+    zoneinfo	PMCD:0:26
     simabi	PMCD:0:6
     version	PMCD:0:7
     services	PMCD:0:16
@@ -79,6 +80,10 @@ pmcd.pdu_in {
     auth		PMCD:1:18
     label_req		PMCD:1:19
     label		PMCD:1:20
+    highres_fetch	PMCD:1:21
+    highres_result	PMCD:1:22
+    desc_ids		PMCD:1:23
+    descs		PMCD:1:24
 }
 
 pmcd.pdu_out {
@@ -102,6 +107,10 @@ pmcd.pdu_out {
     auth		PMCD:2:18
     label_req		PMCD:2:19
     label		PMCD:2:20
+    highres_fetch	PMCD:2:21
+    highres_result	PMCD:2:22
+    desc_ids		PMCD:2:23
+    descs		PMCD:2:24
 }
 
 pmcd.pmlogger {

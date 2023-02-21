@@ -4,12 +4,12 @@
 List::MoreUtils cpan
 Net::SNMP cpan
 Spreadsheet::Read cpan
-Spreadsheet::ReadSXC cpan
 Spreadsheet::XLSX cpan
 audit
 autoconf
 bash
 bc
+bcc-tools
 bind-utils
 bison
 bpftrace
@@ -43,15 +43,14 @@ libvirt-daemon-driver-qemu
 lm_sensors
 mailx
 make
+man-db
+mandoc
 mariadb
 memcached
 mesa-dri-drivers
 ncurses-devel
 net-tools
 nmap
-nspr-devel
-nss-devel
-nss-tools
 openssl
 openssl-devel
 perl-CPAN
@@ -100,14 +99,12 @@ rdma-core-devel
 readline-devel
 redis
 rpm-build
-rpm-devel
 rrdtool
 rrdtool-perl
 sed
 selinux-policy
 selinux-policy-devel
 selinux-policy-targeted
-setools
 setools-console
 smartmontools
 socat

@@ -15,7 +15,6 @@ bsd-mailx
 build-essential
 chrpath
 coreutils
-Spreadsheet::ReadSXC cpan
 Text::CSV_XS cpan
 cppcheck
 cron
@@ -36,6 +35,7 @@ grep
 iproute2
 libavahi-common-dev
 libclass-dbi-perl
+libcmocka-dev
 libdbd-mysql-perl
 libdbd-pg-perl
 libdevmapper-dev
@@ -50,9 +50,6 @@ liblist-moreutils-perl
 liblzma-dev
 libncurses5-dev
 libnet-snmp-perl
-libnspr4-dev
-libnss3-dev
-libnss3-tools
 libperl5.26
 libpfm4-dev
 libpython-dev
@@ -82,6 +79,7 @@ libxml-tokeparser-perl
 libyaml-libyaml-perl
 lm-sensors
 make
+man-db
 mandoc
 mariadb-client-core-10.1
 memcached
@@ -111,6 +109,7 @@ python3-openpyxl
 python3-pil
 python3-prometheus-client
 python3-psycopg2
+python3-pymongo
 python3-requests
 python3-setuptools
 python3-six
@@ -126,6 +125,7 @@ sed
 smartmontools
 socat
 sysstat
+systemtap
 systemtap-sdt-dev
 time
 unbound

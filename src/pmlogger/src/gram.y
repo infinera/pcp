@@ -119,16 +119,16 @@ stmt		: dowhat somemetrics
 
 dowhat		: logopt action		
 		{
-		    struct timeval delta;
+		    struct timeval ldelta;
 
-		    delta.tv_sec = $2 / 1000;
-		    delta.tv_usec = 1000 * ($2 % 1000);
+		    ldelta.tv_sec = $2 / 1000;
+		    ldelta.tv_usec = 1000 * ($2 % 1000);
 
 		    /*
 		     * Search for an existing task for this state/interval;
 		     * only allocate and setup a new task if none exists.
 		     */
-		    if ((tp = findtask(state, &delta)) == NULL) {
+		    if ((tp = findtask(state, &ldelta)) == NULL) {
 			if ((tp = (task_t *)calloc(1, sizeof(task_t))) == NULL) {
 			    char emess[256];
 			    pmsprintf(emess, sizeof(emess), "malloc failed: %s", osstrerror());
@@ -152,7 +152,7 @@ dowhat		: logopt action
 			    else
 				ltp->t_next = tp;
 			    tp->t_next = NULL;
-			    tp->t_delta = delta;
+			    tp->t_delta = ldelta;
 			    tp->t_state = state;
 			}
 		    }
@@ -244,39 +244,48 @@ metricspec	: NAME
 		     * if already found in this task, skip namespace PDUs.
 		     */
 		    if ((index = lookup_metric_name(metricName)) < 0) {
-			if ((sts = pmTraversePMNS(metricName, activate_new_metric)) < 0 ) {
-			    char emess[256];
-			    pmsprintf(emess, sizeof(emess),
-				    "Problem with lookup for metric \"%s\" "
-				    "... logging not activated", metricName);
-			    yywarn(emess);
-			    fprintf(stderr, "Reason: %s\n", pmErrStr(sts));
-
+			if (cache_lookup(metricName, NULL, NULL)) {
+			    /* it is a leaf node and in the pass0 cache */
+			    activate_new_metric(metricName);
 			}
+			else {
+			    if ((sts = pmTraversePMNS(metricName, activate_new_metric)) < 0 ) {
+				char emess[256];
+				pmsprintf(emess, sizeof(emess),
+					"Problem with lookup for metric \"%s\" "
+					"... logging not activated", metricName);
+				yywarn(emess);
+				fprintf(stderr, "Reason: %s\n", pmErrStr(sts));
+				if (sts == PM_ERR_IPC) {
+				    fprintf(stderr, "Arrgh, giving up!\n");
+				    exit(1);
+				}
+			    }
 
-			/*
-			 * Check if metricName is a potential dynamic root. If metricName
-			 * is not a leaf, then it could be a dynamic root non-leaf node,
-			 * even if it currently has no children. The PMAPI says that 
-			 * pmTraversePMNS(name, func) returns 1 if name is a leaf node
-			 * (or a derived metric) and _also_ 1 if it's a non-leaf node with
-			 * exactly one child.
-			 *
-			 * So metricName is a potential dynamic root if
-			 * sts < 0                   : unknown name or an error
-			 * sts == 0                  : childless dynamic root
-			 * sts > 1                   : non-leaf with children
-			 * sts == 1 and not a leaf   : non-leaf with exactly one child
-			 */
-			if (sts <= 0 || sts > 1 || pmLookupName(1, (const char **)&metricName, &id) != 1) {
 			    /*
-			     * Add it to the list for future traversal when a fetch returns
-			     * with the PMCD_NAMES_CHANGE flag set.
+			     * Check if metricName is a potential dynamic root. If metricName
+			     * is not a leaf, then it could be a dynamic root non-leaf node,
+			     * even if it currently has no children. The PMAPI says that 
+			     * pmTraversePMNS(name, func) returns 1 if name is a leaf node
+			     * (or a derived metric) and _also_ 1 if it's a non-leaf node with
+			     * exactly one child.
+			     *
+			     * So metricName is a potential dynamic root if
+			     * sts < 0                   : unknown name or an error
+			     * sts == 0                  : childless dynamic root
+			     * sts > 1                   : non-leaf with children
+			     * sts == 1 and not a leaf   : non-leaf with exactly one child
 			     */
-			    append_dynroot_list(metricName,
-				PMLC_GET_ON(tp->t_state) ? PM_LOG_ON : PM_LOG_MAYBE, /* TODO PMLOG_OFF? */
-				PMLC_GET_MAND(tp->t_state) ? PM_LOG_MANDATORY : PM_LOG_ADVISORY,
-				&tp->t_delta);
+			    if (sts <= 0 || sts > 1 || pmLookupName(1, (const char **)&metricName, &id) != 1) {
+				/*
+				 * Add it to the list for future traversal when a fetch returns
+				 * with the PMCD_NAMES_CHANGE flag set.
+				 */
+				append_dynroot_list(metricName,
+				    PMLC_GET_ON(tp->t_state) ? PM_LOG_ON : PM_LOG_MAYBE, /* TODO PMLOG_OFF? */
+				    PMLC_GET_MAND(tp->t_state) ? PM_LOG_MANDATORY : PM_LOG_ADVISORY,
+				    &tp->t_delta);
+			    }
 			}
 		    }
 		    else {	/* name is cached already, handle instances */
@@ -450,20 +459,27 @@ activate_cached_metric(const char *name, int index)
 	goto nomem;
 
     if (index < 0) {
-	if ((sts = pmLookupName(1, &name, &pmid)) < 0 || pmid == PM_ID_NULL) {
-	    pmsprintf(emess, sizeof(emess),
-		    "Metric \"%s\" is unknown ... not logged", name);
-	    goto snarf;
+	if (cache_lookup((char *)name, &pmid, dp) == 0) {
+	    /*
+	     * not in the name cache, this is the "old" expensive path
+	     * in terms of PDU round trips
+	     */
+	    if ((sts = pmLookupName(1, &name, &pmid)) < 0 || pmid == PM_ID_NULL) {
+		pmsprintf(emess, sizeof(emess),
+			"Metric \"%s\" is unknown ... not logged", name);
+		goto snarf;
+	    }
+	    if ((sts = pmLookupDesc(pmid, dp)) < 0) {
+		pmsprintf(emess, sizeof(emess),
+			"Description unavailable for metric \"%s\" ... not logged",
+			name);
+		goto snarf;
+	    }
 	}
 	/* is this a derived metric? */
 	if (IS_DERIVED(pmid))
 	    tp->t_dm++;
-	if ((sts = pmLookupDesc(pmid, dp)) < 0) {
-	    pmsprintf(emess, sizeof(emess),
-		    "Description unavailable for metric \"%s\" ... not logged",
-		    name);
-	    goto snarf;
-	}
+
 	tp->t_numpmid++;
 	tp->t_namelist = (char **)realloc(tp->t_namelist, tp->t_numpmid * sizeof(char *));
 	if (tp->t_namelist == NULL)
@@ -580,6 +596,10 @@ nomem:
 snarf:
     yywarn(emess);
     fprintf(stderr, "Reason: %s\n", pmErrStr(sts));
+    if (sts == PM_ERR_IPC) {
+	fprintf(stderr, "Arrgh: lost connection to pmcd, giving up!\n");
+	exit(1);
+    }
     if (dp != NULL)
         free(dp);
     return;
@@ -596,17 +616,17 @@ activate_new_metric(const char *name)
  * or NULL if none exists for that value pair.
  */
 task_t *
-findtask(int state, struct timeval *delta)
+findtask(int arg_state, struct timeval *arg_delta)
 {
-    task_t	*tp;
+    task_t	*ltp;
 
-    for (tp = tasklist; tp != NULL; tp = tp->t_next) {
-	if (state == tp->t_state &&
-	    delta->tv_sec == tp->t_delta.tv_sec &&
-	    delta->tv_usec == tp->t_delta.tv_usec)
+    for (ltp = tasklist; ltp != NULL; ltp = ltp->t_next) {
+	if (arg_state == ltp->t_state &&
+	    arg_delta->tv_sec == ltp->t_delta.tv_sec &&
+	    arg_delta->tv_usec == ltp->t_delta.tv_usec)
 	    break;
     }
-    return tp;
+    return ltp;
 }
 
 /*
@@ -618,7 +638,7 @@ findtask(int state, struct timeval *delta)
  * flag set.
  */
 static void
-append_dynroot_list(const char *name, int state, int control, struct timeval *timedelta)
+append_dynroot_list(const char *name, int arg_state, int control, struct timeval *timedelta)
 {
     int i;
     dynroot_t *d;
@@ -632,13 +652,13 @@ append_dynroot_list(const char *name, int state, int control, struct timeval *ti
     d = &dyn_roots[n_dyn_roots-1];
     if ((d->name = strdup(name)) == NULL)
 	pmNoMem("strdup name in dyn_roots list", strlen(name) + 1, PM_FATAL_ERR);
-    d->state = state;
+    d->state = arg_state;
     d->control = control;
     d->delta = *timedelta;
 
     if (pmDebugOptions.log) {
 	fprintf(stderr, "pmlogger: possible dynamic root \"%s\", state=0x%x, control=0x%x, delta=%ld.%06ld\n",
-	    name, state, control, (long)timedelta->tv_sec, (long)timedelta->tv_usec);
+	    name, arg_state, control, (long)timedelta->tv_sec, (long)timedelta->tv_usec);
     }
 }
 

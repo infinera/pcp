@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2013,2017 Red Hat.
+ * Copyright (c) 2013,2017,2022 Red Hat.
  * Copyright (c) 1995,2003,2004 Silicon Graphics, Inc.  All Rights Reserved.
  * 
  * This program is free software; you can redistribute it and/or modify it
@@ -30,8 +30,6 @@
 #include "./dbpmda.h"
 #include "./lex.h"
 #include "./gram.h"
-
-static pmTimeval	now;
 
 int			fromPMDA;
 int			toPMDA;
@@ -129,8 +127,12 @@ pmdaversion(void)
     else {
 	if (sts < 0)
 	    fprintf(stderr, "__pmGetPDU(%d): %s\n", fromPMDA, pmErrStr(sts));
-	else
-	    fprintf(stderr, "pmdaversion: expecting PDU_CREDS, got PDU type %d\n", sts);
+	else if (sts == 0)
+	    fprintf(stderr, "pmdaversion: expecting PDU_CREDS, got EOF\n");
+	else {
+	    fprintf(stderr, "pmdaversion: expecting PDU_CREDS, got PDU type %s\n", __pmPDUTypeStr(sts));
+	    __pmDumpPDUTrace(stderr);
+	}
 	fprintf(stderr, "Warning: no version exchange with PMDA %s after %d secs\n",
 			myPmdaName, _creds_timeout);
     }
@@ -364,7 +366,7 @@ dopmda_iname(pmInDom indom, int inst)
     pmInResult	*inresult;
     __pmPDU	*pb;
 
-    if ((sts = __pmSendInstanceReq(toPMDA, FROM_ANON, &now, indom, inst, NULL)) >= 0) {
+    if ((sts = __pmSendInstanceReq(toPMDA, FROM_ANON, indom, inst, NULL)) >= 0) {
 	if ((pinpdu = sts = __pmGetPDU(fromPMDA, ANY_SIZE, TIMEOUT_NEVER, &pb)) == PDU_INSTANCE) {
 	    if ((sts = __pmDecodeInstance(pb, &inresult)) >= 0) {
 		/* success */
@@ -401,9 +403,9 @@ dopmda(int pdu)
     int			sts;
     pmDesc		desc;
     pmDesc		*desc_list = NULL;
-    pmResult		*result = NULL;
+    __pmResult		*result = NULL;
     pmLabelSet		*labelset = NULL;
-    pmInResult	*inresult;
+    pmInResult		*inresult;
     __pmPDU		*pb;
     int			i;
     int			j;
@@ -459,14 +461,14 @@ dopmda(int pdu)
 		    profile_changed = 0;
 	    }
 	    if (sts >= 0) {
-		if ((sts = __pmSendFetch(toPMDA, FROM_ANON, 0, NULL, param.numpmid, param.pmidlist)) >= 0) {
+		if ((sts = __pmSendFetch(toPMDA, FROM_ANON, 0, param.numpmid, param.pmidlist)) >= 0) {
 		    if ((pinpdu = sts = __pmGetPDU(fromPMDA, ANY_SIZE, TIMEOUT_NEVER, &pb)) == PDU_RESULT) {
 			if ((sts = __pmDecodeResult(pb, &result)) >= 0) {
 			    if (desc_list) 
-				_dbDumpResult(stdout, result, desc_list);
+				_dbPrintResult(stdout, result, desc_list);
 			    else
-				__pmDumpResult(stdout, result);
-			    pmFreeResult(result);
+				__pmPrintResult(stdout, result);
+			    __pmFreeResult(result);
 			}
 			else
 			    printf("Error: __pmDecodeResult() failed: %s\n", pmErrStr(sts));
@@ -494,7 +496,7 @@ dopmda(int pdu)
 
 	case PDU_INSTANCE_REQ:
 	    printf("pmInDom: %s\n", pmInDomStr(param.indom));
-	    if ((sts = __pmSendInstanceReq(toPMDA, FROM_ANON, &now, param.indom, param.number, param.name)) >= 0) {
+	    if ((sts = __pmSendInstanceReq(toPMDA, FROM_ANON, param.indom, param.number, param.name)) >= 0) {
 		if ((pinpdu = sts = __pmGetPDU(fromPMDA, ANY_SIZE, TIMEOUT_NEVER, &pb)) == PDU_INSTANCE) {
 		    if ((sts = __pmDecodeInstance(pb, &inresult)) >= 0) {
 			printindom(stdout, inresult);
@@ -541,8 +543,7 @@ dopmda(int pdu)
 
 	    printf("Getting Result Structure...\n");
 	    pinpdu = 0;
-	    if ((sts = __pmSendFetch(toPMDA, FROM_ANON, 0, NULL, 
-				    1, &(desc.pmid))) >= 0) {
+	    if ((sts = __pmSendFetch(toPMDA, FROM_ANON, 0, 1, &(desc.pmid))) >= 0) {
 		int		lsts;
 		int		ksts;
 		if ((pinpdu = sts = __pmGetPDU(fromPMDA, ANY_SIZE, TIMEOUT_NEVER, 
@@ -551,7 +552,7 @@ dopmda(int pdu)
 			printf("Error: __pmDecodeResult() failed: %s\n", 
 			       pmErrStr(lsts));
 		    else if (pmDebugOptions.fetch)
-			__pmDumpResult(stdout, result);
+			__pmPrintResult(stdout, result);
 		}
 		else if (sts == PDU_ERROR) {
 		    if ((ksts = __pmDecodeError(pb, &lsts)) >= 0)
@@ -579,15 +580,15 @@ dopmda(int pdu)
 		return;
 	    }
 
-	    if ((sts = fillResult(result, desc.type)) < 0) {
-		pmFreeResult(result);
+	    if ((sts = fillValues(result->vset[0], desc.type)) < 0) {
+		__pmFreeResult(result);
 		__pmUnpinPDUBuf(pb);
 		return;
 	    }
 
 	    printf("Sending Result...\n");
 	    sts = __pmSendResult(toPMDA, FROM_ANON, result);
-	    pmFreeResult(result);	
+	    __pmFreeResult(result);	
 	    __pmUnpinPDUBuf(pb);
 	    if (sts >= 0) {
 		if ((pinpdu = sts = __pmGetPDU(fromPMDA, ANY_SIZE, TIMEOUT_NEVER, 
@@ -705,9 +706,9 @@ dopmda(int pdu)
 				printf("Labels:\n");
 			    for (j = 0; j < labelset[i].nlabels; j++) {
 				pmLabel	*lp = &labelset[i].labels[j];
-				char *name = labelset[i].json + lp->name;
+				char *label = labelset[i].json + lp->name;
 				char *value = labelset[i].json + lp->value;
-				printf("    %.*s=%.*s\n", lp->namelen, name, lp->valuelen, value);
+				printf("    %.*s=%.*s\n", lp->namelen, label, lp->valuelen, value);
 			    }
 			}
 			if (numsets == 0)
@@ -888,37 +889,44 @@ dopmda(int pdu)
 }
 
 int
-fillResult(pmResult *result, int type)
+fillValues(pmValueSet *vsp, int type)
 {
     int		i;
     int		sts = 0;
     pmAtomValue	atom;
-    pmValueSet	*vsp;
     char	*endbuf = NULL;
 
+    setoserror(0);	/* clear errno */
     switch(type) {
     case PM_TYPE_32:
 	atom.l = (int)strtol(param.name, &endbuf, 10);
+	if (oserror() != 0)
+	    sts = -oserror();	/* ERANGE */
 	break;
     case PM_TYPE_U32:
 	atom.ul = (unsigned int)strtoul(param.name, &endbuf, 10);
+	if (oserror() != 0)
+	    sts = -oserror();	/* ERANGE */
 	break;
     case PM_TYPE_64:
 	atom.ll = strtoll(param.name, &endbuf, 10);
+	if (oserror() != 0)
+	    sts = -oserror();	/* ERANGE */
 	break;
     case PM_TYPE_U64:
 	atom.ull = strtoull(param.name, &endbuf, 10);
+	if (oserror() != 0)
+	    sts = -oserror();	/* ERANGE */
 	break;
     case PM_TYPE_FLOAT:
-	atom.d = strtod(param.name, &endbuf);
-	if (atom.d < FLT_MIN || atom.d > FLT_MAX)
-	    sts = -ERANGE;
-	else {
-	    atom.f = atom.d;
-	}
+	atom.f = strtof(param.name, &endbuf);
+	if (oserror() != 0)
+	    sts = -oserror();	/* ERANGE */
 	break;
     case PM_TYPE_DOUBLE:
 	atom.d = strtod(param.name, &endbuf);
+	if (oserror() != 0)
+	    sts = -oserror();	/* ERANGE */
 	break;
     case PM_TYPE_STRING:
 	atom.cp = (char *)malloc(strlen(param.name) + 1);
@@ -945,8 +953,6 @@ fillResult(pmResult *result, int type)
     }
 
     if (sts >= 0) {
-	vsp = result->vset[0];
-
 	if (vsp->numval == 0) {
 	    printf("Error: %s not available!\n", pmIDStr(param.pmid));
 	    sts = PM_ERR_VALUE;

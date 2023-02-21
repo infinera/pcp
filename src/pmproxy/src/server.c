@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2018-2019 Red Hat.
+ * Copyright (c) 2018-2019,2021-2022 Red Hat.
  *
  * This program is free software; you can redistribute it and/or modify it
  * under the terms of the GNU Lesser General Public License as published
@@ -36,8 +36,15 @@ void
 proxylog(pmLogLevel level, sds message, void *arg)
 {
     struct proxy	*proxy = (struct proxy *)arg;
-    const char		*state = proxy->slots ? "" : "- DISCONNECTED - ";
+    const char		*state;
     int			priority;
+
+    if (proxy == NULL) {
+	/* early error message, before setup */
+	state = "- EPOCH - ";
+    }
+    else
+	state = proxy->slots ? "" : "- DISCONNECTED - ";
 
     switch (level) {
     case PMLOG_TRACE:
@@ -106,48 +113,26 @@ proxymetrics_close(struct proxy *proxy, enum proxy_registry prid)
     }
 }
 
-static void
-server_metrics_init(struct proxy *proxy)
-{
-    mmv_registry_t	*registry;
-    pmAtomValue		*value;
-    pmInDom		noindom = MMV_INDOM_NULL;
-    pmUnits		nounits = MMV_UNITS(0,0,0,0,0,0);
-    pid_t		pid = getpid();
-    char		buffer[64];
-    void		*map;
-
-    if ((registry = proxy->metrics[METRICS_SERVER]) == NULL)
-	return;
-
-    mmv_stats_add_metric(registry, "pid", SERVER_PID,
-		MMV_TYPE_U32, MMV_SEM_DISCRETE, nounits, noindom,
-		"PID for the current pmproxy invocation", NULL);
-    pmsprintf(buffer, sizeof(buffer), "%u", pid);
-    mmv_stats_add_metric_label(registry, SERVER_PID,
-		"pid", buffer, MMV_NUMBER_TYPE, 0);
-
-    if ((map = mmv_stats_start(registry)) == NULL) {
-	fprintf(stderr, "%s: instrumentation disabled\n", pmGetProgname());
-	return;
-    }
-
-    if ((value = mmv_lookup_value_desc(map, "pid", NULL)) != NULL)
-	mmv_set_value(map, value, pid);
-}
-
 static struct proxy *
 server_init(int portcount, const char *localpath)
 {
     struct server	*servers;
     struct proxy	*proxy;
     int			count;
+    mmv_registry_t	*registry;
+
+    if (pmWebTimerSetup() < 0) {
+	fprintf(stderr, "%s: error - failed to setup event timers\n",
+			pmGetProgname());
+	return NULL;
+    }
 
     if ((proxy = calloc(1, sizeof(struct proxy))) == NULL) {
 	fprintf(stderr, "%s: out-of-memory in proxy server setup\n",
 			pmGetProgname());
 	return NULL;
     }
+    uv_mutex_init(&proxy->write_mutex);
 
     count = portcount + (*localpath ? 1 : 0);
     if (count) {
@@ -168,11 +153,11 @@ server_init(int portcount, const char *localpath)
 
     proxy->config = config;
 
-    proxymetrics(proxy, METRICS_SERVER);
-    server_metrics_init(proxy);
+    if ((proxy->events = uv_default_loop()) != NULL)
+	pmWebTimerSetEventLoop(proxy->events);
 
-    proxy->events = uv_default_loop();
-    uv_loop_init(proxy->events);
+    if ((registry = proxymetrics(proxy, METRICS_SERVER)) != NULL)
+	pmWebTimerSetMetricRegistry(registry);
 
     return proxy;
 }
@@ -202,7 +187,9 @@ signal_init(struct proxy *proxy)
 {
     uv_loop_t		*loop = proxy->events;
 
+#if defined(HAVE_SIGPIPE)
     signal(SIGPIPE, SIG_IGN);
+#endif
 
     uv_signal_init(loop, &sighup);
     uv_signal_init(loop, &sigint);
@@ -220,7 +207,7 @@ on_buffer_alloc(uv_handle_t *handle, size_t suggested_size, uv_buf_t *buf)
 	fprintf(stderr, "%s: handle %p buffer allocation of %lld bytes\n",
 			"on_buffer_alloc", handle, (long long)suggested_size);
 
-    if ((buf->base = sdsnewlen(SDS_NOINIT, suggested_size)) != NULL)
+    if ((buf->base = sdsnewlen(NULL, suggested_size)) != NULL)
 	buf->len = suggested_size;
     else
 	buf->len = 0;
@@ -258,20 +245,16 @@ client_put(struct client *client)
     uv_mutex_unlock(&client->mutex);
 
     if (refcount == 0) {
-	/* remove client from the doubly-linked list */
-	if (client->next != NULL)
-	    client->next->prev = client->prev;
-	*client->prev = client->next;
-
 	if (client->protocol & STREAM_PCP)
 	    on_pcp_client_close(client);
 	if (client->protocol & STREAM_HTTP)
 	    on_http_client_close(client);
 	if (client->protocol & STREAM_REDIS)
 	    on_redis_client_close(client);
-	if (client->protocol & STREAM_SECURE)
+	if ((client->protocol & STREAM_SECURE) && client->stream.secure)
 	    on_secure_client_close(client);
-
+	if (client->buffer)
+	    sdsfree(client->buffer);
 	memset(client, 0, sizeof(*client));
 	free(client);
     }
@@ -295,15 +278,15 @@ client_close(struct client *client)
 void
 on_client_write(uv_write_t *writer, int status)
 {
-    struct client	*client = (struct client *)writer->data;
-    stream_write_baton	*request = (stream_write_baton *)writer;
+    struct client		*client = (struct client *)writer->data;
+    struct stream_write_baton	*request = (struct stream_write_baton *)writer;
 
     if (pmDebugOptions.af)
 	fprintf(stderr, "%s: completed write [sts=%d] to client %p\n",
 			"on_client_write", status, client);
 
     if (status == 0) {
-	if (client->protocol & STREAM_SECURE)
+	if ((client->protocol & STREAM_SECURE) && client->stream.secure)
 	    on_secure_client_write(client);
 	if (client->protocol & STREAM_PCP)
 	    on_pcp_client_write(client);
@@ -332,35 +315,56 @@ on_client_write(uv_write_t *writer, int status)
 void *
 on_write_callback(uv_callback_t *handle, void *data)
 {
-    stream_write_baton	*request = (stream_write_baton *)data;
-    struct client	*client = (struct client *)request->writer.data;
-    int			sts;
+    struct stream_write_baton	*request = (struct stream_write_baton *)data;
+    struct client		*client = (struct client *)request->writer.data;
+    int				sts;
 
+    /*
+     * client_write() checks if the client is opened, and calls
+     * uv_callback_fire(&proxy->write_callbacks, ...).
+     * In a later loop iteration, on_write_callback() is called and tries
+     * to write to the client.  However, the client can be closed between
+     * the call to uv_callback_fire() and the actual on_write_callback()
+     * callback.  Therefore we need to check this condition again.
+     */
+    if (client_is_closed(client)) {
+	/* release lock of client_write */
+	client_put(client);
+	return 0;
+    }
+
+    (void)handle;
     if (pmDebugOptions.af)
 	fprintf(stderr, "%s: client=%p\n", "on_write_callback", client);
 
     if (client->stream.secure == 0) {
 	sts = uv_write(&request->writer, (uv_stream_t *)&client->stream,
 		 &request->buffer[0], request->nbuffers, request->callback);
-	if (sts != 0)
-	    fprintf(stderr, "%s: ERROR uv_write failed\n", "on_write_callback");
+	if (sts != 0) {
+	    pmNotifyErr(LOG_ERR, "%s: %s - uv_write failed [%s]: %s\n",
+			pmGetProgname(), "on_write_callback",
+			uv_err_name(sts), uv_strerror(sts));
+	    client_close(client);
+	}
     } else
 	secure_client_write(client, request);
-    (void)handle;
+
+    /* release lock of client_write */
+    client_put(client);
     return 0;
 }
 
 void
 client_write(struct client *client, sds buffer, sds suffix)
 {
-    stream_write_baton	*request;
-    struct proxy	*proxy = client->proxy;
-    unsigned int	nbuffers = 0;
+    struct stream_write_baton	*request;
+    struct proxy		*proxy = client->proxy;
+    unsigned int		nbuffers = 0;
 
     if (client_is_closed(client))
 	return;
 
-    if ((request = calloc(1, sizeof(stream_write_baton))) != NULL) {
+    if ((request = calloc(1, sizeof(struct stream_write_baton))) != NULL) {
 	if (pmDebugOptions.af)
 	    fprintf(stderr, "%s: sending %ld bytes [0] to client %p\n",
 			"client_write", (long)sdslen(buffer), client);
@@ -375,13 +379,15 @@ client_write(struct client *client, sds buffer, sds suffix)
 	request->writer.data = client;
 	request->callback = on_client_write;
 
+	/* client must not get freed while waiting for the write callback to fire */
+	client_get(client);
 	uv_callback_fire(&proxy->write_callbacks, request, NULL);
     } else {
 	client_close(client);
     }
 }
 
-static stream_protocol
+static enum stream_protocol
 client_protocol(int key)
 {
     switch (key) {
@@ -453,10 +459,16 @@ on_client_read(uv_stream_t *stream, ssize_t nread, const uv_buf_t *buf)
     if (nread > 0) {
 	if (client->protocol == STREAM_UNKNOWN)
 	    client->protocol |= client_protocol(*buf->base);
-	if (client->protocol & STREAM_SECURE)
+
+#ifdef HAVE_OPENSSL
+	if ((client->protocol & STREAM_SECURE) && (proxy->ssl != NULL))
 	    on_secure_client_read(proxy, client, nread, buf);
 	else
 	    on_protocol_read(stream, nread, buf);
+#else
+	on_protocol_read(stream, nread, buf);
+#endif
+
     } else if (nread < 0) {
 	if (pmDebugOptions.af)
 	    fprintf(stderr, "%s: read error %ld "
@@ -475,14 +487,16 @@ on_client_connection(uv_stream_t *stream, int status)
     uv_handle_t		*handle;
 
     if (status != 0) {
-	fprintf(stderr, "%s: client connection failed: %s\n",
-			pmGetProgname(), uv_strerror(status));
+	pmNotifyErr(LOG_ERR, "%s: %s - %s failed [%s]: %s\n",
+		    pmGetProgname(), "on_client_connection", "connection",
+		    uv_err_name(status), uv_strerror(status));
 	return;
     }
 
     if ((client = calloc(1, sizeof(*client))) == NULL) {
-	fprintf(stderr, "%s: out-of-memory for new client\n",
-			pmGetProgname());
+	pmNotifyErr(LOG_ERR, "%s: %s - %s failed [%s]: %s\n",
+			pmGetProgname(), "on_client_connection", "calloc",
+			"ENOMEM", strerror(ENOMEM));
 	return;
     }
     if (pmDebugOptions.context | pmDebugOptions.af)
@@ -496,16 +510,18 @@ on_client_connection(uv_stream_t *stream, int status)
 
     status = uv_tcp_init(proxy->events, &client->stream.u.tcp);
     if (status != 0) {
-	fprintf(stderr, "%s: client tcp init failed: %s\n",
-			pmGetProgname(), uv_strerror(status));
+	pmNotifyErr(LOG_ERR, "%s: %s - %s failed [%s]: %s\n",
+		    pmGetProgname(), "on_client_connection", "uv_tcp_init",
+		    uv_err_name(status), uv_strerror(status));
 	client_put(client);
 	return;
     }
 
     status = uv_accept(stream, (uv_stream_t *)&client->stream.u.tcp);
     if (status != 0) {
-	fprintf(stderr, "%s: client tcp init failed: %s\n",
-			pmGetProgname(), uv_strerror(status));
+	pmNotifyErr(LOG_ERR, "%s: %s - %s failed [%s]: %s\n",
+		    pmGetProgname(), "on_client_connection", "uv_accept",
+		    uv_err_name(status), uv_strerror(status));
 	client_put(client);
 	return;
     }
@@ -513,24 +529,20 @@ on_client_connection(uv_stream_t *stream, int status)
     handle->data = (void *)proxy;
     client->proxy = proxy;
 
-    /* insert client into doubly-linked list at the head */
-    if ((client->next = proxy->first) != NULL)
-	proxy->first->prev = &client->next;
-    proxy->first = client;
-    client->prev = &proxy->first;
-
     status = uv_read_start((uv_stream_t *)&client->stream.u.tcp,
 			    on_buffer_alloc, on_client_read);
     if (status != 0) {
-	fprintf(stderr, "%s: client read start failed: %s\n",
-			pmGetProgname(), uv_strerror(status));
+	pmNotifyErr(LOG_ERR, "%s: %s - %s failed [%s]: %s\n",
+		    pmGetProgname(), "on_client_connection", "uv_read_start",
+		    uv_err_name(status), uv_strerror(status));
 	client_close(client);
     }
 }
 
 static int
-open_request_port(struct proxy *proxy, struct server *server, stream_family family,
-		const struct sockaddr *addr, int port, int maxpending)
+open_request_port(struct proxy *proxy, struct server *server,
+		stream_family_t family, const struct sockaddr *addr,
+		int port, int maxpending)
 {
     struct stream	*stream = &server->stream;
     uv_handle_t		*handle;
@@ -555,8 +567,9 @@ open_request_port(struct proxy *proxy, struct server *server, stream_family fami
 
     sts = uv_listen((uv_stream_t *)&stream->u.tcp, maxpending, on_client_connection);
     if (sts != 0) {
-	fprintf(stderr, "%s: socket listen error %s\n",
-			pmGetProgname(), uv_strerror(sts));
+	pmNotifyErr(LOG_ERR, "%s: %s - uv_listen failed [%s]: %s\n",
+			pmGetProgname(), "open_request_port",
+			uv_err_name(sts), uv_strerror(sts));
 	uv_close(handle, NULL);
 	return -ENOTCONN;
     }
@@ -579,15 +592,23 @@ open_request_local(struct proxy *proxy, struct server *server,
     uv_pipe_init(proxy->events, &stream->u.local, 0);
     handle = (uv_handle_t *)&stream->u.local;
     handle->data = (void *)proxy;
-    uv_pipe_bind(&stream->u.local, name);
+    sts = uv_pipe_bind(&stream->u.local, name);
+    if (sts != 0) {
+	pmNotifyErr(LOG_ERR, "%s: %s - uv_pipe_bind %s failed [%s]: %s\n",
+			pmGetProgname(), "open_request_local", name,
+			uv_err_name(sts), uv_strerror(sts));
+	uv_close(handle, NULL);
+        return -ENOTCONN;
+    }
 #ifdef HAVE_UV_PIPE_CHMOD
     uv_pipe_chmod(&stream->u.local, UV_READABLE | UV_WRITABLE);
 #endif
 
     sts = uv_listen((uv_stream_t *)&stream->u.local, maxpending, on_client_connection);
     if (sts != 0) {
-	fprintf(stderr, "%s: local listen error %s\n",
-			pmGetProgname(), uv_strerror(sts));
+	pmNotifyErr(LOG_ERR, "%s: %s - %s failed [%s]: %s\n",
+		    pmGetProgname(), "open_request_local", "uv_listen",
+		    uv_err_name(sts), uv_strerror(sts));
 	uv_close(handle, NULL);
         return -ENOTCONN;
     }
@@ -623,7 +644,7 @@ open_request_ports(char *localpath, size_t localpathlen, int maxpending)
     __pmSockAddr	*addr;
     struct proxyaddr	*addrlist;
     const struct sockaddr *sockaddr;
-    stream_family	family;
+    enum stream_family	family;
     struct server	*server;
     struct proxy	*proxy;
 
@@ -721,59 +742,13 @@ fail:
 }
 
 static void
-close_proxy(struct proxy *proxy)
-{
-    close_pcp_module(proxy);
-    close_http_module(proxy);
-    close_redis_module(proxy);
-    close_secure_module(proxy);
-}
-
-static void
-shutdown_ports(void *arg)
-{
-    struct proxy	*proxy = (struct proxy *)arg;
-    struct server	*server;
-    struct stream	*stream;
-    int			i;
-
-    for (i = 0; i < proxy->nservers; i++) {
-	server = &proxy->servers[i];
-	stream = &server->stream;
-	if (stream->active == 0)
-	    continue;
-	if (stream->family == STREAM_LOCAL) {
-	    uv_close((uv_handle_t *)&stream->u.local, NULL);
-	    unlink(stream->address);
-	} else {
-	    uv_close((uv_handle_t *)&stream->u.tcp, NULL);
-	    if (server->presence)
-		__pmServerUnadvertisePresence(server->presence);
-	}
-    }
-    proxy->nservers = 0;
-
-    close_proxy(proxy);
-
-    if (proxy->config) {
-	pmIniFileFree(proxy->config);
-	proxy->config = NULL;
-    }
-
-    uv_loop_close(proxy->events);
-    proxymetrics_close(proxy, METRICS_SERVER);
-
-    free(proxy->servers);
-    proxy->servers = NULL;
-}
-
-static void
 dump_request_ports(FILE *output, void *arg)
 {
     struct proxy	*proxy = (struct proxy *)arg;
     struct stream	*stream;
     uv_os_fd_t		uv_fd;
-    int			i, fd;
+    unsigned int	i;
+    int			fd;
 
     fprintf(output, "%s request port(s):\n"
 		"  sts fd   port  family address\n"
@@ -792,6 +767,62 @@ dump_request_ports(FILE *output, void *arg)
 		    stream->family == STREAM_TCP4 ? "inet" : "ipv6",
 		    stream->address ? stream->address : "INADDR_ANY");
     }
+}
+
+static void
+close_proxy(struct proxy *proxy)
+{
+    close_pcp_module(proxy);
+    close_http_module(proxy);
+    close_redis_module(proxy);
+    close_secure_module(proxy);
+}
+
+static void
+shutdown_ports(void *arg)
+{
+    struct proxy	*proxy = (struct proxy *)arg;
+    struct server	*server;
+    struct stream	*stream;
+    unsigned int	i;
+
+    for (i = 0; i < proxy->nservers; i++) {
+	server = &proxy->servers[i];
+	stream = &server->stream;
+	if (stream->active == 0)
+	    continue;
+	if (stream->family == STREAM_LOCAL) {
+	    uv_close((uv_handle_t *)&stream->u.local, NULL);
+	    unlink(stream->address);
+	} else {
+	    uv_close((uv_handle_t *)&stream->u.tcp, NULL);
+	    if (server->presence)
+		__pmServerUnadvertisePresence(server->presence);
+	}
+    }
+    proxy->nservers = 0;
+
+    close_proxy(proxy);
+    if (proxy->config) {
+	pmIniFileFree(proxy->config);
+	proxy->config = NULL;
+    }
+    pmWebTimerClose();
+    uv_loop_close(proxy->events);
+    proxymetrics_close(proxy, METRICS_SERVER);
+
+    free(proxy->servers);
+    proxy->servers = NULL;
+}
+
+static void
+shutdown_proxy(uv_timer_t *arg)
+{
+    uv_handle_t		*handle = (uv_handle_t *)arg;
+    struct proxy	*proxy = (struct proxy *)handle->data;
+
+    shutdown_ports(proxy);
+    exit(0);
 }
 
 /*
@@ -831,13 +862,23 @@ check_proxy(uv_check_t *arg)
 }
 
 static void
-main_loop(void *arg)
+main_loop(void *arg, struct timeval *runtime)
 {
     struct proxy	*proxy = (struct proxy *)arg;
+    uv_timer_t		shutdown_io;
     uv_timer_t		initial_io;
     uv_prepare_t	before_io;
     uv_check_t		after_io;
     uv_handle_t		*handle;
+
+    if (runtime) {
+	uint64_t millisec = runtime->tv_sec * 1000;
+	millisec += runtime->tv_usec / 1000;
+	uv_timer_init(proxy->events, &shutdown_io);
+	handle = (uv_handle_t *)&shutdown_io;
+	handle->data = (void *)proxy;
+	uv_timer_start(&shutdown_io, shutdown_proxy, millisec, 0);
+    }
 
     uv_timer_init(proxy->events, &initial_io);
     handle = (uv_handle_t *)&initial_io;
