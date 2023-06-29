@@ -21,6 +21,7 @@
  * appl2	pmResult changes
  * appl3	-q and reason for not taking quick exit
  * appl4	config parser
+ * appl5	regexp matching for metric value changes and iname changes
  */
 
 #include <math.h>
@@ -57,7 +58,7 @@ static pmLongOptions longopts[] = {
     { "warnings", 0, 'w', 0, "emit warnings [default is silence]" },
     PMOPT_HELP,
     PMAPI_OPTIONS_TEXT(""),
-    PMAPI_OPTIONS_TEXT("output-archive is required unless -i is specified"),
+    PMAPI_OPTIONS_TEXT("output-archive is required unless -C or -i is specified"),
     PMAPI_OPTIONS_END
 };
 
@@ -406,8 +407,24 @@ parseargs(int argc, char *argv[])
     }
 
     if (opts.errors == 0) {
-	if ((iflag == 0 && opts.optind != argc-2) ||
-	    (iflag == 1 && opts.optind != argc-1))
+	if (iflag) {
+	    if (opts.optind == argc-1)
+		inarch.name = argv[argc-1];
+	    else
+		opts.errors++;
+	}
+	else if (Cflag) {
+	    /* output-archive is sort of optional for -C */
+	    if (opts.optind == argc-2)
+		inarch.name = argv[argc-2];
+	    else if (opts.optind == argc-1)
+		inarch.name = argv[argc-1];
+	    else
+		opts.errors++;
+	}
+	else if (opts.optind == argc-2)
+	    inarch.name = argv[argc-2];
+	else
 	    opts.errors++;
     }
 
@@ -570,9 +587,36 @@ reportconfig(void)
 	}
     }
     for (mp = metric_root; mp != NULL; mp = mp->m_next) {
-	if (mp->flags != 0 || mp->ip != NULL) {
+	if (mp->flags != 0 || mp->ip != NULL || mp->nvc > 0) {
+	    char	**names;
+	    int		sts;
+
+	    sts = pmNameAll(mp->old_desc.pmid, &names);
+	    if (sts < 0) {
+		printf("Warning: cannot get all names for PMID %s\n", pmIDStr(mp->old_desc.pmid));
+		printf("\nMetric: %s (%s)\n", mp->old_name, pmIDStr(mp->old_desc.pmid));
+	    }
+	    else {
+		printf("\nMetric");
+		if (sts > 1)
+		    putchar('s');
+		putchar(':');
+		/*
+		 * Names are likely to be dups first, primary name last
+		 */
+		for (i = sts-1; i >= 0; i--) {
+		    if (i == sts-2)
+			printf(" [");
+		    else
+			putchar(' ');
+		    printf("%s", names[i]);
+		}
+		if (sts > 1)
+		    putchar(']');
+		printf(" (%s)\n", pmIDStr(mp->old_desc.pmid));
+		free(names);
+	    }
 	    change |= 1;
-	    printf("\nMetric: %s (%s)\n", mp->old_name, pmIDStr(mp->old_desc.pmid));
 	}
 	if (mp->flags & METRIC_CHANGE_PMID) {
 	    printf("pmID:\t\t%s ->", pmIDStr(mp->old_desc.pmid));
@@ -657,6 +701,11 @@ reportconfig(void)
 	    if (mp->flags & METRIC_RESCALE)
 		printf(" (rescale)");
 	    putchar('\n');
+	}
+	if (mp->flags & METRIC_CHANGE_VALUE) {
+	    for (i = 0; i < mp->nvc; i++) {
+		printf("Value:\t\t/%s/ -> \"%s\"\n", mp->vc[i].pat, mp->vc[i].replace);
+	    }
 	}
 	if (mp->flags & METRIC_DELETE)
 	    printf("DELETE\n");
@@ -920,7 +969,8 @@ link_entries(void)
 	     node != NULL;
 	     node = __pmHashWalk(hcp, PM_HASH_WALK_NEXT)) {
 	    mp = start_metric((pmID)(node->key));
-	    if (mp->old_desc.indom == ip->old_indom) {
+	    if (mp->old_desc.indom == ip->old_indom ||
+	        mp->new_desc.indom == ip->new_indom) {
 		if (change)
 		    mp->ip = ip;
 		if (ip->new_indom != ip->old_indom) {
@@ -1356,7 +1406,11 @@ check_output()
 		     * also map one_name -> one_inst 
 		     */
 		    int		i;
-		    ip = start_indom(mp->old_desc.indom);
+		    ip = start_indom(mp->old_desc.indom, 0);
+		    if (ip == NULL) {
+			pmsprintf(mess, sizeof(mess), "Botch: old indom %s for metric %s not found", pmInDomStr(mp->old_desc.indom), mp->old_name);
+			yyerror(mess);
+		    }
 		    for (i = 0; i < ip->numinst; i++) {
 			if (mp->one_name != NULL) {
 			    if (inst_name_eq(ip->old_iname[i], mp->one_name) > 0) {
@@ -1386,33 +1440,45 @@ check_output()
 		     * is not already known
 		     */
 		    int		i;
-		    ip = start_indom(mp->new_desc.indom);
+		    ip = start_indom(mp->new_desc.indom, 1);
 		    if (ip == NULL) {
-			pmsprintf(mess, sizeof(mess), "Botch: InDom %s not found", pmInDomStr(mp->new_desc.indom));
+			/*
+			 * can't find new indom, perhaps it is the result of
+			 * renumbering ...
+			 */
+			for (ip = indom_root; ip != NULL; ip = ip->i_next) {
+			    if (ip->new_indom == mp->new_desc.indom)
+				break;
+			}
+		    }
+		    if (ip == NULL) {
+			pmsprintf(mess, sizeof(mess), "Botch: new indom %s for metric %s not found", pmInDomStr(mp->new_desc.indom), mp->old_name);
 			yyerror(mess);
 		    }
-		    for (i = 0; i < ip->numinst; i++) {
-			if (mp->one_name != NULL) {
-			    if (inst_name_eq(ip->old_iname[i], mp->one_name) > 0) {
-				mp->one_name = NULL;
-				mp->one_inst = ip->old_inst[i];
-				break;
+		    else {
+			for (i = 0; i < ip->numinst; i++) {
+			    if (mp->one_name != NULL) {
+				if (inst_name_eq(ip->old_iname[i], mp->one_name) > 0) {
+				    mp->one_name = NULL;
+				    mp->one_inst = ip->old_inst[i];
+				    break;
+				}
 			    }
+			    else if (ip->old_inst[i] == mp->one_inst)
+				break;
 			}
-			else if (ip->old_inst[i] == mp->one_inst)
-			    break;
-		    }
-		    if (i == ip->numinst) {
-			if (wflag) {
-			    if (mp->one_name != NULL)
-				pmsprintf(mess, sizeof(mess), "Instance \"%s\" from OUTPUT clause not found in new indom %s", mp->one_name, pmInDomStr(mp->new_desc.indom));
-			    else
-				pmsprintf(mess, sizeof(mess), "Instance %d from OUTPUT clause not found in new indom %s", mp->one_inst, pmInDomStr(mp->new_desc.indom));
-			    yywarn(mess);
+			if (i == ip->numinst) {
+			    if (wflag) {
+				if (mp->one_name != NULL)
+				    pmsprintf(mess, sizeof(mess), "Instance \"%s\" from OUTPUT clause not found in new indom %s", mp->one_name, pmInDomStr(mp->new_desc.indom));
+				else
+				    pmsprintf(mess, sizeof(mess), "Instance %d from OUTPUT clause not found in new indom %s", mp->one_inst, pmInDomStr(mp->new_desc.indom));
+				yywarn(mess);
+			    }
 			}
 		    }
 		    /*
-		     * use default rule (id 0) if INAME not found and
+		     * use default rule (inst id 0) if INAME not found and
 		     * and instance id is needed for output value
 		     */
 		    if (mp->old_desc.indom == PM_INDOM_NULL && mp->one_inst == PM_IN_NULL)
@@ -1530,11 +1596,7 @@ main(int argc, char **argv)
 	exit(1);
     }
 
-    /* input archive */
-    if (iflag == 0)
-	inarch.name = argv[argc-2];
-    else
-	inarch.name = argv[argc-1];
+    /* input archive ... inarch.name set in parseargs() */
     inarch.logrec = inarch.metarec = NULL;
     inarch.mark = 0;
     inarch.rp = NULL;
@@ -1701,6 +1763,9 @@ main(int argc, char **argv)
      * process config file(s)
      */
     for (i = 0; i < nconf; i++) {
+	if (pmDebugOptions.appl4) {
+	    fprintf(stderr, "Start config: %s\n", conf[i]);
+	}
 	parseconfig(conf[i]);
     }
 

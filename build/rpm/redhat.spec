@@ -1,8 +1,8 @@
 Name:    pcp
-Version: 6.0.3
+Version: 6.1.0
 Release: 1%{?dist}
 Summary: System-level performance monitoring and performance management
-License: GPLv2+ and LGPLv2+ and CC-BY
+License: GPL-2.0-or-later AND LGPL-2.1-or-later AND CC-BY-3.0
 URL:     https://pcp.io
 
 %global  artifactory https://performancecopilot.jfrog.io/artifactory
@@ -94,7 +94,7 @@ Source0: %{artifactory}/pcp-source-release/pcp-%{version}.src.tar.gz
 
 # support for pmdabpf, check bcc.spec for supported architectures of libbpf-tools
 %if 0%{?fedora} >= 37 || 0%{?rhel} > 8
-%ifarch x86_64 ppc64 ppc64le aarch64
+%ifarch x86_64 %{power64} aarch64 s390x
 %global disable_bpf 0
 %else
 %global disable_bpf 1
@@ -3362,8 +3362,19 @@ fi
 %files zeroconf -f pcp-zeroconf-files.rpm
 
 %changelog
-* Mon Apr 17 2023 Nathan Scott <nathans@redhat.com> - 6.0.3-1
-- Currently work-in-progress.
+* Thu Aug 31 2023 Nathan Scott <nathans@redhat.com> - 6.1.0-1
+- Update to latest PCP sources.
+
+* Mon Jun 26 2023 Nathan Scott <nathans@redhat.com> - 6.0.5-1
+- Ensure rotated pmie log files are pcp:pcp owned (BZ 2217209)
+- Update to latest PCP sources.
+
+* Mon May 15 2023 Nathan Scott <nathans@redhat.com> - 6.0.4-1
+- Rework LOCALHOSTNAME handling in control files (BZ 2172892)
+- Update to latest PCP sources.
+
+* Thu Feb 23 2023 Nathan Scott <nathans@redhat.com> - 6.0.3-1
+- Update to latest PCP sources.
 
 * Sun Feb 12 2023 Nathan Scott <nathans@redhat.com> - 6.0.2-1
 - Fix pcp-dstat swap device handling with -f (BZ 2168774)

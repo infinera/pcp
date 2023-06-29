@@ -7,7 +7,6 @@
 #
 # Usage: new-grind [-n|-v] seq-no
 #
-#
 
 # generic initialization
 . ./common.rc
@@ -61,7 +60,7 @@ if grep "^do_valgrind=false" $oldseq >/dev/null
 then
     :
 else
-    echo "Error: test \"$oldseq\" does look like it was created recently with ./new"
+    echo "Error: test \"$oldseq\" does NOT look like it was created recently with ./new"
     echo "... no \"do_valgrind=false\" line"
     exit 1
 fi
@@ -156,21 +155,28 @@ NF == 1 && $1 == "#" && done == 0	{
 			  print "# non-valgrind variant, see qa/'$newseq' for the valgrind variant"
 			  done = 1
 			}
-			{ print }'
+			{ print }
+/^  *do_valgrind=true/	{ print "elif which valgrind >/dev/null"
+			  print "then"
+			  print "    _notrun \"valgrind variant qa/'$newseq' will be run\""
+			  next
+			}
     mv $oldseq.new-grind $oldseq
     chmod 755 $oldseq
 fi
 
+groups=`echo "$oldgroup" | sed -e "s/^$oldseq[: ]//" -e 's/ local//'`
+
 $PCP_AWK_PROG <$oldseq >$newseq '
 BEGIN			{ done = 0 }
 NF == 0			{ exit }
-/non-valgrind variant/	{ next }
-/PCP QA Test No/	{ sub(/'$oldseq'$/, "'$newseq'") }
-NF == 1 && $1 == "#" && done == 0	{
+/non-valgrind variant/	{ print "# valgrind variant, see qa/'$oldseq' for the non-valgrind variant"
 			  print "#"
-			  print "# valgrind variant, see qa/'$oldseq' for the non-valgrind variant"
+			  print "# check-group-include: '"$groups"'"
 			  done = 1
+			  next
 			}
+/PCP QA Test No/	{ sub(/'$oldseq'$/, "'$newseq'") }
 			{ print }'
 			
 cat <<End-of-File >>$newseq
@@ -197,12 +203,7 @@ trap "_cleanup; exit \\\$status" 0 1 2 3 15
 
 # real QA test starts here
 export seq
-./$oldseq --valgrind \
-| \$PCP_AWK_PROG '
-skip == 1 && \$1 == "==="       { skip = 0 }
-/^=== std err ===/             { skip = 1 }
-skip == 0              { print }
-skip == 1              { print >>"'\$here/\$seq.full'" }'
+./$oldseq --valgrind
 
 # success, all done
 exit

@@ -25,8 +25,8 @@ _pcp_complete()
         arg_regex="-[ahKceASTOstZiJ489NP0qQbByYgxUEX]"
     ;;
     pcp2json)
-        all_args="ahLKcCeVHGASTmOstRrZzrIijJ4589nNvP0qQbByYFfxXE"
-        arg_regex="-[ahKceASTOstZiJ489NP0qQbByYFf]"
+        all_args="ahLKcCeVHGASTmOstRrZzrIijJ4589nNvP0qQbByYFfxXEopuU"
+        arg_regex="-[ahKceASTOstZiJ489NP0qQbByYFfopuU]"
     ;;
     pcp2spark)
         all_args="ahLKcCeVHGASTOstRrZzrIijJ4589nNvP0qQbByYgp"
@@ -65,7 +65,7 @@ _pcp_complete()
         arg_regex="-[mst]"
     ;;
     pmie)
-        all_args="AabCcdeFfhjlnOPqSTtUVvWXxZz"
+        all_args="AabCcdeFfhjlmnOPqSTtUVvWXxZz"
         arg_regex="-[AachljnOSTtUZ]"
     ;;
     pmie2col)
@@ -101,8 +101,8 @@ _pcp_complete()
         arg_regex="-[cSsTVvZ]"
     ;;
     pmlogger)
-        all_args="CcHIhKLlmNnoPprsTtUuVvxy"
-        arg_regex="-[cHIhKlmnpsTtUVvx]"
+        all_args="CcdHIhKLlmNnoPprsTtUuVvxy"
+        arg_regex="-[cdHIhKlmnpsTtUVvx]"
     ;;
     pmloglabel)
         all_args="hLlpsVvZ"

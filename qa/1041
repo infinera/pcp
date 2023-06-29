@@ -67,7 +67,9 @@ EOF
 
     echo
     echo "=== libvirt agent installation ==="
+    export PCPQA_CHECK_DELAY=10
     $sudo ./Install </dev/null >$tmp.out 2>&1
+    cat $tmp.out >>$here/$seq.full
     # Check metrics have appeared ... X metrics and Y values
     # skip lines like ...
     # [Fri Mar 29 21:09:33] pmdalibvirt(21564) Error: pmdaCacheOp: $PCP_VAR_DIR/config/pmda/140.0: empty file?
@@ -76,6 +78,7 @@ EOF
         -e '/^Waiting for pmcd/s/\.\.\.[. ]*$/DOTS/' \
 	-e "\\;Error: pmdaCacheOp: \$PCP_VAR_DIR/config/pmda/.*: empty file?;d" \
     | $PCP_AWK_PROG '
+/warnings,/                            { print; next }
 /Check libvirt metrics have appeared/  { if ($7 >= 120) $7 = "X"
                                          if ($10 >= 4) $10 = "Y"
                                        }

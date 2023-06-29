@@ -1642,6 +1642,7 @@ MOD_INIT(cpmapi)
     dict_add(dict, "PMCD_AGENT_CHANGE", PMCD_AGENT_CHANGE);
     dict_add(dict, "PMCD_LABEL_CHANGE", PMCD_LABEL_CHANGE);
     dict_add(dict, "PMCD_NAMES_CHANGE", PMCD_NAMES_CHANGE);
+    dict_add(dict, "PMCD_HOSTNAME_CHANGE", PMCD_HOSTNAME_CHANGE);
 
     dict_add(dict, "PM_MAXLABELS", PM_MAXLABELS);
     dict_add(dict, "PM_MAXLABELJSONLEN", PM_MAXLABELJSONLEN);
@@ -1781,6 +1782,7 @@ MOD_INIT(cpmapi)
     edict_add(dict, edict, "PM_ERR_RECTYPE", PM_ERR_RECTYPE);
     edict_add(dict, edict, "PM_ERR_FEATURE", PM_ERR_FEATURE);
     edict_add(dict, edict, "PM_ERR_TLS", PM_ERR_TLS);
+    edict_add(dict, edict, "PM_ERR_ARG", PM_ERR_ARG);
     edict_add(dict, edict, "PM_ERR_NYI", PM_ERR_NYI);
 
     return MOD_SUCCESS_VAL(module);

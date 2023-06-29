@@ -21,6 +21,7 @@
 \f3pmlogger\f1
 [\f3\-CLNoPruy?\f1]
 [\f3\-c\f1 \f2conffile\f1]
+[\f3\-d\f1 \f2directory\f1]
 [\f3\-h\f1 \f2host\f1]
 [\f3\-H\f1 \f2hostname\f1]
 [\f3\-I\f1 \f2version\f1]
@@ -149,22 +150,22 @@ This
 instance is launched by
 .BR $PCP_RC_DIR/pmlogger ,
 and is affected by the files
-.IR $PCP_SYSCONF_DIR/pmlogger/control ,
-.IR $PCP_SYSCONF_DIR/pmlogger/control .d
+.BR $PCP_SYSCONF_DIR/pmlogger/control ,
+.BR $PCP_SYSCONF_DIR/pmlogger/control.d/* ,
 (use
 .BR chkconfig (8),
 .BR systemctl (1)
 or similar platform-specific commands to activate or disable the primary
 .B pmlogger
 instance),
-.I $PCP_SYSCONFIG_DIR/pmlogger
+.B $PCP_SYSCONFIG_DIR/pmlogger
 (environment variable settings for the primary
 .BR pmlogger )
-.I $PCP_SYSCONF_DIR/pmlogger/pmlogger.options
+.B $PCP_SYSCONF_DIR/pmlogger/pmlogger.options
 (command line options passed to the primary
 .BR pmlogger )
 and
-.I $PCP_VAR_DIR/config/pmlogger/config.default
+.B $PCP_VAR_DIR/config/pmlogger/config.default
 (the default initial configuration file for the primary
 .BR pmlogger ).
 .PP
@@ -231,7 +232,7 @@ that the event queue is empty and no more events will be scheduled.
 By default all diagnostics and errors from
 .B pmlogger
 are written to the file
-.I pmlogger.log
+.B pmlogger.log
 in the directory where
 .B pmlogger
 is launched.
@@ -508,7 +509,7 @@ option and the
 .BR pmlc (1)
 .B flush
 command are retained for backwards compatibility.
-.P
+.PP
 When launched with the
 .B \-x
 option, pmlogger will accept asynchronous
@@ -516,7 +517,7 @@ control requests on the file descriptor \f2fd\f1.
 This option is only
 expected to be used internally by PCP applications that support ``live
 record mode''.
-.P
+.PP
 The
 .B \-m
 option allows the string
@@ -540,7 +541,7 @@ or was re-exec'd (see
 due to a
 .B SIGUSR2
 signal being recieved as described above (\fB\-m reexec\fP).
-.P
+.PP
 The
 .B \-H
 option allows the hostname written into the archive label to be overridden.
@@ -554,7 +555,7 @@ process.
 Without this option, the value returned from the logged
 .BR pmcd (1)
 is used.
-.P
+.PP
 The
 .B \-C
 option will cause the configuration file to be parsed and
@@ -567,6 +568,38 @@ is specified, the
 .I archive
 command line argument is not required.
 Any errors in the configuration file are reported.
+.PP
+The
+.B \-d
+or
+.B \-\-directory
+option may be used to specify the directory where the
+.I archive
+should be created.
+.I directory
+may include
+.BR sh (1)
+metacharacters, like
+.BI $( ... )
+or
+.BR ` ... `
+or
+.BI $ var
+and
+.B pmlogger
+will expand these to produce a final directory path.
+The resultant path must be absolute, not relative.
+The
+.B \-d
+option is intended primarily for use by
+.BR pmlogger_check (1)
+and normal users would not typically need to use the option, as the directory
+for
+.I archive
+is either implied by
+.I archive
+if it contains directory components
+else the current directory by default.
 .SH CONFIGURATION FILE SYNTAX
 The configuration file may be specified with the
 .B \-c
@@ -577,13 +610,13 @@ input.
 If
 .I conffile
 does not exist, then a search is made in the directory
-.I $PCP_VAR_DIR/config/pmlogger
+.B $PCP_VAR_DIR/config/pmlogger
 for a file of the same name, and if found that file is used,
 e.g. if
-.I config.mumble
+.B config.mumble
 does not exist in the current directory and
 the file
-.I $PCP_VAR_DIR/config/pmlogger/config.mumble
+.B $PCP_VAR_DIR/config/pmlogger/config.mumble
 does exist, then
 .B "\-c config.mumble"
 and
@@ -792,12 +825,12 @@ is initially scanned by
 with the options
 .B \-rs
 and
-\fB\-I \fI$PCP_VAR_DIR/config/pmlogger\fR.
+\fB\-I $PCP_VAR_DIR/config/pmlogger\fR.
 This extends the configuration file syntax with include file
 processing (\c
 .BR %include ),
 a common location to search for include files
-(\fI$PCP_VAR_DIR/config/pmlogger\fR),
+(\fB$PCP_VAR_DIR/config/pmlogger\fR),
 macro definitions (\c
 .BR %define ),
 macro expansion (\c
@@ -869,7 +902,7 @@ option may be used.
 Write all diagnostics to
 .B logfile
 instead of the default
-.IR pmlogger.log .
+.BR pmlogger.log .
 .TP
 \fB\-L\fR, \fB\-\-linger\fR
 Run even if not the primary logger instance and nothing to log.
@@ -965,7 +998,7 @@ metrics used by the tool).
 For a tool named
 .I foo
 this configuration file is located in
-.IR $PCP_VAR_DIR/config/pmlogger/config.foo .
+.BR $PCP_VAR_DIR/config/pmlogger/config.foo .
 .PP
 The following is a simple default configuration file for a primary
 .B pmlogger
@@ -1004,6 +1037,64 @@ allow localhost : mandatory, advisory;
 .ft R
 .fi
 .in
+.SH HOSTNAME CHANGES
+The hostname of the PMCD that is providing metrics to
+.B pmlogger
+is used in several ways.
+.PP
+PMCD's hostname
+(or the argument from the
+.B \-H
+option)
+is included in the archive label and may be used to ensure that subsequent
+operations on multiple archives, e.g. \c
+.BR pmlogextract (1),
+are only applied to archives from the same host.
+.PP
+For
+.B pmlogger
+instances using a local PMCD that are launched and managed by
+.BR pmlogger_check (1)
+and
+.BR pmlogger_daily (1),
+(or the
+.BR systemd (1)
+or
+.BR cron (8)
+services that use these scripts), the local hostname may also
+be used to construct the name of a directory where all the archives for the
+one host are stored, e.g. \c
+.BR $PCP_ARCHIVE_DIR/\fI<hostname>\fB .
+.PP
+And PMCD's hostname is also stored in the archive via the
+.B pmcd.pmlogger.hostname
+metric that is used as part of the checks to ensure that there is
+continuity of performance data after the nightly archive rotation by
+.BR pmlogger_daily (1).
+.PP
+The hostname of the PMCD host may change during boot time when the system
+transitions from a temporary hostname to a persistent hostname, or by
+explicit administrative action anytime after the system has been booted.
+When this happens,
+.B pmlogger
+may need to take special action, specifically if the
+.B pmlogger
+instance was launched from
+.BR pmlogger_check (1)
+or
+.BR pmlogger_daily (1),
+then
+.B pmlogger
+must exit.  Under normal circumstances
+.BR systemd (1)
+or
+.BR cron (8)
+will launch a new
+.B pmlogger
+shortly thereafter, and this new
+.B pmlogger
+instance will be operating in the context of the new
+hostname for the host where PMCD is running.
 .SH DIAGNOSTICS
 The archive logs are sufficiently precious that
 .B pmlogger
@@ -1031,7 +1122,7 @@ pmlogger: there is already a primary pmlogger running
 .PP
 Various other messages relating to the creation and/or deletion of
 files in
-.I $PCP_TMP_DIR/pmlogger
+.B $PCP_TMP_DIR/pmlogger
 suggest a permission problem on this directory, or some feral
 files have appeared therein.
 .SH FILES
@@ -1049,7 +1140,7 @@ initial volume of metrics values (subsequent volumes have suffixes
 temporal index to support rapid random access to the other files in the
 archive log
 .TP
-.I $PCP_TMP_DIR/pmlogger
+.B $PCP_TMP_DIR/pmlogger
 .B pmlogger
 maintains the files in this directory as the map between the
 process id of the
@@ -1059,30 +1150,30 @@ instance and the IPC port that may be used to control each
 instance (as used by
 .BR pmlc (1))
 .TP
-.I $PCP_VAR_DIR/config/pmlogger/config.default
+.B $PCP_VAR_DIR/config/pmlogger/config.default
 default configuration file for the primary logger instance
 launched from
 .B $PCP_RC_DIR/pmlogger
 .TP
-.I $PCP_VAR_DIR/config/pmlogger/config.*
+.B $PCP_VAR_DIR/config/pmlogger/config.*
 assorted configuration files suitable for creating logs that may
 be subsequently replayed with the PCP visualization and monitoring
 tools
 .TP
-.I $PCP_ARCHIVE_DIR/<hostname>
+.B $PCP_ARCHIVE_DIR/\fI<hostname>\fB
 Default directory for PCP archive files for performance
 metric values collected from the host
 .IR <hostname> .
 .TP
-.I $PCP_SYSCONFIG_DIR/pmlogger
+.B $PCP_SYSCONFIG_DIR/pmlogger
 additional environment variables that will be set when the primary
 .B pmlogger
 instance executes.
 Only settings of the form "PMLOGGER_VARIABLE=value" will be honoured.
 .TP
-.I \&./pmlogger.log
+.B \&./pmlogger.log
 (or
-.I $PCP_ARCHIVE_DIR/<hostname>/pmlogger.log
+.B $PCP_ARCHIVE_DIR/\fI<hostname>\fB/pmlogger.log
 when started automatically by either
 .B $PCP_RC_DIR/pmlogger
 or one of the
@@ -1136,7 +1227,7 @@ variable (if not set, 60 seconds will be used).
 Both the command line and directives in the configuration file will
 override this value.
 It is an integer in units of seconds.
-.P
+.PP
 On platforms using
 .BR systemd (1),
 and when the
@@ -1160,15 +1251,18 @@ configuration file, as described in \fBpcp.conf\fP(5).
 .BR pmdumplog (1),
 .BR pmlc (1),
 .BR pmlogger_check (1),
+.BR pmlogger_daily (1),
 .BR systemctl (1),
 .BR systemd (1),
 .BR execvp (3),
+.BR PMAPI (3),
+.BR __pmServerNotifyServiceManagerReady (3),
 .BR pmSpecLocalPMDA (3),
 .BR strftime (3),
-.BR __pmServerNotifyServiceManagerReady (3),
 .BR pcp.conf (5),
 .BR pcp.env (5),
 .BR pmlogger (5),
-.BR PMNS (5)
+.BR PMNS (5),
+.BR chkconfig (8)
 and
-.BR chkconfig (8).
+.BR cron (8).

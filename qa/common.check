@@ -22,6 +22,21 @@ else
     export PCPQA_SYSTEMD=no
 fi
 
+# set $__whatami (if possible) for later use
+#
+if [ -x $here/admin/whatami ]
+then
+    __whatami=`$here/admin/whatami`
+elif [ -x $HOME/src/pcp/qa/admin/whatami ]
+then
+    __whatami=`$HOME/src/pcp/qa/admin/whatami`
+elif [ -x $HOME/admin/whatami ]
+then
+    __whatami=`$HOME/admin/whatami`
+else
+    __whatami="unknown"
+fi
+
 # common routine for preventing a test from running on some platforms
 # use: _notrun "Reason for not running this test is ..."
 # 
@@ -788,6 +803,49 @@ _wait_for_pmcd_stop()
     fi
 }
 
+__triage_systemd()
+{
+    if [ "$PCPQA_SYSTEMD" = yes ]
+    then
+	if which systemctl >/dev/null
+	then
+	    echo
+	    echo "++ systemctl status for $1.service ..."
+	    systemctl status $1.service | cat
+	else
+	    echo "No systemctl for $1.service"
+	fi
+
+	if which journalctl >/dev/null
+	then
+	    last=4
+	    echo
+	    echo "++ last $last journal entries for $1.service"
+	    $sudo journalctl -l -n $last -xeu $1.service | cat
+	else
+	    echo "No journalctl for $1.service"
+	fi
+    else
+	echo
+	echo "++ no systemctl/journalctl status for $1.service (\$PCPQA_SYSTEMD=$PCPQA_SYSTEMD)"
+    fi
+}
+
+__filter_pmlogger_log()
+{
+    $PCP_AWK_PROG '
+BEGIN					{ ingroup = -1 }
+$1 == "Group" && $3 == "metrics]"	{ ingroup = 0 }
+ingroup >= 0 && $1 == "}"		{ ingroup = -1 }
+ingroup >= 0				{ ingroup++
+					  if (ingroup < 4) print
+					  else if (ingroup == 4) print "        ..."
+					  next
+					}
+					{ print }'
+
+}
+
 # wait_for_pmlogger [pid logfile [maxdelay]]
 #
 _wait_for_pmlogger()
@@ -858,17 +916,36 @@ _wait_for_pmlogger()
     done
     if $__dead
     then
-	date
 	echo "Arrgghhh ... pmlogger ($__ident) failed to start after $__maxdelay seconds"
 	echo "at `date`."
-	echo "pmlogger log ($__logfile) ..."
-	cat $__logfile
+	echo "++ pmlogger log ($__logfile) ..."
+	ls -l $__logfile
+	__filter_pmlogger_log <$__logfile
 	echo
+	if [ -f "$__logfile.prev" ]
+	then
+	    echo "++ previous pmlogger log ($__logfile.prev) ..."
+	    ls -l $__logfile.prev
+	    __filter_pmlogger_log <$__logfile.prev
+	fi
+	for file in pmlogger_check.log pmlogger_check.log.prev \
+	    pmlogger_janitor.log pmlogger_janitor.log.prev
+	do
+	    if [ -f "$PCP_ARCHIVE_DIR/$file" ]
+	    then
+		echo "++ $PCP_ARCHIVE_DIR/$file"
+		ls -l $PCP_ARCHIVE_DIR/$file
+		cat $PCP_ARCHIVE_DIR/$file
+	    fi
+	done
+	__triage_systemd pmcd
+	__triage_systemd pmlogger
+	__triage_systemd pmlogger_farm
 
 	#  If pmlc could not connect to pmlogger, report details
 	if [ -s $tmp._wait_for_pmlogger.pmlc ]
 	then
-	    echo "pmlc output ..."
+	    echo "++ pmlc output ..."
 	    cat $tmp._wait_for_pmlogger.pmlc
 	    echo
 	fi
@@ -881,7 +958,7 @@ _wait_for_pmlogger()
 	if [ -s $tmp._wait_for_pmlogger.host ]
 	then
 	    __pmcdhost=`cat $tmp._wait_for_pmlogger.host`
-	    echo "pmcd log ($__pmcdhost:$PCP_LOG_DIR/pmcd/pmcd.log) ..."
+	    echo "++ pmcd log ($__pmcdhost:$PCP_LOG_DIR/pmcd/pmcd.log) ..."
 	    if [ -r /hosts/$__pmcdhost$PCP_LOG_DIR/pmcd/pmcd.log ]
 	    then
 	    	cat /hosts/$__pmcdhost$PCP_LOG_DIR/pmcd/pmcd.log
@@ -908,29 +985,28 @@ _wait_for_pmlogger()
 	__base=`cat $__logfile | sed -n '/^Archive basename:[ 	]*/s///p'`
 	if [ -n "$__base" -a -f $__base.0 ]
 	then
-	    echo "archive created ..."
+	    echo "++ archive created ..."
 	    pmdumplog -l $__base.0
 	    __nres=`pmdumplog $__base.0 | grep '^[0-9]' | wc -l | sed -e 's/ //g'`
-	    echo "archive contains $__nres records"
+	    echo "++ archive contains $__nres records"
 	else
-	    echo "archive not created"
+	    echo "++ archive not created"
 	fi
 	echo
-	echo "local pmlogger map ..."
+	echo "++ local pmlogger map ..."
 	for __map in $PCP_TMP_DIR/pmlogger/*
 	do
 	    if [ "`echo $__map`" = "$PCP_TMP_DIR"'/pmlogger/*' ]
 	    then
-		echo "No files in $PCP_TMP_DIR/pmlogger !?"
+		echo "++ No files in $PCP_TMP_DIR/pmlogger !?"
 	    else
 		ls -l $__map
 		cat $__map
 	    fi
 	done
 	echo
-	echo "Likely looking processes ..."
+	echo "++ Likely looking processes ..."
 	$PCP_PS_PROG $PCP_PS_ALL_FLAGS | grep -E '([p]m)|([P]ID)'
-	_systemctl_status pmlogger
 	status=0
 	rm -f $tmp._wait_for_pmlogger.*
 	exit $status
@@ -987,7 +1063,7 @@ _wait_pmlogger_end()
 	# and we're done
         if [ -f "$PCP_TMP_DIR/pmlogger/$__pid" ]
 	then
-	    echo "_wait_pmlogger_end: warning process $__pid gone buit $PCP_TMP_DIR/pmlogger/$__pid still present"
+	    echo "_wait_pmlogger_end: warning process $__pid gone but $PCP_TMP_DIR/pmlogger/$__pid still present"
 	fi
 	return
     fi
@@ -997,7 +1073,9 @@ _wait_pmlogger_end()
     do
         if [ -f "$PCP_TMP_DIR/pmlogger/$__pid" ]
 	then
-	    [ $__i -eq 0 ] && ls -l "$PCP_TMP_DIR/pmlogger/$__pid" >>$here/$seq.full
+	    # potential race between [ ... ] and ls ... syphon of stderr
+	    #
+	    [ $__i -eq 0 ] && ls -l "$PCP_TMP_DIR/pmlogger/$__pid" >>$here/$seq.full 2>&1
 	    __i=`expr $__i + 1`
 	    if [ $__i -ge 100 ]
 	    then
@@ -1660,7 +1738,7 @@ _check_valgrind()
 #
 _check_helgrind()
 {
-    case `admin/whatami`
+    case "$__whatami"
     in
 	*Fedora\ 33*)
 	    _notrun "helgrind broken on Fedora 33"
@@ -1683,10 +1761,17 @@ _check_helgrind()
 # +indirectly lost: 0 bytes in 0 blocks
 #
 # Note
-#	last 6 sed expressions are for broken valgrind(1) on
-#	Debian strech circa 2016
-#	one before that is for broken valgrind(1) on Arch Linux
-#	circa Nov 2019
+#	- last 6 sed expressions are for broken valgrind(1) on
+#	  Debian stretch circa 2016
+#	- one before that is for broken valgrind(1) on Arch Linux
+#	  circa Nov 2019
+#       - awk at the end is to handle this observed on Arch Linux
+#	  circa May 2023
+#	   WARNING: unhandled amd64-linux syscall: 441
+#	   You may be able to write your own handler.
+#	   Read the file README_MISSING_SYSCALL_OR_IOCTL.
+#	   Nevertheless we consider this a bug.  Please report
+#	   it at http://valgrind.org/support/bug_reports.html.
 # 
 _filter_valgrind()
 {
@@ -1717,7 +1802,11 @@ _filter_valgrind()
 	-e '/parse_CU_Header: is neither DWARF2 nor DWARF3 nor DWARF4/d' \
 	-e '/DW_FORM_GNU_strp_alt used, but no alternate .debug_str/d' \
 	-e '/^parse DIE/,/confused by the above DIE/d' \
-    # end
+    | $PCP_AWK_PROG '
+BEGIN					{ skip = 0 }
+/WARNING: unhandled .* syscall/		{ skip = 1 }
+skip == 0				{ print }
+/at http:\/\/valgrind.org\/support/	{ skip = 0 }'
 }
 
 _filter_helgrind()
@@ -1777,7 +1866,17 @@ _run_valgrind()
     then
 	echo "Warning: using extra $__extra" >>$here/$seq.full
     fi
-    unset DEBUGINFOD_URLS
+    case "$__whatami"
+    in
+	*Arch\ Linux*)
+	    # need $DEBUGINFOD_URLS set or valgrind dies on Arch Linux
+	    # -- seen on vm34 circa May 2023
+	    #
+	    ;;
+	*)
+	    unset DEBUGINFOD_URLS
+	    ;;
+    esac
     $__valgrind_prefix valgrind \
 	--leak-check=full \
 	--gen-suppressions=all --suppressions=$here/valgrind-suppress \
@@ -1845,7 +1944,17 @@ if which valgrind >/dev/null 2>&1; then
 	__extra="$__extra --read-inline-info=no --read-var-info=no"
     fi
     $sudo rm -f $tmp.valgrind.help
-    unset DEBUGINFOD_URLS
+    case "$__whatami"
+    in
+	*Arch\ Linux*)
+	    # need $DEBUGINFOD_URLS set or valgrind dies on Arch Linux
+	    # -- seen on vm34 circa May 2023
+	    #
+	    ;;
+	*)
+	    unset DEBUGINFOD_URLS
+	    ;;
+    esac
     __valgrind_clean_assert="valgrind -q \
 	     --leak-check=full \
 	     --gen-suppressions=all --suppressions=$here/valgrind-suppress \

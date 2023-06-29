@@ -11,6 +11,15 @@
  * WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY
  * or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License
  * for more details.
+ *
+ * Debug Flags
+ * APPL0	- PDU level operations
+ * APPL1	- access control specifications from the config
+ * 		  file
+ * APPL2	- lexical scanner in config file parser
+ * APPL3	- client connection/disconnection ops
+ * APPL4	- timestamps for config file parsing
+ * APPL5	- attribute operations
  */
 
 #include "pmcd.h"
@@ -286,6 +295,60 @@ ParseOptions(int argc, char *argv[], int *nports)
     }
 }
 
+static int
+hostname_changed(void)
+{
+    static char	host[MAXHOSTNAMELEN];
+    static char	*oldhost = NULL;
+    int		sts;
+    double	delta;
+    static struct timeval	lasttime = { 0, 0 };
+    struct timeval		thistime;
+
+    gettimeofday(&thistime, NULL);
+    delta = pmtimevalSub(&thistime, &lasttime);
+    if (delta < 10.0) {
+	/*
+	 * do the "has hostname changed" check at most once every
+	 * 10 seconds ... this number is arbitrary, but we don't want
+	 * to add undue load in cases where pmcd is being queried
+	 * very frequently
+	 */
+	return(0);
+    }
+    
+    if ((sts = gethostname(host, MAXHOSTNAMELEN)) < 0) {
+	pmNotifyErr(LOG_WARNING, "hostname_changed: gethostname() -> %d (%s)",
+	    sts, pmErrStr(-oserror()));
+	return 0;
+    }
+
+    if (oldhost == NULL) {
+	/* first time, or first success after strdup() error */
+	oldhost = strdup(host);
+	if (oldhost == NULL) {
+	    host[MAXHOSTNAMELEN-1] = '\0';
+	    pmNoMem("hostname_changed", strlen(host), PM_RECOV_ERR);
+	}
+	return 0;
+    }
+
+    if (oldhost != NULL && strcmp(oldhost, host) != 0) {
+	pmNotifyErr(LOG_INFO, "hostname changed from %s to %s", oldhost, host);
+	free(oldhost);
+	/*
+	 * don't need to check if strdup() works, will look just like
+	 * first-trip next time if oldhost is NULL
+	 */
+	oldhost = strdup(host);
+
+	/* Inform clients there's been a change in pmcd's hostname */
+	MarkStateChanges(PMCD_HOSTNAME_CHANGE);
+    }
+
+    return 0;
+}
+
 /*
  * Determine which clients (if any) have sent data to the server and handle it
  * as required.
@@ -325,16 +388,24 @@ HandleClientInput(__pmFdSet *fdsPtr)
 	    continue;
 	}
 
-	if (pmDebugOptions.appl0)
+	if (pmDebugOptions.appl3)
 	    ShowClients(stderr);
 
 	switch (php->type) {
 	    case PDU_PROFILE:
+		if (hostname_changed()) {
+		    sts = 0;
+		    break;
+		}
 		sts = (cp->denyOps & PMCD_OP_FETCH) ?
 		      PM_ERR_PERMISSION : DoProfile(cp, pb);
 		break;
 
 	    case PDU_FETCH:
+		if (hostname_changed()) {
+		    sts = 0;
+		    break;
+		}
 		sts = (cp->denyOps & PMCD_OP_FETCH) ?
 		      PM_ERR_PERMISSION : DoFetch(cp, pb);
 		break;
@@ -422,8 +493,8 @@ HandleClientInput(__pmFdSet *fdsPtr)
 	 * something changed for this client during this PDU exchange.
 	 */
 	if (client[i].status.attributes) {
-	    if (pmDebugOptions.appl1)
-		pmNotifyErr(LOG_INFO, "Client idx=%d,seq=%d attrs reset\n",
+	    if (pmDebugOptions.appl5)
+		fprintf(stderr, "Client idx=%d,seq=%d attrs reset\n",
 				i, client[i].seq);
 	    AgentsAttributes(i);
 	}
@@ -739,7 +810,7 @@ CheckNewClient(__pmFdSet * fdset, int rfd, int family)
 	     * than being chatty in pmcd.log write this diagnostic only
 	     * under debugging conditions.
 	     */
-	    if (pmDebugOptions.appl0)
+	    if (pmDebugOptions.appl3)
 		pmNotifyErr(LOG_INFO, "ClientLoop: "
 			"error sending Conn ACK PDU to new client %s\n",
 			pmErrStr(s));
@@ -1163,7 +1234,7 @@ CleanupClient(ClientInfo *cp, int sts)
     int		i, msg;
     int		force;
 
-    force = pmDebugOptions.appl0;
+    force = pmDebugOptions.appl3;
 
     if (sts != 0 || force) {
 	/* for access violations, only print the message if this host hasn't

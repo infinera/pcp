@@ -48,6 +48,7 @@ TOPCFILES = \
 	DynamicColumn.c \
 	DynamicMeter.c \
 	EnvScreen.c \
+	FileDescriptorMeter.c \
 	FunctionBar.c \
 	Hashtable.c \
 	Header.c \
@@ -57,6 +58,7 @@ TOPCFILES = \
 	InfoScreen.c \
 	ListItem.c \
 	LoadAverageMeter.c \
+	Machine.c \
 	MainPanel.c \
 	MemoryMeter.c \
 	MemorySwapMeter.c \
@@ -71,6 +73,7 @@ TOPCFILES = \
 	ProcessList.c \
 	ProcessLocksScreen.c \
 	RichString.c \
+	Scheduling.c \
 	ScreenManager.c \
 	ScreensPanel.c \
 	Settings.c \
@@ -91,6 +94,7 @@ SUBCFILES = \
 	zfs/ZfsCompressedArcMeter.c \
 	pcp/PCPDynamicColumn.c \
 	pcp/PCPDynamicMeter.c \
+	pcp/PCPMachine.c \
 	pcp/PCPMetric.c \
 	pcp/PCPProcess.c \
 	pcp/PCPProcessList.c \
@@ -117,6 +121,7 @@ TOPHFILES = \
 	DynamicColumn.h \
 	DynamicMeter.h \
 	EnvScreen.h \
+	FileDescriptorMeter.h \
 	FunctionBar.h \
 	Hashtable.h \
 	Header.h \
@@ -127,6 +132,7 @@ TOPHFILES = \
 	InfoScreen.h \
 	ListItem.h \
 	LoadAverageMeter.h \
+	Machine.h \
 	Macros.h \
 	MainPanel.h \
 	MemoryMeter.h \
@@ -143,6 +149,7 @@ TOPHFILES = \
 	ProcessLocksScreen.h \
 	ProvideCurses.h \
 	RichString.h \
+	Scheduling.h \
 	ScreenManager.h \
 	ScreensPanel.h \
 	Settings.h \
@@ -165,6 +172,7 @@ SUBHFILES = \
 	zfs/ZfsCompressedArcMeter.h \
 	pcp/PCPDynamicColumn.h \
 	pcp/PCPDynamicMeter.h \
+	pcp/PCPMachine.h \
 	pcp/PCPMetric.h \
 	pcp/PCPProcess.h \
 	pcp/PCPProcessList.h \

@@ -5,6 +5,7 @@ Released under the GNU GPLv2+, see the COPYING file
 in the source distribution for its full text.
 */
 
+#include "ZramMeter.h"
 #include "config.h"
 
 #include "linux/Platform.h"
@@ -31,9 +32,11 @@ in the source distribution for its full text.
 #include "DateMeter.h"
 #include "DateTimeMeter.h"
 #include "DiskIOMeter.h"
+#include "FileDescriptorMeter.h"
 #include "HostnameMeter.h"
 #include "HugePageMeter.h"
 #include "LoadAverageMeter.h"
+#include "Machine.h"
 #include "Macros.h"
 #include "MainPanel.h"
 #include "Meter.h"
@@ -43,7 +46,6 @@ in the source distribution for its full text.
 #include "Object.h"
 #include "Panel.h"
 #include "PressureStallMeter.h"
-#include "ProcessList.h"
 #include "ProvideCurses.h"
 #include "linux/SELinuxMeter.h"
 #include "Settings.h"
@@ -54,8 +56,8 @@ in the source distribution for its full text.
 #include "XUtils.h"
 #include "linux/IOPriority.h"
 #include "linux/IOPriorityPanel.h"
+#include "linux/LinuxMachine.h"
 #include "linux/LinuxProcess.h"
-#include "linux/LinuxProcessList.h"
 #include "linux/SystemdMeter.h"
 #include "linux/ZramMeter.h"
 #include "linux/ZramStats.h"
@@ -64,7 +66,6 @@ in the source distribution for its full text.
 #include "zfs/ZfsCompressedArcMeter.h"
 
 #ifdef HAVE_LIBCAP
-#include <errno.h>
 #include <sys/capability.h>
 #endif
 
@@ -240,6 +241,7 @@ const MeterClass* const Platform_meterTypes[] = {
    &PressureStallCPUSomeMeter_class,
    &PressureStallIOSomeMeter_class,
    &PressureStallIOFullMeter_class,
+   &PressureStallIRQFullMeter_class,
    &PressureStallMemorySomeMeter_class,
    &PressureStallMemoryFullMeter_class,
    &ZfsArcMeter_class,
@@ -249,6 +251,8 @@ const MeterClass* const Platform_meterTypes[] = {
    &NetworkIOMeter_class,
    &SELinuxMeter_class,
    &SystemdMeter_class,
+   &SystemdUserMeter_class,
+   &FileDescriptorMeter_class,
    NULL
 };
 
@@ -300,8 +304,9 @@ int Platform_getMaxPid(void) {
 }
 
 double Platform_setCPUValues(Meter* this, unsigned int cpu) {
-   const LinuxProcessList* pl = (const LinuxProcessList*) this->pl;
-   const CPUData* cpuData = &(pl->cpuData[cpu]);
+   const LinuxMachine* lhost = (const LinuxMachine *) this->host;
+   const Settings* settings = this->host->settings;
+   const CPUData* cpuData = &(lhost->cpuData[cpu]);
    double total = (double) ( cpuData->totalPeriod == 0 ? 1 : cpuData->totalPeriod);
    double percent;
    double* v = this->values;
@@ -313,7 +318,7 @@ double Platform_setCPUValues(Meter* this, unsigned int cpu) {
 
    v[CPU_METER_NICE] = cpuData->nicePeriod / total * 100.0;
    v[CPU_METER_NORMAL] = cpuData->userPeriod / total * 100.0;
-   if (this->pl->settings->detailedCPUTime) {
+   if (settings->detailedCPUTime) {
       v[CPU_METER_KERNEL]  = cpuData->systemPeriod / total * 100.0;
       v[CPU_METER_IRQ]     = cpuData->irqPeriod / total * 100.0;
       v[CPU_METER_SOFTIRQ] = cpuData->softIrqPeriod / total * 100.0;
@@ -321,16 +326,15 @@ double Platform_setCPUValues(Meter* this, unsigned int cpu) {
       v[CPU_METER_GUEST]   = cpuData->guestPeriod / total * 100.0;
       v[CPU_METER_IOWAIT]  = cpuData->ioWaitPeriod / total * 100.0;
       this->curItems = 8;
-      if (this->pl->settings->accountGuestInCPUMeter) {
-         percent = v[0] + v[1] + v[2] + v[3] + v[4] + v[5] + v[6];
-      } else {
-         percent = v[0] + v[1] + v[2] + v[3] + v[4];
+      percent = v[CPU_METER_NICE] + v[CPU_METER_NORMAL] + v[CPU_METER_KERNEL] + v[CPU_METER_IRQ] + v[CPU_METER_SOFTIRQ];
+      if (settings->accountGuestInCPUMeter) {
+         percent += v[CPU_METER_STEAL] + v[CPU_METER_GUEST];
       }
    } else {
-      v[2] = cpuData->systemAllPeriod / total * 100.0;
-      v[3] = (cpuData->stealPeriod + cpuData->guestPeriod) / total * 100.0;
+      v[CPU_METER_KERNEL] = cpuData->systemAllPeriod / total * 100.0;
+      v[CPU_METER_IRQ] = (cpuData->stealPeriod + cpuData->guestPeriod) / total * 100.0;
       this->curItems = 4;
-      percent = v[0] + v[1] + v[2] + v[3];
+      percent = v[CPU_METER_NICE] + v[CPU_METER_NORMAL] + v[CPU_METER_KERNEL] + v[CPU_METER_IRQ];
    }
    percent = CLAMP(percent, 0.0, 100.0);
    if (isnan(percent)) {
@@ -349,51 +353,81 @@ double Platform_setCPUValues(Meter* this, unsigned int cpu) {
 }
 
 void Platform_setMemoryValues(Meter* this) {
-   const ProcessList* pl = this->pl;
-   const LinuxProcessList* lpl = (const LinuxProcessList*) pl;
+   const Machine* host = this->host;
+   const LinuxMachine* lhost = (const LinuxMachine*) host;
 
-   this->total     = pl->totalMem;
-   this->values[MEMORY_METER_USED] = pl->usedMem;
-   this->values[MEMORY_METER_BUFFERS] = pl->buffersMem;
-   this->values[MEMORY_METER_SHARED] = pl->sharedMem;
-   this->values[MEMORY_METER_CACHE] = pl->cachedMem;
-   this->values[MEMORY_METER_AVAILABLE] = pl->availableMem;
+   this->total = host->totalMem;
+   this->values[MEMORY_METER_USED] = host->usedMem;
+   this->values[MEMORY_METER_BUFFERS] = host->buffersMem;
+   this->values[MEMORY_METER_SHARED] = host->sharedMem;
+   this->values[MEMORY_METER_COMPRESSED] = 0; /* compressed */
+   this->values[MEMORY_METER_CACHE] = host->cachedMem;
+   this->values[MEMORY_METER_AVAILABLE] = host->availableMem;
 
-   if (lpl->zfs.enabled != 0 && !Running_containerized) {
+   if (lhost->zfs.enabled != 0 && !Running_containerized) {
       // ZFS does not shrink below the value of zfs_arc_min.
       unsigned long long int shrinkableSize = 0;
-      if (lpl->zfs.size > lpl->zfs.min)
-         shrinkableSize = lpl->zfs.size - lpl->zfs.min;
+      if (lhost->zfs.size > lhost->zfs.min)
+         shrinkableSize = lhost->zfs.size - lhost->zfs.min;
       this->values[MEMORY_METER_USED] -= shrinkableSize;
       this->values[MEMORY_METER_CACHE] += shrinkableSize;
       this->values[MEMORY_METER_AVAILABLE] += shrinkableSize;
    }
+
+   if (lhost->zswap.usedZswapOrig > 0 || lhost->zswap.usedZswapComp > 0) {
+      this->values[MEMORY_METER_USED] -= lhost->zswap.usedZswapComp;
+      this->values[MEMORY_METER_COMPRESSED] += lhost->zswap.usedZswapComp;
+   }
 }
 
 void Platform_setSwapValues(Meter* this) {
-   const ProcessList* pl = this->pl;
-   this->total = pl->totalSwap;
-   this->values[0] = pl->usedSwap;
-   this->values[1] = pl->cachedSwap;
+   const Machine* host = this->host;
+   const LinuxMachine* lhost = (const LinuxMachine*) host;
+
+   this->total = host->totalSwap;
+   this->values[SWAP_METER_USED] = host->usedSwap;
+   this->values[SWAP_METER_CACHE] = host->cachedSwap;
+   this->values[SWAP_METER_FRONTSWAP] = 0; /* frontswap -- memory that is accounted to swap but resides elsewhere */
+
+   if (lhost->zswap.usedZswapOrig > 0 || lhost->zswap.usedZswapComp > 0) {
+      /*
+       * FIXME: Zswapped pages can be both SwapUsed and SwapCached, and we do not know which.
+       *
+       * Apparently, it is possible that Zswapped > SwapUsed. This means that some of Zswapped pages
+       * were actually SwapCached, nor SwapUsed. Unfortunately, we cannot tell what exactly portion
+       * of Zswapped pages were SwapCached.
+       *
+       * For now, subtract Zswapped from SwapUsed and only if Zswapped > SwapUsed, subtract the
+       * overflow from SwapCached.
+       */
+      this->values[SWAP_METER_USED] -= lhost->zswap.usedZswapOrig;
+      if (this->values[SWAP_METER_USED] < 0) {
+         /* subtract the overflow from SwapCached */
+         this->values[SWAP_METER_CACHE] += this->values[SWAP_METER_USED];
+         this->values[SWAP_METER_USED] = 0;
+      }
+      this->values[SWAP_METER_FRONTSWAP] += lhost->zswap.usedZswapOrig;
+   }
 }
 
 void Platform_setZramValues(Meter* this) {
-   const LinuxProcessList* lpl = (const LinuxProcessList*) this->pl;
-   this->total = lpl->zram.totalZram;
-   this->values[0] = lpl->zram.usedZramComp;
-   this->values[1] = lpl->zram.usedZramOrig;
+   const LinuxMachine* lhost = (const LinuxMachine*) this->host;
+
+   this->total = lhost->zram.totalZram;
+   this->values[ZRAM_METER_COMPRESSED] = lhost->zram.usedZramComp;
+   this->values[ZRAM_METER_UNCOMPRESSED] = lhost->zram.usedZramOrig;
 }
 
 void Platform_setZfsArcValues(Meter* this) {
-   const LinuxProcessList* lpl = (const LinuxProcessList*) this->pl;
+   const LinuxMachine* lhost = (const LinuxMachine*) this->host;
 
-   ZfsArcMeter_readStats(this, &(lpl->zfs));
+   ZfsArcMeter_readStats(this, &(lhost->zfs));
 }
 
 void Platform_setZfsCompressedArcValues(Meter* this) {
-   const LinuxProcessList* lpl = (const LinuxProcessList*) this->pl;
+   const LinuxMachine* lhost = (const LinuxMachine*) this->host;
 
-   ZfsCompressedArcMeter_readStats(this, &(lpl->zfs));
+   ZfsCompressedArcMeter_readStats(this, &(lhost->zfs));
 }
 
 char* Platform_getProcessEnv(pid_t pid) {
@@ -456,16 +490,16 @@ FileLocks_ProcessData* Platform_getProcessLocks(pid_t pid) {
          continue;
 
       errno = 0;
-      char *end = de->d_name;
+      char* end = de->d_name;
       int file = strtoull(de->d_name, &end, 10);
       if (errno || *end)
          continue;
 
       int fd = openat(dfd, de->d_name, O_RDONLY | O_CLOEXEC);
-      if(fd == -1)
+      if (fd == -1)
          continue;
-      FILE *f = fdopen(fd, "r");
-      if(!f) {
+      FILE* f = fdopen(fd, "r");
+      if (!f) {
          close(fd);
          continue;
       }
@@ -474,7 +508,7 @@ FileLocks_ProcessData* Platform_getProcessLocks(pid_t pid) {
          if (!strchr(buffer, '\n'))
             continue;
 
-         if (strncmp(buffer, "lock:\t", strlen("lock:\t")))
+         if (!String_startsWith(buffer, "lock:\t"))
             continue;
 
          FileLocks_Data data = {.fd = file};
@@ -534,6 +568,24 @@ void Platform_getPressureStall(const char* file, bool some, double* ten, double*
    }
    (void) total;
    assert(total == 3);
+   fclose(fd);
+}
+
+void Platform_getFileDescriptors(double* used, double* max) {
+   *used = NAN;
+   *max = 65536;
+
+   FILE* fd = fopen(PROCDIR "/sys/fs/file-nr", "r");
+   if (!fd)
+      return;
+
+   unsigned long long v1, v2, v3;
+   int total = fscanf(fd, "%llu %llu %llu", &v1, &v2, &v3);
+   if (total == 3) {
+      *used = v1;
+      *max = v3;
+   }
+
    fclose(fd);
 }
 

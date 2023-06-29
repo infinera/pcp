@@ -53,20 +53,22 @@ then
     logmsg="begin pid:$$ $prog args:$*"
     if which pstree >/dev/null 2>&1
     then
-	logmsg="$logmsg [`pstree -lps $$`]"
-	logmsg="`echo "$logmsg" | sed -e 's/---pstree([^)]*)//'`"
+	logmsg="$logmsg [`_pstree_oneline $$`]"
     fi
     $PCP_BINADM_DIR/pmpost "$logmsg"
 fi
 
 _cleanup()
 {
-    if [ -s "$MYPROGLOG" ]
+    if [ "$PROGLOG" != "/dev/tty" ]
     then
-	rm -f "$PROGLOG"
-	mv "$MYPROGLOG" "$PROGLOG"
-    else
-	rm -f "$MYPROGLOG"
+	if [ -s "$MYPROGLOG" ]
+	then
+	    rm -f "$PROGLOG"
+	    mv "$MYPROGLOG" "$PROGLOG"
+	else
+	    rm -f "$MYPROGLOG"
+	fi
     fi
     $USE_SYSLOG && [ $status -ne 0 ] && \
     $PCP_SYSLOG_PROG -p daemon.error "$prog failed - see $PROGLOG"
@@ -155,7 +157,10 @@ do
 	-l)	PROGLOG="$2"
 		MYPROGLOG="$PROGLOG".$$
 		USE_SYSLOG=false
-		daily_args="${daily_args} -l $2.from.check"
+		if [ "$PROGLOG" != "/dev/tty" ]
+		then
+		    daily_args="${daily_args} -l $2.from.check"
+		fi
 		shift
 		;;
 	-N)	SHOWME=true
@@ -223,14 +228,19 @@ _compress_now()
 # accidentally sent from cron.  Close stdout and stderr, then open stdout
 # as our logfile and redirect stderr there too.
 #
-PROGLOGDIR=`dirname "$PROGLOG"`
-[ -d "$PROGLOGDIR" ] || mkdir_and_chown "$PROGLOGDIR" 755 $PCP_USER:$PCP_GROUP 2>/dev/null
 if $SHOWME
 then
+    :
+elif [ "$PROGLOG" = "/dev/tty" ]
+then
+    # special case for debugging ... no salt away previous, no chown, no exec
+    #
     :
 else
     # Salt away previous log, if any ...
     #
+    PROGLOGDIR=`dirname "$PROGLOG"`
+    [ -d "$PROGLOGDIR" ] || mkdir_and_chown "$PROGLOGDIR" 755 $PCP_USER:$PCP_GROUP 2>/dev/null
     _save_prev_file "$PROGLOG"
     # After argument checking, everything must be logged to ensure no mail is
     # accidentally sent from cron.  Close stdout and stderr, then open stdout
@@ -247,52 +257,31 @@ fi
 if $VERY_VERBOSE
 then
     echo "Start: `date '+%F %T.%N'`"
-    if which pstree >/dev/null 2>&1
-    then
-	if pstree -spa $$ >$tmp/tmp 2>&1
-	then
-	    echo "Called from:"
-	    cat $tmp/tmp
-	    echo "--- end of pstree output ---"
-	else
-	    # pstree not functional for us ... -s not supported in older
-	    # versions
-	    :
-	fi
-    fi
+    _pstree_all $$
 fi
 
 # if SaveLogs exists in the $PCP_LOG_DIR/pmlogger directory and is writeable
 # then save $MYPROGLOG there as well with a unique name that contains the date
 # and time when we're run ... skip if -N (showme)
-#
-if [ -d $PCP_LOG_DIR/pmlogger/SaveLogs -a -w $PCP_LOG_DIR/pmlogger/SaveLogs ]
+if [ "$PROGLOG" != "/dev/tty" ]
 then
-    now="`date '+%Y%m%d.%H:%M:%S.%N'`"
-    link=`echo $MYPROGLOG | sed -e "s@.*$prog@$PCP_LOG_DIR/pmlogger/SaveLogs/$now-$prog@"`
-    if [ ! -f "$link" ]
+    if [ -d $PCP_LOG_DIR/pmlogger/SaveLogs -a -w $PCP_LOG_DIR/pmlogger/SaveLogs ]
     then
-	if $SHOWME
+	now="`date '+%Y%m%d.%H:%M:%S.%N'`"
+	link=`echo $MYPROGLOG | sed -e "s@.*$prog@$PCP_LOG_DIR/pmlogger/SaveLogs/$now-$prog@"`
+	if [ ! -f "$link" ]
 	then
-	    echo "+ ln $MYPROGLOG $link"
-	else
-	    ln $MYPROGLOG $link
-	    if [ -w $link ]
+	    if $SHOWME
 	    then
-		echo "--- Added by $prog when SaveLogs dir found ---" >>$link
-		echo "Start: `date '+%F %T.%N'`" >>$link
-		echo "Args: $ARGS" >>$link
-		if which pstree >/dev/null 2>&1
+		echo "+ ln $MYPROGLOG $link"
+	    else
+		ln $MYPROGLOG $link
+		if [ -w $link ]
 		then
-		    if pstree -spa $$ >$tmp/tmp 2>&1
-		    then
-			echo "Called from:" >>$link
-			cat $tmp/tmp >>$link
-		    else
-			# pstree not functional for us ... -s not supported
-			# in older versions
-			:
-		    fi
+		    echo "--- Added by $prog when SaveLogs dir found ---" >>$link
+		    echo "Start: `date '+%F %T.%N'`" >>$link
+		    echo "Args: $ARGS" >>$link
+		    _pstree_all $$
 		fi
 	    fi
 	fi
@@ -527,7 +516,7 @@ _wait_for_pmcd()
 	    _dead=false
 	    break
 	fi
-	pmsleep 0.1
+	pmsleep -w 'waiting for pmcd start' 0.1
 	_i=`expr $_i + 1`
     done
     if $_dead
@@ -567,9 +556,9 @@ _check_logger()
     # wait until pmlogger process starts, or exits
     #
     delay=5
-    [ ! -z "$PMCD_CONNECT_TIMEOUT" ] && delay=$PMCD_CONNECT_TIMEOUT
+    [ -n "$PMCD_CONNECT_TIMEOUT" ] && delay=$PMCD_CONNECT_TIMEOUT
     x=5
-    [ ! -z "$PMCD_REQUEST_TIMEOUT" ] && x=$PMCD_REQUEST_TIMEOUT
+    [ -n "$PMCD_REQUEST_TIMEOUT" ] && x=$PMCD_REQUEST_TIMEOUT
 
     # max delay (secs) before timing out our pmlc request ... if this
     # pmlogger is just started, we may need to be a little patient
@@ -579,6 +568,7 @@ _check_logger()
     # wait for maximum time of a connection and 20 requests
     #
     delay=`expr \( $delay + 20 \* $x \) \* 10`	# tenths of a second
+    #debug# $PCP_ECHO_PROG $PCP_ECHO_N " delay=$delay/10 sec ""$PCP_ECHO_C"
     while [ $delay -gt 0 ]
     do
 	if [ -f $logfile ]
@@ -636,7 +626,7 @@ _check_logger()
 		return 1
 	    fi
 	fi
-	pmsleep 0.1
+	pmsleep -w 'waiting for pmlogger start' 0.1
 	delay=`expr $delay - 1`
 	$VERBOSE && [ `expr $delay % 10` -eq 0 ] && \
 			$PCP_ECHO_PROG $PCP_ECHO_N ".""$PCP_ECHO_C"
@@ -769,6 +759,12 @@ s/^\([A-Za-z][A-Za-z0-9_]*\)=/export \1; \1=/p
 	    continue
 	fi
 
+	# set -d to unexpanded directory from _do_dir_and_args() ...
+	# map spaces to CTL-A and tabs to CTL-B to avoid breaking
+	# the argument in the eval used to launch pmlogger
+	#
+	args="-d \"`echo "$orig_dir" | sed -e 's/ //g' -e 's/	//'`\" $args"
+
 	# if -p/--skip-primary on the command line, do not process
 	# a control file line for the primary pmlogger
 	#
@@ -791,7 +787,7 @@ s/^\([A-Za-z][A-Za-z0-9_]*\)=/export \1; \1=/p
 	# (differently for directory and pcp -h HOST arguments)
 	#
 	dirhostname=`hostname || echo localhost`
-	dir=`echo $dir | sed -e "s;LOCALHOSTNAME;$dirhostname;"`
+	dir=`echo "$dir" | sed -e "s;LOCALHOSTNAME;$dirhostname;"`
 	[ $primary = y -o "x$host" = xLOCALHOSTNAME ] && host=local:
 
 	if $VERY_VERBOSE
@@ -803,7 +799,7 @@ s/^\([A-Za-z][A-Za-z0-9_]*\)=/export \1; \1=/p
 
 	# check for directory duplicate entries
 	#
-	if [ "`grep $dir $tmp/dir`" = "$dir" ]
+	if [ "`grep "$dir" $tmp/dir`" = "$dir" ]
 	then
 	    _error "Cannot start more than one pmlogger instance for archive directory \"$dir\""
 	    continue
@@ -858,7 +854,7 @@ s/^\([A-Za-z][A-Za-z0-9_]*\)=/export \1; \1=/p
 		    if $VERY_VERBOSE
 		    then
 			echo "Acquired lock:"
-			ls -l $dir/lock
+			ls -l "$dir"/lock
 		    fi
 		    break
 		else
@@ -869,7 +865,7 @@ s/^\([A-Za-z][A-Za-z0-9_]*\)=/export \1; \1=/p
 			if [ -f "$dir/lock" ]
 			then
 			    echo "$prog: Warning: removing lock file older than 30 minutes"
-			    LC_TIME=POSIX ls -l $dir/lock
+			    LC_TIME=POSIX ls -l "$dir"/lock
 			    rm -f "$dir/lock"
 			else
 			    # there is a small timing window here where pmlock
@@ -880,7 +876,7 @@ s/^\([A-Za-z][A-Za-z0-9_]*\)=/export \1; \1=/p
 			fi
 		    fi
 		fi
-		pmsleep 0.1
+		pmsleep -w 'waiting for lock' 0.1
 		delay=`expr $delay - 1`
 	    done
 
@@ -911,7 +907,7 @@ s/^\([A-Za-z][A-Za-z0-9_]*\)=/export \1; \1=/p
 		if [ -f "$dir/lock" ]
 		then
 		    echo "$prog: Warning: is another PCP cron job running concurrently?"
-		    LC_TIME=POSIX ls -l $dir/lock
+		    LC_TIME=POSIX ls -l "$dir"/lock
 		else
 		    echo "$prog: `cat $tmp/out`"
 		fi
@@ -966,13 +962,14 @@ s/^\([A-Za-z][A-Za-z0-9_]*\)=/export \1; \1=/p
 		then
 		    _host=`sed -n 2p <$log`
 		    _arch=`sed -n 3p <$log`
-		    $PCP_ECHO_PROG $PCP_ECHO_N "... try $log host=$_host arch=$_arch: ""$PCP_ECHO_C"
+		    _archdir=`sed -n '3s@/[^/]*$@@p' <$log`
+		    $PCP_ECHO_PROG $PCP_ECHO_N "... try $log host=$_host arch=$_arch archdir=$_archdir ctldir=$dir: ""$PCP_ECHO_C"
 		fi
 		# throw away stderr in case $log has been removed by now
 		match=`sed -e '3s@/[^/]*$@@' $log 2>/dev/null | \
 		$PCP_AWK_PROG '
 BEGIN				{ m = 0 }
-NR == 3 && $0 == "'$dir'"	{ m = 2; next }
+NR == 3 && $0 == "'"$dir"'"	{ m = 2; next }
 END				{ print m }'`
 		$VERY_VERBOSE && $PCP_ECHO_PROG $PCP_ECHO_N "match=$match ""$PCP_ECHO_C"
 		if [ "$match" = 2 ]
@@ -1086,7 +1083,7 @@ END				{ print m }'`
 	    if $SHOWME
 	    then
 		echo
-		echo "+ ${sock_me}$PMLOGGER $args $LOGNAME"
+		echo "+ ${sock_me}$PMLOGGER $args $LOGNAME" | sed -e 's// /g' -e 's//	/g'
 		_unlock "$dir"
 		continue
 	    else
@@ -1097,6 +1094,11 @@ END				{ print m }'`
 
 	    # wait for pmlogger to get started, and check on its health
 	    _check_logger $pid
+	    if [ -s $tmp/out ]
+	    then
+		_warning "early diagnostics from pmlogger ..."
+		cat $tmp/out
+	    fi
 
 	    # if SaveLogs exists in the same directory that the archive
 	    # is being created, save pmlogger log file there as well
@@ -1159,7 +1161,7 @@ then
         do
             if [ $delay -gt 0 ]
             then
-                pmsleep 0.1
+                pmsleep -w 'waiting for pmlogger exit' 0.1
                 delay=`expr $delay - 1`
                 continue
             fi
@@ -1175,6 +1177,20 @@ fi
 # Do not compress on a virgin install - there is nothing to compress anyway.
 # See RHBZ#1721223.
 [ -f "$PCP_LOG_DIR/pmlogger/pmlogger_daily.stamp" ] && _compress_now
+
+# Run the janitor script to clean up any badness ... but only
+# do this if we're using the system-installed control files (not
+# something else via -c on the command line) and
+# $PMLOGGER_CHECK_SKIP_JANITOR is not "yes".
+#
+# QA uses -c and we don't want the janitor to be run in that case,
+# because the legitimate pmloggers, like the primary pmlogger, may
+# not be included in the "test" control file(s).
+#
+if [ "$CONTROL" = "$PCP_PMLOGGERCONTROL_PATH" -a "$PMLOGGER_CHECK_SKIP_JANITOR" != "yes" ]
+then
+    $PCP_BINADM_DIR/pmlogger_janitor $daily_args
+fi
 
 [ -f $tmp/err ] && status=1
 

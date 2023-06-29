@@ -36,7 +36,7 @@ require DynaLoader;
 	PM_ERR_LOGCHANGETYPE PM_ERR_LOGCHANGESEM PM_ERR_LOGCHANGEINDOM
 	PM_ERR_LOGCHANGEUNITS PM_ERR_LOGOVERLAP PM_ERR_NEEDCLIENTCERT
 	PM_ERR_BADDERIVE PM_ERR_NOLABELS PM_ERR_PMDAFENCED PM_ERR_RECTYPE
-	PM_ERR_FEATURE PM_ERR_TLS
+	PM_ERR_FEATURE PM_ERR_TLS PM_ERR_ARG
 	PM_ERR_NYI
 	PMDA_FETCH_NOVALUES PMDA_FETCH_STATIC PMDA_FETCH_DYNAMIC
 );
@@ -97,7 +97,7 @@ sub PM_ERR_GENERIC	{ -12345; }	# Generic error, already reported above
 sub PM_ERR_PMNS		{ -12346; }	# Problems parsing PMNS definitions
 sub PM_ERR_NOPMNS	{ -12347; }	# PMNS not accessible
 sub PM_ERR_DUPPMNS	{ -12348; }	# Attempt to reload the PMNS
-sub PM_ERR_TEXT		{ -12349; }	# Oneline or help text is not available
+sub PM_ERR_TEXT		{ -12349; }	# One-line or help text is not available
 sub PM_ERR_APPVERSION	{ -12350; }	# Metric not supported by this version of monitored application
 sub PM_ERR_VALUE	{ -12351; }	# Missing metric value(s)
 sub PM_ERR_TIMEOUT	{ -12353; }	# Timeout waiting for a response from PMCD
@@ -158,6 +158,7 @@ sub PM_ERR_PMDAFENCED	{ -12411; }	# PMDA is currently fenced and unable to respo
 sub PM_ERR_RECTYPE	{ -12412; }	# Incorrect record type in an archive
 sub PM_ERR_FEATURE	{ -12413; }	# Archive feature not supported
 sub PM_ERR_TLS		{ -12414; }	# TLS protocol failure
+sub PM_ERR_ARG		{ -12415; }	# Bad value for function argument
 
 sub PM_ERR_NYI		{ -21344; }	# Functionality not yet implemented
 

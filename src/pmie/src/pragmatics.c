@@ -956,6 +956,7 @@ int
 reconnect(Host *h)
 {
     Fetch	*f;
+    const char	*host_name;
 
     f = h->fetches;
     while (f) {
@@ -964,6 +965,19 @@ reconnect(Host *h)
 	if (clientid != NULL)
 	    /* re-register client id with pmcd */
 	    __pmSetClientId(clientid);
+	/*
+	 * If pmcd's hostname changed between the last time we were
+	 * talking to pmcd and now, then we may need to exit ... see
+	 * explanation in taskFetch() below.
+	 */
+        host_name = pmGetContextHostName(f->handle);
+	if (strcmp(symName(f->host->name), host_name) != 0) {
+	    pmNotifyErr(LOG_INFO, "PMCD hostname changed from %s to %s after pmReconnectContext", symName(f->host->name), host_name);
+	    if (runfromcontrol) {
+		run_done = 1;
+		return 0;
+	    }
+	}
 	f = f->next;
     }
     return 1;
@@ -1049,6 +1063,29 @@ taskFetch(Task *t)
 			mark_all(h);
 		    }
 		    f->result = NULL;
+		}
+		else if (sts & PMCD_HOSTNAME_CHANGE) {
+		    /*
+		     * Hostname changed for pmcd and we were launched from
+		     * the control-driven scripts (pmie_check, pmie_daily),
+		     * then we need to exit.
+		     *
+		     * We rely on the systemd autorestart, systemd timer,
+		     * cron or the user to restart this pmie at which
+		     * time one or more of the following will happen:
+		     * - the correct pmcd hostname will be used internally,
+		     *   e.g. for %h in print actions
+		     * - for a pmie launched from the standard
+		     *   /etc/pcp/pmie control files, LOCALHOSTNAME will get
+		     *   correctly re-translated into a different pathname
+		     *   (usually the directory for the log file)
+		     */
+		    const char	*host_name = pmGetContextHostName(f->handle);
+		    pmNotifyErr(LOG_INFO, "PMCD hostname changed from %s to %s during pmFetch", symName(f->host->name), host_name);
+		    if (runfromcontrol) {
+			run_done = 1;
+			return;
+		    }
 		}
 	    }
 	    else

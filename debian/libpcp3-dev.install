@@ -42,6 +42,7 @@ usr/share/man/man3/__pmControlLog.3.gz
 usr/share/man/man3/__pmConvertHighResTime.3.gz
 usr/share/man/man3/__pmConvertTime.3.gz
 usr/share/man/man3/__pmDiscoverServicesWithOptions.3.gz
+usr/share/man/man3/__pmEquivInDom.3.gz
 usr/share/man/man3/__pmFdLookupIPC.3.gz
 usr/share/man/man3/__pmFreeAttrsSpec.3.gz
 usr/share/man/man3/__pmFreeHostAttrsSpec.3.gz
@@ -75,6 +76,7 @@ usr/share/man/man3/__pmUnparseHostSpec.3.gz
 usr/share/man/man3/pmAF.3.gz
 usr/share/man/man3/pmAddDerived.3.gz
 usr/share/man/man3/pmAddDerivedMetric.3.gz
+usr/share/man/man3/pmAddDerivedText.3.gz
 usr/share/man/man3/pmAddProfile.3.gz
 usr/share/man/man3/pmAtomStr.3.gz
 usr/share/man/man3/pmAtomStr_r.3.gz

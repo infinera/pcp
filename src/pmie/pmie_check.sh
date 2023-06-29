@@ -52,12 +52,15 @@ _unsymlink_path()
 
 _cleanup()
 {
-    if [ -s "$MYPROGLOG" ]
+    if [ "$PROGLOG" != "/dev/tty" ]
     then
-	rm -f "$PROGLOG"
-	mv "$MYPROGLOG" "$PROGLOG"
-    else
-	rm -f "$MYPROGLOG"
+	if [ -s "$MYPROGLOG" ]
+	then
+	    rm -f "$PROGLOG"
+	    mv "$MYPROGLOG" "$PROGLOG"
+	else
+	    rm -f "$MYPROGLOG"
+	fi
     fi
     $USE_SYSLOG && [ $status -ne 0 ] && \
     $PCP_SYSLOG_PROG -p daemon.error "$prog failed - see $PROGLOG"
@@ -198,15 +201,20 @@ fi
 # accidentally sent from cron.  Close stdout and stderr, then open stdout
 # as our logfile and redirect stderr there too.
 #
-PROGLOGDIR=`dirname "$PROGLOG"`
-[ -d "$PROGLOGDIR" ] || mkdir_and_chown "$PROGLOGDIR" 755 $PCP_USER:$PCP_GROUP 2>/dev/null
 
 if $SHOWME
 then
     :
+elif [ "$PROGLOG" = "/dev/tty" ]
+then
+    # special case for debugging ... no salt away previous, no chown, no exec
+    #
+    :
 else
     # Salt away previous log, if any ...
     #
+    PROGLOGDIR=`dirname "$PROGLOG"`
+    [ -d "$PROGLOGDIR" ] || mkdir_and_chown "$PROGLOGDIR" 755 $PCP_USER:$PCP_GROUP 2>/dev/null
     _save_prev_file "$PROGLOG"
     # After argument checking, everything must be logged to ensure no mail is
     # accidentally sent from cron.  Close stdout and stderr, then open stdout
@@ -223,19 +231,7 @@ fi
 if $VERY_VERBOSE
 then
     echo "Start: `date '+%F %T.%N'`"
-    if which pstree >/dev/null 2>&1
-    then
-	if pstree -spa $$ >$tmp/tmp 2>&1
-	then
-	    echo "Called from:"
-	    cat $tmp/tmp
-	    echo "--- end of pstree output ---"
-	else
-	    # pstree not functional for us ... -s not supported in older
-	    # versions
-	    :
-	fi
-    fi
+    _pstree_all $$
 fi
 _error()
 {
@@ -802,9 +798,9 @@ NR == 3	{ printf "p_pmcd_host=\"%s\"\n", $0; next }
 
 	    if [ "$primary" = y ]
 	    then
-		args="-F -P -l $logfile $args"
+		args="-m pmie_check -F -P -l $logfile $args"
 	    else
-		args="-h $host -l $logfile $args"
+		args="-m pmie_check -h $host -l $logfile $args"
 	    fi
 
 	    $VERBOSE && _restarting
@@ -832,22 +828,35 @@ NR == 3	{ printf "p_pmcd_host=\"%s\"\n", $0; next }
 		fi
 	    fi
 
-	    [ -f "$logfile" ] && eval $MV -f "$logfile" "$logfile.prior"
+	    if [ -f "$logfile" ]
+	    then
+		# use today's datestamp
+		#
+		SUMMARY_LOGNAME=`pmdate %Y%m%d`
+		if $SHOWME
+		then
+		    echo "+ cat $logfile >>$logfile.$SUMMARY_LOGNAME"
+		else
+		    echo "---- from $prog @ `date` ---" >>$logfile.$SUMMARY_LOGNAME
+		    cat $logfile >>$logfile.$SUMMARY_LOGNAME
+		    chown $PCP_USER:$PCP_GROUP $logfile.$SUMMARY_LOGNAME >/dev/null 2>&1
+		fi
+	    fi
 
 	    if $SHOWME
 	    then
 		$VERBOSE && echo
-		echo "+ ${sock_me}$PMIE -b $args"
+		echo "+ $sock_me$PMIE -b $args"
 		_unlock
 		continue
 	    else
 		# since this is launched as a daemon, any output should
 		# go on pmie's stderr, i.e. $logfile ... use -b for this
 		#
-		$VERY_VERBOSE && ( echo; $PCP_ECHO_PROG $PCP_ECHO_N "+ ${sock_me}$PMIE -b $args""$PCP_ECHO_C"; echo "..." )
+		$VERY_VERBOSE && ( echo; $PCP_ECHO_PROG $PCP_ECHO_N "+ $sock_me$PMIE -b $args""$PCP_ECHO_C"; echo "..." )
 		$PCP_BINADM_DIR/pmpost "start pmie from $prog for host $host"
 		err=`mktemp "$tmp/pmie.errXXXXXXXXX"`
-		pid=`${sock_me} $PMIE -b $args >$err 2>&1 & echo $!`
+		pid=`$sock_me $PMIE -b $args >$err 2>&1 & echo $!`
 	    fi
 
 	    # wait for pmie to get started, and check on its health

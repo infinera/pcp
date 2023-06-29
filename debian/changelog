@@ -1,8 +1,21 @@
-pcp (6.0.3-1) unstable; urgency=low
+pcp (6.1.0-1) unstable; urgency=low
 
   * New release (full details in CHANGELOG).
 
- -- Nathan Scott <nathans@debian.org>  Mon, 17 Apr 2023 11:03:00 +1100
+ -- Nathan Scott <nathans@debian.org>  Thu, 31 Aug 2023 11:13:24 +1000
+
+pcp (6.0.5-1) unstable; urgency=low
+
+  * New release (full details in CHANGELOG).
+
+ -- Nathan Scott <nathans@debian.org>  Mon, 26 Jun 2023 09:37:34 +1000
+
+pcp (6.0.3-1) unstable; urgency=low
+
+  * New release (full details in CHANGELOG).
+  * Fix installation on systems without systemd (closes: #1031295)
+
+ -- Nathan Scott <nathans@debian.org>  Thu, 23 Feb 2023 10:52:31 +1100
 
 pcp (6.0.2-1) unstable; urgency=low
 

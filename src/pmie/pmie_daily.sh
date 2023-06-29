@@ -54,7 +54,10 @@ _cleanup()
 {
     $USE_SYSLOG && [ $status -ne 0 ] && \
     $PCP_SYSLOG_PROG -p daemon.error "$prog failed - see $PROGLOG"
-    [ -s "$PROGLOG" ] || rm -f "$PROGLOG"
+    if [ "$PROGLOG" != "/dev/tty" ]
+    then
+	[ -s "$PROGLOG" ] || rm -f "$PROGLOG"
+    fi
     lockfile=`cat $tmp/lock 2>/dev/null`
     [ -n "$lockfile" ] && rm -f "$lockfile"
     rm -rf $tmp
@@ -216,9 +219,16 @@ done
 if $SHOWME
 then
     :
+elif [ "$PROGLOG" = "/dev/tty" ]
+then
+    # special case for debugging ... no salt away previous, no chown, no exec
+    #
+    :
 else
     # Salt away previous log, if any ...
     #
+    PROGLOGDIR=`dirname "$PROGLOG"`
+    [ -d "$PROGLOGDIR" ] || mkdir_and_chown "$PROGLOGDIR" 755 $PCP_USER:$PCP_GROUP 2>/dev/null
     _save_prev_file "$PROGLOG"
     # After argument checking, everything must be logged to ensure no mail is
     # accidentally sent from cron.  Close stdout and stderr, then open stdout
@@ -239,6 +249,8 @@ then
     exit
 fi
 
+# use yesterday's datestamp
+#
 SUMMARY_LOGNAME=`pmdate -1d %Y%m%d`
 
 _error()
@@ -523,15 +535,21 @@ NR == 3	{ printf "p_pmcd_host=\"%s\"\n", $0; next }
 	    # now move current logfile name aside and SIGHUP to "roll the logs"
 	    # creating a new logfile with the old name in the process.
 	    #
-	    $SHOWME && echo "+ mv $logfile ${logfile}.{SUMMARY_LOGNAME}"
-	    if mv $logfile ${logfile}.${SUMMARY_LOGNAME}
+	    if $SHOWME
 	    then
-		$VERY_VERBOSE && echo "+ $KILL -s HUP $pid"
-		eval $KILL -s HUP $pid
-		echo ${logfile}.${SUMMARY_LOGNAME} >> $tmp/mail
+		echo "+ cat $logfile >>$logfile.$SUMMARY_LOGNAME"
 	    else
-		_error "problems moving logfile \"$logfile\" for host \"$host\""
-		touch $tmp/err
+		echo "---- from $prog @ `date` ----" >>$logfile.$SUMMARY_LOGNAME
+		if cat $logfile >>$logfile.$SUMMARY_LOGNAME
+		then
+		    $VERY_VERBOSE && echo "+ $KILL -s HUP $pid"
+		    eval $KILL -s HUP $pid
+		    echo $logfile.$SUMMARY_LOGNAME >> $tmp/mail
+		else
+		    _error "problems moving logfile \"$logfile\" for host \"$host\""
+		    touch $tmp/err
+		fi
+		chown $PCP_USER:$PCP_GROUP $logfile.$SUMMARY_LOGNAME >/dev/null 2>&1
 	    fi
 	fi
 

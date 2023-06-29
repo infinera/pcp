@@ -1622,7 +1622,7 @@ class DstatTool(object):
         elif printtype in ('t',):
             ret, c = self.tchg(value, width), ctext
         else:
-            raise Exception('printtype %s not known to pcp-dstat.' % printtype)
+            raise TypeError('printtype %s not known to pcp-dstat.' % printtype)
 
         ### Set the metrics color
         if ret == '0':
@@ -1858,7 +1858,7 @@ class DstatTool(object):
                 showcsvheader = False
                 if os.path.exists(self.output):
                     newoline += '\n\n'
-                newoline += self.show_csvheader(vislist)
+                newoline += self.show_csvheader(self.totlist)
 
         if self.novalues:
             line = newline
